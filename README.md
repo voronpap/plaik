@@ -10,7 +10,7 @@ The name comes from the Ukrainian Carpathian word **плаїк** — a small mou
 
 PLAIK is intentionally split into three public repositories:
 
-- **`plaik`** — runtime, Core, Installer, Admin, Storefront shell, CLI, default theme and distribution assembly;
+- **`plaik`** — runtime, Core, Installer, Admin, Web app (`plaik_web`), CLI, default theme and distribution assembly;
 - **`plaik-sdk`** — public contracts, SDK, schemas, validators, scaffolding and developer documentation;
 - **`plaik-packages`** — official modules, integrations, themes and packs, including commerce packages.
 
@@ -23,10 +23,10 @@ Core         = domain-neutral platform mechanisms and gatekeeper
 Contracts    = stable public types and extension boundaries
 SDK          = supported public integration surface
 Modules      = business data and rules
-Themes       = storefront presentation only
+Themes       = web presentation only
 Integrations = external providers behind explicit ports
 Packs        = compatible extension selections, no implementation
-Apps         = isolated Installer, Admin and Storefront compositions
+Apps         = isolated Installer, Admin and Web compositions
 ```
 
 Core does not own catalog, inventory, carts, checkout, orders, payments, shipping, pricing, promotions or other business-domain implementations. Those belong to packages built against the public SDK.
