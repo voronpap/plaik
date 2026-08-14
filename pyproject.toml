@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plaik"
+version = "0.2.0.dev0"
+description = "PLAIK modular application platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+  "cryptography==50.0.0",
+  "fastapi==0.138.2",
+  "jinja2==3.1.6",
+  "packaging==26.3",
+  "plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@14fc89644ec27e99a4d45dbdad7d66af71aac6ed",
+  "psycopg[binary]==3.3.4",
+  "pydantic==2.13.4",
+  "uvicorn[standard]==0.52.1",
+]
+
+[project.scripts]
+plaik-ops = "plaik_core.cli:main"
+
+[project.urls]
+Repository = "https://github.com/voronpap/plaik"
+SDK = "https://github.com/voronpap/plaik-sdk"
+Packages = "https://github.com/voronpap/plaik-packages"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/plaik_admin",
+  "src/plaik_installer",
+  "src/plaik_web",
+  "src/plaik_core",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"resources/themes/default" = "plaik_core/_bundled/themes/default"
