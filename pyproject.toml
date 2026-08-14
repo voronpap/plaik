@@ -28,6 +28,9 @@ Repository = "https://github.com/voronpap/plaik"
 SDK = "https://github.com/voronpap/plaik-sdk"
 Packages = "https://github.com/voronpap/plaik-packages"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/plaik_admin",
