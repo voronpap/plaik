@@ -9,7 +9,8 @@ from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
@@ -39,10 +40,10 @@ from .package_lifecycle import (
 from .packages import PackageStatus
 from .signing_keys import SigningKeyStoreError
 from .storage import exclusive_file_lock
-from .theme_operations import ThemeActivationCoordinator, ThemeOperationError
-from .themes import TemplateResolver
 from .web import WebRenderError, WebRenderer
 from .web_extensions import project_enabled_hooks
+from .theme_operations import ThemeActivationCoordinator, ThemeOperationError
+from .themes import TemplateResolver
 
 
 _LOG = logging.getLogger("plaik.runtime")
@@ -50,23 +51,27 @@ _LOG = logging.getLogger("plaik.runtime")
 
 class ThemeActivationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     theme_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
 
 
 class PackageArtifactRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     artifact: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}\.zip$")
 
 
 class PackageStateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     package_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
 
 
 class MaintenanceEnterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     reason: str = Field(pattern=r"^[a-z][a-z0-9._-]{2,63}$")
     expected_generation: int = Field(ge=0)
@@ -74,12 +79,14 @@ class MaintenanceEnterRequest(BaseModel):
 
 class MaintenanceExitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     expected_generation: int = Field(ge=1)
 
 
 class EmergencyPackageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
     incident_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     package_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
     expected_generation: int = Field(ge=1)
@@ -145,7 +152,10 @@ def _copy_routes(source: FastAPI, destination: FastAPI, prefixes: tuple[str, ...
         paths = [getattr(route, "path", "")]
         included_router = getattr(route, "original_router", None)
         if included_router is not None:
-            paths.extend(getattr(candidate, "path", "") for candidate in included_router.routes)
+            paths.extend(
+                getattr(candidate, "path", "")
+                for candidate in included_router.routes
+            )
         if any(
             path == prefix or path.startswith(prefix + "/")
             for path in paths
@@ -230,7 +240,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
             maintenance = core.state.maintenance_safety_service().state()
             if maintenance.active:
                 response.status_code = 503
-                return {"status": "maintenance", "generation": maintenance.generation}
+                return {
+                    "status": "maintenance",
+                    "generation": maintenance.generation,
+                }
             return core.state.health_check()
         except Exception:
             response.status_code = 503
@@ -245,7 +258,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
     if application.state.install_store.read() == InstallState.COMPLETED:
         auth = core.state.http_auth_service()
         application.include_router(auth.router)
-        sessions, audit, operations = core.state.security_services(create_missing=False)
+        sessions, audit, operations = core.state.security_services(
+            create_missing=False
+        )
         del sessions
         jobs = core.state.job_queue
         diagnostics = DiagnosticRegistry()
@@ -256,10 +271,16 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 "core.installation.ready",
             ),
         )
-        diagnostics.register("core.audit", lambda: (bool(audit.verify()), "core.audit.verified"))
+        diagnostics.register(
+            "core.audit",
+            lambda: (bool(audit.verify()), "core.audit.verified"),
+        )
         diagnostics.register(
             "core.operations",
-            lambda: (operations.verify().pending_count == 0, "core.operations.verified"),
+            lambda: (
+                operations.verify().pending_count == 0,
+                "core.operations.verified",
+            ),
         )
         diagnostics.register(
             "core.theme",
@@ -270,9 +291,11 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         )
         diagnostics.register(
             "core.cache",
-            lambda: (core.state.cache.stats().entries >= 0, "core.cache.ready"),
+            lambda: (
+                core.state.cache.stats().entries >= 0,
+                "core.cache.ready",
+            ),
         )
-
         def require_enabled_theme(theme_id: str) -> None:
             record = application.state.package_registry.records().get(theme_id)
             if (
@@ -308,7 +331,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     operations=operations,
                     theme_registry=application.state.theme_registry,
                     theme_manager=application.state.theme_manager,
-                    store_id_provider=lambda: application.state.configuration_store.require().store_id,
+                    store_id_provider=lambda: (
+                        application.state.configuration_store.require().store_id
+                    ),
                     migration_applier=migration_applier,
                 )
                 manager.recover()
@@ -375,8 +400,12 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         outcome=AuditOutcome.SUCCESS,
                         metadata={
                             "operation_id": identifier,
-                            "version": record.manifest.version if record is not None else None,
-                            "status": record.status.value if record is not None else None,
+                            "version": (
+                                record.manifest.version if record is not None else None
+                            ),
+                            "status": (
+                                record.status.value if record is not None else None
+                            ),
                             "reconciled": True,
                         },
                     )
@@ -412,8 +441,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         ) -> dict:
             try:
                 state = operational_safety.enter(
-                    payload.operation_id,
-                    actor_id=principal.user_id,
+                    payload.operation_id, actor_id=principal.user_id,
                     reason=payload.reason,
                     expected_generation=payload.expected_generation,
                 )
@@ -428,8 +456,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         ) -> dict:
             try:
                 state = operational_safety.exit(
-                    payload.operation_id,
-                    actor_id=principal.user_id,
+                    payload.operation_id, actor_id=principal.user_id,
                     expected_generation=payload.expected_generation,
                     validate_invariants=lambda: core.state.health_check(),
                 )
@@ -450,7 +477,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 )
             try:
                 with exclusive_file_lock(runtime.extension_operation_lock_path):
-                    record = application.state.package_registry.quarantine(payload.package_id)
+                    record = application.state.package_registry.quarantine(
+                        payload.package_id
+                    )
                     for registry in (
                         core.state.service_registry,
                         core.state.event_bus,
@@ -520,7 +549,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         @application.get("/api/admin/themes/active")
         def admin_active_theme(principal=Depends(read_platform)) -> dict:
             configuration = application.state.configuration_store.require()
-            selected = application.state.theme_manager.state.selection(configuration.store_id)
+            selected = application.state.theme_manager.state.selection(
+                configuration.store_id
+            )
             audit.append(
                 actor_id=principal.user_id,
                 action="theme.selection.read",
@@ -556,7 +587,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=principal.user_id,
                 )
             except ThemeOperationError:
-                raise HTTPException(status_code=409, detail="theme activation failed") from None
+                raise HTTPException(
+                    status_code=409,
+                    detail="theme activation failed",
+                ) from None
             core.state.anchor_journals()
             return selected.model_dump(mode="json")
 
@@ -570,7 +604,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=principal.user_id,
                 )
             except ThemeOperationError:
-                raise HTTPException(status_code=409, detail="theme rollback failed") from None
+                raise HTTPException(
+                    status_code=409,
+                    detail="theme rollback failed",
+                ) from None
             core.state.anchor_journals()
             return selected.model_dump(mode="json")
 
@@ -584,7 +621,11 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 "idempotent_replay": result.idempotent_replay,
             }
 
-        def audit_package_result(result: PackageLifecycleResult, *, actor_id: str) -> dict:
+        def audit_package_result(
+            result: PackageLifecycleResult,
+            *,
+            actor_id: str,
+        ) -> dict:
             runtime_registries = (
                 core.state.service_registry,
                 core.state.event_bus,
@@ -632,13 +673,17 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         metadata={
                             "operation_id": result.operation_id,
                             "version": result.version,
-                            "status": result.status.value if result.status else None,
+                            "status": (
+                                result.status.value if result.status else None
+                            ),
                             "idempotent_replay": result.idempotent_replay,
                         },
                     )
                 core.state.anchor_journals()
             except Exception:
-                raise PackageCommitEvidencePending("package commit evidence is pending") from None
+                raise PackageCommitEvidencePending(
+                    "package commit evidence is pending"
+                ) from None
             return package_result(result)
 
         def package_failure(
@@ -663,6 +708,8 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
             core.state.anchor_journals()
 
         def package_operation_pending(operation_id: str) -> bool:
+            """Fail closed when a package attempt has no terminal journal decision."""
+
             try:
                 state = operations.state(operation_id)
             except Exception:
@@ -777,7 +824,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=actor_id,
                     error=error,
                 )
-                raise HTTPException(status_code=409, detail=f"package {action} failed") from None
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"package {action} failed",
+                ) from None
             except PackageArtifactError as error:
                 package_failure(
                     action=action,
@@ -786,7 +836,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=actor_id,
                     error=error,
                 )
-                raise HTTPException(status_code=409, detail=f"package {action} failed") from None
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"package {action} failed",
+                ) from None
 
         @application.post("/api/admin/packages/install")
         def install_package(
@@ -847,7 +900,10 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=actor_id,
                     error=error,
                 )
-                raise HTTPException(status_code=409, detail=f"package {action} failed") from None
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"package {action} failed",
+                ) from None
 
         @application.post("/api/admin/packages/enable")
         def enable_package(
@@ -899,7 +955,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
 
 
 def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
-    """Create the public SSR Web application without Installer or Admin routes."""
+    """Create the public SSR application without Installer or Admin routes."""
 
     runtime = settings or CoreSettings()
     core = create_core_app(runtime)
@@ -933,12 +989,15 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
         if core.state.install_store.read() != InstallState.COMPLETED:
             raise HTTPException(
                 status_code=503,
-                detail="web application is unavailable until installation completes",
+                detail="web is unavailable until installation completes",
             )
         try:
             return core.state.public_health_check()
         except Exception:
-            raise HTTPException(status_code=503, detail="web readiness check failed") from None
+            raise HTTPException(
+                status_code=503,
+                detail="web readiness check failed",
+            ) from None
 
     @application.get("/health")
     def web_health() -> dict:
@@ -964,12 +1023,15 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
                 context={"brand": brand, "public_url": public_url},
             )
         except WebRenderError:
-            raise HTTPException(status_code=503, detail="web rendering is unavailable") from None
+            raise HTTPException(
+                status_code=503,
+                detail="web rendering is unavailable",
+            ) from None
         return HTMLResponse(
             rendered.html,
             headers={
                 "Content-Language": locale,
-                "X-PLAIK-Theme": rendered.theme_id,
+                "X-Web-Theme": rendered.theme_id,
             },
         )
 
@@ -1000,7 +1062,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
         return Response(
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
             '<rect width="64" height="64" rx="14" fill="#1457d9"/>'
-            '<path d="M20 14h17c9 0 15 5 15 14S46 42 37 42h-7v10H20V14zm10 9v10h6c4 0 6-2 6-5s-2-5-6-5h-6z" fill="white"/>'
+            '<path d="M17 43V21h8l7 11 7-11h8v22h-8V33l-7 10-7-10v10z" fill="white"/>'
             "</svg>",
             media_type="image/svg+xml",
             headers={"Cache-Control": "public, max-age=86400"},

@@ -104,7 +104,12 @@ class PackageRegistry:
         return updated
 
     def quarantine(self, package_id: str) -> PackageRecord:
-        """Emergency containment without cascading repair or deletion."""
+        """Emergency containment without cascading repair or deletion.
+
+        Dependency consistency is intentionally not repaired here: enabled
+        dependants may become non-runnable and must fail closed until an audited
+        operator recovery. The protected default package cannot be quarantined.
+        """
 
         records = self.records()
         record = self._require(records, package_id)

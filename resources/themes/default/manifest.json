@@ -3,7 +3,7 @@
   "type": "theme",
   "version": "1.0.0",
   "name": "PLAIK Default",
-  "core": ">=0.2.0.dev0",
+  "core": ">=0.1.0",
   "parent": null,
   "layouts": ["full-width"],
   "assets": {

@@ -60,7 +60,9 @@ class StructuredEventLogger:
             raise ValueError("invalid structured event name")
         if level not in {"debug", "info", "warning", "error", "critical"}:
             raise ValueError("invalid structured log level")
-        if correlation_id is not None and not _CORRELATION_ID.fullmatch(correlation_id):
+        if correlation_id is not None and not _CORRELATION_ID.fullmatch(
+            correlation_id
+        ):
             raise ValueError("invalid correlation id")
         safe_fields = _safe_fields(fields or {})
         timestamp = occurred_at or datetime.now(UTC)
@@ -104,7 +106,9 @@ class CorrelationMiddleware:
             return
         supplied = _header(scope.get("headers", ()), b"x-request-id")
         correlation_id = (
-            supplied if supplied is not None and _CORRELATION_ID.fullmatch(supplied) else uuid4().hex
+            supplied
+            if supplied is not None and _CORRELATION_ID.fullmatch(supplied)
+            else uuid4().hex
         )
         state = scope.setdefault("state", {})
         state["correlation_id"] = correlation_id
@@ -116,7 +120,9 @@ class CorrelationMiddleware:
             if message.get("type") == "http.response.start":
                 status_code = int(message.get("status", 500))
                 headers = list(message.get("headers", ()))
-                headers = [item for item in headers if item[0].lower() != b"x-request-id"]
+                headers = [
+                    item for item in headers if item[0].lower() != b"x-request-id"
+                ]
                 headers.append((b"x-request-id", correlation_id.encode("ascii")))
                 message = {**message, "headers": headers}
             await send(message)
@@ -132,7 +138,11 @@ class CorrelationMiddleware:
             try:
                 self.logger.emit(
                     "http.request.completed",
-                    level="error" if outcome == "error" or status_code >= 500 else "info",
+                    level=(
+                        "error"
+                        if outcome == "error" or status_code >= 500
+                        else "info"
+                    ),
                     correlation_id=correlation_id,
                     fields={
                         "method": scope.get("method", ""),
@@ -143,6 +153,8 @@ class CorrelationMiddleware:
                     },
                 )
             except Exception:
+                # Completion telemetry is secondary and must never replace the
+                # response or the primary application exception.
                 pass
 
 
@@ -159,6 +171,8 @@ DiagnosticCheck = Callable[[], tuple[bool, str]]
 
 
 class _DiagnosticExecution:
+    """One bounded in-flight execution for a diagnostic check."""
+
     __slots__ = ("done", "result", "error_type")
 
     def __init__(self) -> None:
@@ -213,7 +227,10 @@ class DiagnosticRegistry:
                     id=check_id,
                     passed=bool(passed),
                     code=code,
-                    duration_ms=round(max(0.0, (time.perf_counter() - started) * 1000), 3),
+                    duration_ms=round(
+                        max(0.0, (time.perf_counter() - started) * 1000),
+                        3,
+                    ),
                 )
             )
         return tuple(results)
@@ -223,6 +240,14 @@ class DiagnosticRegistry:
         check_id: str,
         check: DiagnosticCheck,
     ) -> _DiagnosticExecution:
+        """Return one live execution per check, coalescing repeated timeouts.
+
+        Python cannot safely kill a timed-out thread. Keeping the execution
+        registered until it finishes prevents every diagnostics request from
+        spawning another permanently blocked worker for the same check. Daemon
+        workers also cannot hold interpreter shutdown hostage.
+        """
+
         with self._lock:
             existing = self._executions.get(check_id)
             if existing is not None and not existing.done.is_set():
@@ -316,10 +341,17 @@ def _validate_field_structure(fields: Mapping[str, Any]) -> None:
 
 
 def _is_sensitive_field_key(key: str) -> bool:
-    with_camel_boundaries = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    with_camel_boundaries = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])",
+        "_",
+        key,
+    )
     ordered_parts = [
         part
-        for part in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries.casefold())
+        for part in re.split(
+            r"[^A-Za-z0-9]+",
+            with_camel_boundaries.casefold(),
+        )
         if part
     ]
     parts = set(ordered_parts)

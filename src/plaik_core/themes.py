@@ -90,7 +90,9 @@ class ThemeRegistry:
                             raise ValueError(
                                 f"installed theme {package.id!r} is missing theme.json"
                             ) from None
-                        theme_data = json.loads(theme_path.read_text(encoding="utf-8"))
+                        theme_data = json.loads(
+                            theme_path.read_text(encoding="utf-8")
+                        )
                         if not isinstance(theme_data, dict) or set(theme_data) - {
                             "parent",
                             "layouts",
@@ -396,7 +398,7 @@ class ThemeManager:
 
 
 class TemplateResolver:
-    """Theme/module lookup without allowing path traversal."""
+    """PrestaShop-style lookup without allowing path traversal."""
 
     def __init__(
         self,

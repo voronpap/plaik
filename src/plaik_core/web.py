@@ -80,6 +80,7 @@ class WebRenderer:
         if overlap:
             raise WebRenderError("web context overrides reserved names")
 
+        # Theme selection is deliberately the first stateful lookup in SSR.
         active = self.theme_manager.active(store_id)
         chain = self.theme_registry.inheritance_chain(active.id)
         layout_path = self._resolve_layout(chain, safe_layout)

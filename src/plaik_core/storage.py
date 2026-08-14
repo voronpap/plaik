@@ -103,7 +103,13 @@ def write_json_atomic(path: Path, value: Any) -> None:
 
 
 def fsync_directory_best_effort(directory: Path) -> None:
-    """Persist a directory entry when the host filesystem supports it."""
+    """Persist a directory entry when the host filesystem supports it.
+
+    POSIX filesystems require syncing the containing directory after an atomic
+    rename for power-loss durability. Some supported platforms reject opening
+    or syncing directories, so this helper deliberately degrades to the atomic
+    replace guarantee available there.
+    """
 
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
@@ -119,12 +125,20 @@ def fsync_directory_best_effort(directory: Path) -> None:
         try:
             os.close(descriptor)
         except OSError:
+            # Cleanup cannot replace the successfully persisted write.
             pass
 
 
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Serialize a file-backed read-modify-write operation."""
+    """Serialize a file-backed read-modify-write operation.
+
+    The process-local mutex is required because advisory file-lock semantics for
+    separate descriptors in one process vary by platform.  The persistent lock
+    file adds process-level exclusion.  Callers must acquire this lock before
+    reading state that they intend to modify and hold it through the atomic
+    replacement.
+    """
 
     target = Path(path)
     lock_path = target.with_name(f".{target.name}.lock")
@@ -147,6 +161,8 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                 try:
                     os.chmod(lock_path, 0o600)
                 except OSError:
+                    # Windows may not expose POSIX permission bits. The platform
+                    # ACL remains authoritative there.
                     pass
             release = _lock_descriptor(descriptor)
             yield

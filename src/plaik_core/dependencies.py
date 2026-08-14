@@ -37,6 +37,10 @@ def resolve_install_order(
                 f"installed package identity mismatch: {package_id}"
             )
 
+    # Candidates replace same-ID installed manifests. Validate the complete
+    # graph that would exist after the operation, not only declarations from
+    # the incoming batch: installed conflicts/dependents and cycles crossing
+    # the installed/candidate boundary are part of the resulting state too.
     all_packages = {**installed_packages, **candidates}
 
     for manifest in all_packages.values():
@@ -80,6 +84,8 @@ def resolve_install_order(
         manifest = all_packages[package_id]
         for dependency in manifest.dependencies:
             if dependency.package_id not in all_packages:
+                # Missing required dependencies were rejected above and missing
+                # optional dependencies do not participate in the graph.
                 continue
             visit(dependency.package_id, (*trail, package_id))
         visiting.remove(package_id)

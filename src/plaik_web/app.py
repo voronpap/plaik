@@ -1,4 +1,4 @@
-"""PLAIK Web ASGI entry point."""
+"""Web ASGI entry point."""
 
 from plaik_core.applications import create_web_app
 

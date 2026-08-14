@@ -41,11 +41,7 @@ class InstallStateStore:
         if target == current:
             return current
         current_index = INSTALL_SEQUENCE.index(current)
-        expected = (
-            INSTALL_SEQUENCE[current_index + 1]
-            if current_index + 1 < len(INSTALL_SEQUENCE)
-            else None
-        )
+        expected = INSTALL_SEQUENCE[current_index + 1] if current_index + 1 < len(INSTALL_SEQUENCE) else None
         if target != expected:
             raise InvalidInstallTransition(
                 f"cannot transition from {current.value} to {target.value}; "

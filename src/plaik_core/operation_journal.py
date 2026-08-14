@@ -112,6 +112,8 @@ class OperationJournal:
         target: str,
         occurred_at: datetime | None = None,
     ) -> OperationState:
+        """Start once, or return the existing state for a duplicate request."""
+
         operation_id = _validate_operation_id(operation_id)
         action = _validate_name(action, "action")
         target = _validate_target(target)
@@ -122,11 +124,26 @@ class OperationJournal:
             if existing is not None:
                 self._require_same_operation(existing, action=action, target=target)
                 return existing
-            event = self._new_event(events, operation_id=operation_id, attempt=1, action=action, target=target, status=OperationStatus.STARTED, occurred_at=timestamp)
+            event = self._new_event(
+                events,
+                operation_id=operation_id,
+                attempt=1,
+                action=action,
+                target=target,
+                status=OperationStatus.STARTED,
+                occurred_at=timestamp,
+            )
             self._append_line(event.model_dump(mode="json"))
             return _initial_state(event)
 
-    def retry(self, operation_id: str, *, occurred_at: datetime | None = None) -> OperationState:
+    def retry(
+        self,
+        operation_id: str,
+        *,
+        occurred_at: datetime | None = None,
+    ) -> OperationState:
+        """Begin the next attempt after failure; pending retries are idempotent."""
+
         operation_id = _validate_operation_id(operation_id)
         timestamp = _as_utc(occurred_at or datetime.now(UTC))
         with self._exclusive_lock():
@@ -137,16 +154,47 @@ class OperationJournal:
             if current.status == OperationStatus.SUCCEEDED:
                 raise OperationTransitionError("a succeeded operation cannot be retried")
             if current.finished_at is None or timestamp < current.finished_at:
-                raise OperationTransitionError("operation retry predates the previous attempt")
-            event = self._new_event(events, operation_id=operation_id, attempt=current.attempt + 1, action=current.action, target=current.target, status=OperationStatus.STARTED, occurred_at=timestamp)
+                raise OperationTransitionError(
+                    "operation retry predates the previous attempt"
+                )
+            event = self._new_event(
+                events,
+                operation_id=operation_id,
+                attempt=current.attempt + 1,
+                action=current.action,
+                target=current.target,
+                status=OperationStatus.STARTED,
+                occurred_at=timestamp,
+            )
             self._append_line(event.model_dump(mode="json"))
             return _initial_state(event)
 
-    def succeed(self, operation_id: str, *, occurred_at: datetime | None = None) -> OperationState:
-        return self._finish(operation_id, status=OperationStatus.SUCCEEDED, error_code=None, occurred_at=occurred_at)
+    def succeed(
+        self,
+        operation_id: str,
+        *,
+        occurred_at: datetime | None = None,
+    ) -> OperationState:
+        return self._finish(
+            operation_id,
+            status=OperationStatus.SUCCEEDED,
+            error_code=None,
+            occurred_at=occurred_at,
+        )
 
-    def fail(self, operation_id: str, *, error_code: str, occurred_at: datetime | None = None) -> OperationState:
-        return self._finish(operation_id, status=OperationStatus.FAILED, error_code=_validate_error_code(error_code), occurred_at=occurred_at)
+    def fail(
+        self,
+        operation_id: str,
+        *,
+        error_code: str,
+        occurred_at: datetime | None = None,
+    ) -> OperationState:
+        return self._finish(
+            operation_id,
+            status=OperationStatus.FAILED,
+            error_code=_validate_error_code(error_code),
+            occurred_at=occurred_at,
+        )
 
     def state(self, operation_id: str) -> OperationState | None:
         operation_id = _validate_operation_id(operation_id)
@@ -160,22 +208,50 @@ class OperationJournal:
             return dict(sorted(states.items()))
 
     def pending(self) -> tuple[OperationState, ...]:
-        return tuple(state for state in self.states().values() if state.status == OperationStatus.STARTED)
+        """Return started attempts that require resume or explicit failure."""
+
+        return tuple(
+            state
+            for state in self.states().values()
+            if state.status == OperationStatus.STARTED
+        )
 
     def events(self) -> tuple[OperationEvent, ...]:
         with self._exclusive_lock():
             events, _states = self._read_and_verify()
             return tuple(events)
 
-    def verify(self, *, expected_head: str | None = None) -> OperationJournalVerification:
+    def verify(
+        self,
+        *,
+        expected_head: str | None = None,
+    ) -> OperationJournalVerification:
         with self._exclusive_lock():
             events, states = self._read_and_verify()
         head_hash = events[-1].event_hash if events else GENESIS_HASH
-        if expected_head is not None and not hmac.compare_digest(head_hash, expected_head):
-            raise OperationJournalIntegrityError("operation journal head does not match the trusted checkpoint")
-        return OperationJournalVerification(event_count=len(events), operation_count=len(states), pending_count=sum(state.status == OperationStatus.STARTED for state in states.values()), head_hash=head_hash)
+        if expected_head is not None and not hmac.compare_digest(
+            head_hash, expected_head
+        ):
+            raise OperationJournalIntegrityError(
+                "operation journal head does not match the trusted checkpoint"
+            )
+        return OperationJournalVerification(
+            event_count=len(events),
+            operation_count=len(states),
+            pending_count=sum(
+                state.status == OperationStatus.STARTED for state in states.values()
+            ),
+            head_hash=head_hash,
+        )
 
-    def _finish(self, operation_id: str, *, status: OperationStatus, error_code: str | None, occurred_at: datetime | None) -> OperationState:
+    def _finish(
+        self,
+        operation_id: str,
+        *,
+        status: OperationStatus,
+        error_code: str | None,
+        occurred_at: datetime | None,
+    ) -> OperationState:
         operation_id = _validate_operation_id(operation_id)
         timestamp = _as_utc(occurred_at or datetime.now(UTC))
         with self._exclusive_lock():
@@ -185,18 +261,56 @@ class OperationJournal:
                 if status != OperationStatus.FAILED or current.error_code == error_code:
                     return current
             if current.status != OperationStatus.STARTED:
-                raise OperationTransitionError(f"cannot mark {current.status.value} operation as {status.value}")
+                raise OperationTransitionError(
+                    f"cannot mark {current.status.value} operation as {status.value}"
+                )
             if timestamp < current.started_at:
-                raise OperationJournalIntegrityError("terminal operation event predates its attempt")
-            event = self._new_event(events, operation_id=operation_id, attempt=current.attempt, action=current.action, target=current.target, status=status, error_code=error_code, occurred_at=timestamp)
+                raise OperationJournalIntegrityError(
+                    "terminal operation event predates its attempt"
+                )
+            event = self._new_event(
+                events,
+                operation_id=operation_id,
+                attempt=current.attempt,
+                action=current.action,
+                target=current.target,
+                status=status,
+                error_code=error_code,
+                occurred_at=timestamp,
+            )
             self._append_line(event.model_dump(mode="json"))
             return _terminal_state(current, event)
 
-    def _new_event(self, events: list[OperationEvent], *, operation_id: str, attempt: int, action: str, target: str, status: OperationStatus, occurred_at: datetime, error_code: str | None = None) -> OperationEvent:
-        body = {"sequence": len(events) + 1, "operation_id": operation_id, "attempt": attempt, "action": action, "target": target, "status": status.value, "occurred_at": occurred_at.isoformat(), "error_code": error_code, "previous_hash": events[-1].event_hash if events else GENESIS_HASH}
-        return OperationEvent.model_validate({**body, "event_hash": self._sign(body)})
+    def _new_event(
+        self,
+        events: list[OperationEvent],
+        *,
+        operation_id: str,
+        attempt: int,
+        action: str,
+        target: str,
+        status: OperationStatus,
+        occurred_at: datetime,
+        error_code: str | None = None,
+    ) -> OperationEvent:
+        body = {
+            "sequence": len(events) + 1,
+            "operation_id": operation_id,
+            "attempt": attempt,
+            "action": action,
+            "target": target,
+            "status": status.value,
+            "occurred_at": occurred_at.isoformat(),
+            "error_code": error_code,
+            "previous_hash": events[-1].event_hash if events else GENESIS_HASH,
+        }
+        return OperationEvent.model_validate(
+            {**body, "event_hash": self._sign(body)}
+        )
 
-    def _read_and_verify(self) -> tuple[list[OperationEvent], dict[str, OperationState]]:
+    def _read_and_verify(
+        self,
+    ) -> tuple[list[OperationEvent], dict[str, OperationState]]:
         try:
             descriptor = _open_regular_readonly(self.path)
         except FileNotFoundError:
@@ -214,48 +328,90 @@ class OperationJournal:
                         break
                     line_number += 1
                     if len(line) > MAX_OPERATION_RECORD_BYTES:
-                        raise OperationJournalIntegrityError(f"operation journal line {line_number} exceeds the size limit")
+                        raise OperationJournalIntegrityError(
+                            f"operation journal line {line_number} exceeds the size limit"
+                        )
                     if not line.endswith(b"\n"):
-                        raise OperationJournalIntegrityError(f"operation journal line {line_number} is incomplete")
+                        raise OperationJournalIntegrityError(
+                            f"operation journal line {line_number} is incomplete"
+                        )
                     event = OperationEvent.model_validate(json.loads(line))
                     if event.sequence != line_number:
-                        raise OperationJournalIntegrityError(f"invalid operation sequence at line {line_number}")
+                        raise OperationJournalIntegrityError(
+                            f"invalid operation sequence at line {line_number}"
+                        )
                     if event.previous_hash != previous_hash:
-                        raise OperationJournalIntegrityError(f"broken operation chain at line {line_number}")
-                    if not hmac.compare_digest(event.event_hash, self._sign(_event_body(event))):
-                        raise OperationJournalIntegrityError(f"invalid operation signature at line {line_number}")
-                    states[event.operation_id] = _apply_event(states.get(event.operation_id), event)
+                        raise OperationJournalIntegrityError(
+                            f"broken operation chain at line {line_number}"
+                        )
+                    if not hmac.compare_digest(
+                        event.event_hash,
+                        self._sign(_event_body(event)),
+                    ):
+                        raise OperationJournalIntegrityError(
+                            f"invalid operation signature at line {line_number}"
+                        )
+                    states[event.operation_id] = _apply_event(
+                        states.get(event.operation_id), event
+                    )
                     previous_hash = event.event_hash
                     events.append(event)
             _require_stable_read(self.path, descriptor, initial)
         except OperationJournalIntegrityError:
             raise
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
-            raise OperationJournalIntegrityError("operation journal cannot be verified") from error
+            raise OperationJournalIntegrityError(
+                "operation journal cannot be verified"
+            ) from error
         finally:
             os.close(descriptor)
         return events, states
 
     def _sign(self, body: Mapping[str, Any]) -> str:
-        payload = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        payload = json.dumps(
+            body,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
         return hmac.new(self._integrity_key, payload, hashlib.sha256).hexdigest()
 
     def _append_line(self, value: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         was_present = self.path.exists()
-        payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        payload = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
         if len(payload) > MAX_OPERATION_RECORD_BYTES:
             raise ValueError("operation journal event exceeds the size limit")
         if not hasattr(os, "O_NOFOLLOW") and self.path.is_symlink():
             raise OperationJournalIntegrityError("operation journal path is unsafe")
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_WRONLY
+            | os.O_APPEND
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
         try:
             descriptor = os.open(self.path, flags, 0o600)
         except OSError:
-            raise OperationJournalIntegrityError("operation journal path cannot be opened safely") from None
+            raise OperationJournalIntegrityError(
+                "operation journal path cannot be opened safely"
+            ) from None
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise OperationJournalIntegrityError("operation journal path is not a regular file")
+                raise OperationJournalIntegrityError(
+                    "operation journal path is not a regular file"
+                )
             _enforce_owner_only_permissions(descriptor)
             view = memoryview(payload)
             while view:
@@ -275,56 +431,91 @@ class OperationJournal:
         lock_path = self.path.with_name(f".{self.path.name}.lock")
         with self._thread_lock:
             if not hasattr(os, "O_NOFOLLOW") and lock_path.is_symlink():
-                raise OperationJournalIntegrityError("operation journal lock path is unsafe")
-            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                raise OperationJournalIntegrityError(
+                    "operation journal lock path is unsafe"
+                )
+            flags = (
+                os.O_RDWR
+                | os.O_CREAT
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
             try:
                 descriptor = os.open(lock_path, flags, 0o600)
             except OSError:
-                raise OperationJournalIntegrityError("operation journal lock path cannot be opened safely") from None
+                raise OperationJournalIntegrityError(
+                    "operation journal lock path cannot be opened safely"
+                ) from None
             locked = False
             try:
                 if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                    raise OperationJournalIntegrityError("operation journal lock path is not a regular file")
+                    raise OperationJournalIntegrityError(
+                        "operation journal lock path is not a regular file"
+                    )
                 _enforce_owner_only_permissions(descriptor)
                 try:
                     import fcntl
+
                     fcntl.flock(descriptor, fcntl.LOCK_EX)
                     locked = True
                 except ImportError:
+                    # The process-local lock remains active. A production adapter
+                    # on a platform without fcntl must provide a transactional lock.
                     pass
                 yield
             finally:
                 if locked:
                     import fcntl
+
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
                 os.close(descriptor)
 
     @staticmethod
-    def _require_same_operation(existing: OperationState, *, action: str, target: str) -> None:
+    def _require_same_operation(
+        existing: OperationState,
+        *,
+        action: str,
+        target: str,
+    ) -> None:
         if existing.action != action or existing.target != target:
-            raise OperationConflictError("operation ID is already bound to a different action or target")
+            raise OperationConflictError(
+                "operation ID is already bound to a different action or target"
+            )
 
 
-def _apply_event(current: OperationState | None, event: OperationEvent) -> OperationState:
+def _apply_event(
+    current: OperationState | None,
+    event: OperationEvent,
+) -> OperationState:
     _validate_event_fields(event)
     if current is None:
         if event.status != OperationStatus.STARTED or event.attempt != 1:
-            raise OperationJournalIntegrityError("an operation must begin with started attempt 1")
+            raise OperationJournalIntegrityError(
+                "an operation must begin with started attempt 1"
+            )
         return _initial_state(event)
     if current.action != event.action or current.target != event.target:
-        raise OperationJournalIntegrityError("operation action and target must remain immutable")
+        raise OperationJournalIntegrityError(
+            "operation action and target must remain immutable"
+        )
     if event.status == OperationStatus.STARTED:
         if current.status != OperationStatus.FAILED:
-            raise OperationJournalIntegrityError("only a failed operation can begin another attempt")
+            raise OperationJournalIntegrityError(
+                "only a failed operation can begin another attempt"
+            )
         if event.attempt != current.attempt + 1:
             raise OperationJournalIntegrityError("invalid operation retry attempt")
         if current.finished_at is None or event.occurred_at < current.finished_at:
-            raise OperationJournalIntegrityError("operation retry predates the previous attempt")
+            raise OperationJournalIntegrityError(
+                "operation retry predates the previous attempt"
+            )
         return _initial_state(event)
     if current.status != OperationStatus.STARTED or event.attempt != current.attempt:
         raise OperationJournalIntegrityError("invalid terminal operation transition")
     if event.occurred_at < current.started_at:
-        raise OperationJournalIntegrityError("terminal operation event predates its attempt")
+        raise OperationJournalIntegrityError(
+            "terminal operation event predates its attempt"
+        )
     return _terminal_state(current, event)
 
 
@@ -337,28 +528,62 @@ def _validate_event_fields(event: OperationEvent) -> None:
     try:
         _as_utc(event.occurred_at)
     except ValueError as error:
-        raise OperationJournalIntegrityError("operation timestamp must be timezone-aware") from error
+        raise OperationJournalIntegrityError(
+            "operation timestamp must be timezone-aware"
+        ) from error
     if event.status == OperationStatus.FAILED:
         if event.error_code is None:
             raise OperationJournalIntegrityError("failed operation requires an error code")
         _validate_error_code(event.error_code)
     elif event.error_code is not None:
-        raise OperationJournalIntegrityError("only failed operations may contain an error code")
+        raise OperationJournalIntegrityError(
+            "only failed operations may contain an error code"
+        )
 
 
 def _initial_state(event: OperationEvent) -> OperationState:
-    return OperationState(operation_id=event.operation_id, attempt=event.attempt, action=event.action, target=event.target, status=OperationStatus.STARTED, started_at=event.occurred_at, finished_at=None, error_code=None, last_sequence=event.sequence)
+    return OperationState(
+        operation_id=event.operation_id,
+        attempt=event.attempt,
+        action=event.action,
+        target=event.target,
+        status=OperationStatus.STARTED,
+        started_at=event.occurred_at,
+        finished_at=None,
+        error_code=None,
+        last_sequence=event.sequence,
+    )
 
 
 def _terminal_state(current: OperationState, event: OperationEvent) -> OperationState:
-    return current.model_copy(update={"status": event.status, "finished_at": event.occurred_at, "error_code": event.error_code, "last_sequence": event.sequence})
+    return current.model_copy(
+        update={
+            "status": event.status,
+            "finished_at": event.occurred_at,
+            "error_code": event.error_code,
+            "last_sequence": event.sequence,
+        }
+    )
 
 
 def _event_body(event: OperationEvent) -> dict[str, Any]:
-    return {"sequence": event.sequence, "operation_id": event.operation_id, "attempt": event.attempt, "action": event.action, "target": event.target, "status": event.status.value, "occurred_at": event.occurred_at.isoformat(), "error_code": event.error_code, "previous_hash": event.previous_hash}
+    return {
+        "sequence": event.sequence,
+        "operation_id": event.operation_id,
+        "attempt": event.attempt,
+        "action": event.action,
+        "target": event.target,
+        "status": event.status.value,
+        "occurred_at": event.occurred_at.isoformat(),
+        "error_code": event.error_code,
+        "previous_hash": event.previous_hash,
+    }
 
 
-def _require_state(states: Mapping[str, OperationState], operation_id: str) -> OperationState:
+def _require_state(
+    states: Mapping[str, OperationState],
+    operation_id: str,
+) -> OperationState:
     try:
         return states[operation_id]
     except KeyError as error:
@@ -398,16 +623,24 @@ def _as_utc(value: datetime) -> datetime:
 def _open_regular_readonly(path: Path) -> int:
     if not hasattr(os, "O_NOFOLLOW") and path.is_symlink():
         raise OperationJournalIntegrityError("operation journal path is unsafe")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError:
         raise
     except OSError:
-        raise OperationJournalIntegrityError("operation journal path cannot be opened safely") from None
+        raise OperationJournalIntegrityError(
+            "operation journal path cannot be opened safely"
+        ) from None
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise OperationJournalIntegrityError("operation journal path is not a regular file")
+            raise OperationJournalIntegrityError(
+                "operation journal path is not a regular file"
+            )
         _enforce_owner_only_permissions(descriptor)
         return descriptor
     except Exception:
@@ -420,10 +653,18 @@ def _require_stable_read(path: Path, descriptor: int, initial: os.stat_result) -
         after = os.fstat(descriptor)
         current = os.stat(path, follow_symlinks=False)
     except OSError:
-        raise OperationJournalIntegrityError("operation journal changed while it was read") from None
+        raise OperationJournalIntegrityError(
+            "operation journal changed while it was read"
+        ) from None
     fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-    if not stat.S_ISREG(current.st_mode) or any(getattr(after, field) != getattr(initial, field) for field in fields) or any(getattr(current, field) != getattr(after, field) for field in fields):
-        raise OperationJournalIntegrityError("operation journal changed while it was read")
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or any(getattr(after, field) != getattr(initial, field) for field in fields)
+        or any(getattr(current, field) != getattr(after, field) for field in fields)
+    ):
+        raise OperationJournalIntegrityError(
+            "operation journal changed while it was read"
+        )
 
 
 def _enforce_owner_only_permissions(descriptor: int) -> None:

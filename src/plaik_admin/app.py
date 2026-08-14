@@ -1,4 +1,4 @@
-"""PLAIK Admin ASGI entry point."""
+"""Admin ASGI entry point."""
 
 from plaik_core.applications import create_admin_app
 

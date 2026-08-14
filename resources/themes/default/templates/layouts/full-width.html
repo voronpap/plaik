@@ -1,17 +1,17 @@
 <!doctype html>
-<html lang="{{ locale }}" data-plaik-theme="default">
+<html lang="{{ locale }}" data-web-theme="default">
   {% set web_brand = brand | default("PLAIK") %}
   {% set web_url = public_url | default("") %}
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="{{ web_brand }} працює на захищеній платформі PLAIK. Платформа готова до підключення модулів і пакетів.">
+    <meta name="description" content="{{ web_brand }} працює на захищеній платформі PLAIK. Платформа готова до підключення каталогу та магазинних модулів.">
     <meta name="theme-color" content="#0b1739">
     {% if web_url %}<link rel="canonical" href="{{ web_url }}/">{% endif %}
     <link rel="icon" href="/favicon.ico" sizes="any">
     <meta property="og:type" content="website">
     <meta property="og:title" content="{{ page.title }}">
-    <meta property="og:description" content="Захищена модульна платформа готова до підключення функціональних пакетів.">
+    <meta property="og:description" content="Захищена модульна платформа готова до наступного етапу запуску магазину.">
     {% if web_url %}<meta property="og:url" content="{{ web_url }}/">{% endif %}
     <title>{{ page.title }}</title>
     {{ theme_assets("css") }}
@@ -21,7 +21,7 @@
     <a class="sf-skip-link" href="#main-content">До основного вмісту</a>
     <header class="sf-header">
       <a class="sf-brand" href="/" aria-label="{{ web_brand }}, головна">
-        <span class="sf-brand-mark" aria-hidden="true">P</span>
+        <span class="sf-brand-mark" aria-hidden="true">M</span>
         <span>{{ web_brand }}</span>
       </a>
       <nav aria-label="Головна навігація">
@@ -38,10 +38,10 @@
           <div>
             <p class="sf-status"><span aria-hidden="true"></span> Платформа онлайн</p>
             <p class="sf-kicker">PLAIK Platform</p>
-            <h1 id="sf-hero-title">Основа застосунку готова до наповнення</h1>
+            <h1 id="sf-hero-title">Основа магазину готова до наповнення</h1>
             <p class="sf-lead">
               {{ web_brand }} працює на захищеному модульному ядрі. Наступний етап —
-              підключення потрібних модулів, інтеграцій і пакетів.
+              підключення каталогу, кошика, оформлення та інших магазинних модулів.
             </p>
             <div class="sf-actions">
               <a class="sf-button sf-button-primary" href="#capabilities">Що вже готово</a>
@@ -51,7 +51,7 @@
           <div class="sf-visual" aria-hidden="true">
             <span class="sf-orbit sf-orbit-one"></span>
             <span class="sf-orbit sf-orbit-two"></span>
-            <span class="sf-core">P</span>
+            <span class="sf-core">M</span>
           </div>
         </section>
         <section class="sf-section" id="capabilities" aria-labelledby="sf-capabilities-title">
@@ -59,8 +59,8 @@
           <h2 id="sf-capabilities-title">Надійна база для наступного етапу</h2>
           <div class="sf-grid">
             <article><span>01</span><h3>Безпечне ядро</h3><p>Ізольований публічний процес, контроль доступу та fail-closed перевірки.</p></article>
-            <article><span>02</span><h3>Модульна архітектура</h3><p>Функціональність підключається окремими підписаними пакетами.</p></article>
-            <article><span>03</span><h3>Надійне розгортання</h3><p>Зміни можуть проходити контрольовану перевірку та безпечне перемикання версій.</p></article>
+            <article><span>02</span><h3>Модульна архітектура</h3><p>Каталог і комерційні можливості підключаються окремими підписаними пакетами.</p></article>
+            <article><span>03</span><h3>Надійне розгортання</h3><p>Зміни проходять перевірки та автоматично перемикаються через blue/green deployment.</p></article>
           </div>
         </section>
         <section class="sf-readiness" id="status" aria-labelledby="sf-status-title">

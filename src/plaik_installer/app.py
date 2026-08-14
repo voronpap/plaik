@@ -1,4 +1,4 @@
-"""PLAIK Installer ASGI entry point."""
+"""Installer ASGI entry point."""
 
 from plaik_core.applications import create_installer_app
 

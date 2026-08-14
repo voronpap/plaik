@@ -13,7 +13,7 @@ from .packages import PackageRecord, PackageStatus
 
 
 class WebExtensionError(RuntimeError):
-    """An enabled package cannot be projected into Web safely."""
+    """An enabled package cannot be projected into the Web safely."""
 
 
 def validate_staged_web(
@@ -58,7 +58,9 @@ def project_enabled_hooks(
             raise WebExtensionError("enabled package files are unavailable")
         for declaration in record.manifest.web.hooks:
             if declaration.hook not in allowed_hooks:
-                raise WebExtensionError("enabled package declares an unknown web hook")
+                raise WebExtensionError(
+                    "enabled package declares an unknown web hook"
+                )
             _require_regular_template(
                 package_root / "web",
                 declaration.template,

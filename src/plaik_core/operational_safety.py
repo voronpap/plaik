@@ -50,7 +50,12 @@ def _canonical(payload: dict[str, object]) -> bytes:
 
 
 class MaintenanceController:
-    """Serialize and authenticate one shared maintenance generation."""
+    """Serialize and authenticate one shared maintenance generation.
+
+    Callers must persist the state on storage shared by every writer in the
+    installation. The generation is a fence: a process that cached an older
+    generation cannot continue a privileged write after maintenance changes.
+    """
 
     def __init__(
         self,
@@ -92,11 +97,7 @@ class MaintenanceController:
         return state
 
     def enter(
-        self,
-        operation_id: str,
-        *,
-        actor_id: str,
-        reason: str,
+        self, operation_id: str, *, actor_id: str, reason: str,
         expected_generation: int,
     ) -> MaintenanceState:
         operation_id, actor_id, reason = self._validate(operation_id, actor_id, reason)
@@ -104,30 +105,21 @@ class MaintenanceController:
             current = self.state()
             if current.active:
                 if (current.operation_id, current.actor_id, current.reason) == (
-                    operation_id,
-                    actor_id,
-                    reason,
+                    operation_id, actor_id, reason
                 ):
                     return current
                 raise MaintenanceActive("another maintenance operation is active")
             if current.generation != expected_generation:
                 raise StaleMaintenanceGeneration("maintenance generation changed")
             changed = self._publish(
-                generation=current.generation + 1,
-                active=True,
-                operation_id=operation_id,
-                actor_id=actor_id,
-                reason=reason,
+                generation=current.generation + 1, active=True,
+                operation_id=operation_id, actor_id=actor_id, reason=reason,
             )
             self._event_sink("maintenance.entered", self._metadata(changed))
             return changed
 
     def exit(
-        self,
-        operation_id: str,
-        *,
-        actor_id: str,
-        expected_generation: int,
+        self, operation_id: str, *, actor_id: str, expected_generation: int,
         validate_invariants: Callable[[], None],
     ) -> MaintenanceState:
         operation_id, actor_id, _ = self._validate(operation_id, actor_id, "resume")
@@ -141,20 +133,13 @@ class MaintenanceController:
                 raise StaleMaintenanceGeneration("maintenance generation changed")
             validate_invariants()
             changed = self._publish(
-                generation=current.generation + 1,
-                active=False,
-                operation_id=None,
-                actor_id=None,
-                reason=None,
+                generation=current.generation + 1, active=False,
+                operation_id=None, actor_id=None, reason=None,
             )
-            self._event_sink(
-                "maintenance.exited",
-                {
-                    **self._metadata(changed),
-                    "resume_operation_id": operation_id,
-                    "resume_actor_id": actor_id,
-                },
-            )
+            self._event_sink("maintenance.exited", {
+                **self._metadata(changed), "resume_operation_id": operation_id,
+                "resume_actor_id": actor_id,
+            })
             return changed
 
     def require_writable(self, observed_generation: int | None = None) -> int:
@@ -167,30 +152,18 @@ class MaintenanceController:
 
     def _publish(self, **values: object) -> MaintenanceState:
         state = MaintenanceState(
-            **values,
-            changed_at=datetime.now(UTC).isoformat(),
-            key_id=self._key_id,
+            **values, changed_at=datetime.now(UTC).isoformat(), key_id=self._key_id
         )
         payload = {
-            "generation": state.generation,
-            "active": state.active,
-            "operation_id": state.operation_id,
-            "actor_id": state.actor_id,
-            "reason": state.reason,
-            "changed_at": state.changed_at,
+            "generation": state.generation, "active": state.active,
+            "operation_id": state.operation_id, "actor_id": state.actor_id,
+            "reason": state.reason, "changed_at": state.changed_at,
             "key_id": state.key_id,
         }
-        write_json_atomic(
-            self._path,
-            {
-                "state": payload,
-                "hmac_sha256": hmac.new(
-                    self._key,
-                    _canonical(payload),
-                    hashlib.sha256,
-                ).hexdigest(),
-            },
-        )
+        write_json_atomic(self._path, {
+            "state": payload,
+            "hmac_sha256": hmac.new(self._key, _canonical(payload), hashlib.sha256).hexdigest(),
+        })
         return state
 
     @staticmethod
@@ -206,10 +179,8 @@ class MaintenanceController:
     @staticmethod
     def _metadata(state: MaintenanceState) -> dict[str, object]:
         return {
-            "generation": state.generation,
-            "operation_id": state.operation_id,
-            "actor_id": state.actor_id,
-            "reason": state.reason,
+            "generation": state.generation, "operation_id": state.operation_id,
+            "actor_id": state.actor_id, "reason": state.reason,
             "key_id": state.key_id,
         }
 

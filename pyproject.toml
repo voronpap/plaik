@@ -14,7 +14,7 @@ dependencies = [
   "fastapi==0.138.2",
   "jinja2==3.1.6",
   "packaging==26.3",
-  "plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@14fc89644ec27e99a4d45dbdad7d66af71aac6ed",
+  "plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@a95b486358d328e2ff3d3a275790768d85276ad6",
   "psycopg[binary]==3.3.4",
   "pydantic==2.13.4",
   "uvicorn[standard]==0.52.1",

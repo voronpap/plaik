@@ -1,6 +1,6 @@
 """Append-only, tamper-evident audit journal.
 
-Every event is chained with HMAC-SHA256. The integrity key must be supplied by
+Every event is chained with HMAC-SHA256.  The integrity key must be supplied by
 the deployment secret store and is never persisted beside the journal.
 """
 
@@ -83,7 +83,13 @@ class AuditVerification(BaseModel):
 
 
 class AuditLog:
-    """Serialize bounded audit events to an append-only JSONL hash chain."""
+    """Serialize bounded audit events to an append-only JSONL hash chain.
+
+    The file is protected against concurrent writers on Unix with an advisory
+    file lock and against concurrent writers in one process on all platforms.
+    A database-backed implementation should use a database advisory lock and a
+    restricted INSERT-only role while preserving this API.
+    """
 
     def __init__(self, path: Path, *, integrity_key: bytes) -> None:
         if len(integrity_key) < 32:
@@ -127,7 +133,9 @@ class AuditLog:
                 "metadata": safe_metadata,
                 "previous_hash": previous_hash,
             }
-            event = AuditEvent.model_validate({**body, "event_hash": self._sign(body)})
+            event = AuditEvent.model_validate(
+                {**body, "event_hash": self._sign(body)}
+            )
             self._append_line(event.model_dump(mode="json"))
             return event
 
@@ -148,6 +156,8 @@ class AuditLog:
 
     def _iter_verified_events(self) -> Iterator[AuditEvent]:
         if self.path is None:
+            # Database-backed adapters historically override _read_and_verify().
+            # Preserve that adapter boundary while file journals stream records.
             yield from self._read_and_verify()  # type: ignore[attr-defined]
             return
         try:
@@ -235,7 +245,9 @@ class AuditLog:
         try:
             descriptor = os.open(self.path, flags, 0o600)
         except OSError:
-            raise AuditIntegrityError("audit journal path cannot be opened safely") from None
+            raise AuditIntegrityError(
+                "audit journal path cannot be opened safely"
+            ) from None
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise AuditIntegrityError("audit journal path is not a regular file")
@@ -268,7 +280,9 @@ class AuditLog:
             try:
                 descriptor = os.open(lock_path, flags, 0o600)
             except OSError:
-                raise AuditIntegrityError("audit lock path cannot be opened safely") from None
+                raise AuditIntegrityError(
+                    "audit lock path cannot be opened safely"
+                ) from None
             locked = False
             try:
                 if not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -280,6 +294,9 @@ class AuditLog:
                     fcntl.flock(descriptor, fcntl.LOCK_EX)
                     locked = True
                 except ImportError:
+                    # The process-local lock remains active on platforms without
+                    # fcntl; production multi-process storage must provide its
+                    # own transactional writer lock.
                     pass
                 yield
             finally:
@@ -315,7 +332,9 @@ def _open_regular_readonly(path: Path) -> int:
     except FileNotFoundError:
         raise
     except OSError:
-        raise AuditIntegrityError("audit journal path cannot be opened safely") from None
+        raise AuditIntegrityError(
+            "audit journal path cannot be opened safely"
+        ) from None
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise AuditIntegrityError("audit journal path is not a regular file")
@@ -422,10 +441,17 @@ def _validate_metadata_structure(value: Mapping[str, Any]) -> None:
 
 
 def _is_sensitive_metadata_key(key: str) -> bool:
-    with_camel_boundaries = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    with_camel_boundaries = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])",
+        "_",
+        key,
+    )
     ordered_parts = [
         part
-        for part in re.split(r"[^A-Za-z0-9]+", with_camel_boundaries.casefold())
+        for part in re.split(
+            r"[^A-Za-z0-9]+",
+            with_camel_boundaries.casefold(),
+        )
         if part
     ]
     parts = set(ordered_parts)
