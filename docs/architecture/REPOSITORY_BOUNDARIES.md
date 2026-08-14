@@ -18,7 +18,7 @@ Owns the executable platform distribution:
 
 It may depend on released public interfaces from `plaik-sdk`.
 
-It must not contain customer-specific production configuration, production credentials or host-specific operational evidence.
+It must not contain internal tests, agent instructions, private CI/release gates, customer-specific production configuration, credentials or host-specific operational evidence.
 
 ## 2. `plaik-sdk`
 
@@ -27,11 +27,11 @@ Owns the supported extension-development surface:
 - stable public contracts and types;
 - SDK helpers and protocol surfaces;
 - package manifest/schema definitions;
-- extension compatibility and validation tooling;
-- extension test harness and scaffolding;
+- public compatibility validators;
+- scaffolding and developer tooling;
 - public examples for module/theme/integration authors.
 
-`plaik-sdk` must remain usable without importing private PLAIK Core implementation details.
+`plaik-sdk` must remain usable without importing private PLAIK Core implementation details. Internal PLAIK acceptance/regression/security test suites do not belong here.
 
 ## 3. `plaik-packages`
 
@@ -46,6 +46,20 @@ Commerce is one package family, not the architecture boundary of this repository
 
 Examples include catalog, inventory, cart, checkout, orders, payments, shipping and `commerce-standard`.
 
+## 4. `plaik-internal` — private
+
+Owns non-public engineering and operational control-plane material:
+
+- `AGENTS.md` and agent/workflow instructions;
+- internal unit, integration, regression, migration, security and acceptance tests;
+- private fixtures and test infrastructure;
+- CI/release gates and release evidence;
+- deployment automation and host-specific infrastructure;
+- nginx/systemd/database/backup configuration tied to real environments;
+- operational evidence, recovery procedures and internal runbooks.
+
+No production credential, private key or plaintext secret should be committed even to `plaik-internal`; those belong in an external secret store or GitHub encrypted secrets.
+
 ## Dependency direction
 
 ```text
@@ -53,16 +67,18 @@ Examples include catalog, inventory, cart, checkout, orders, payments, shipping 
               /      \
              v        v
           plaik    plaik-packages
+             \        /
+              \      /
+            plaik-internal
+           (private validation)
 ```
 
 `plaik` and `plaik-packages` depend on released SDK/contracts. `plaik-packages` does not import private Core code. `plaik` does not depend on business packages to remain operational as a platform.
 
-No Git submodules are used for normal product composition. Cross-repository dependencies are released/versioned artifacts with explicit compatibility ranges.
+`plaik-internal` may consume all three public repositories for validation and release orchestration, but public repositories must never depend on private code in order to install, build or run.
 
-## Private operations
-
-Host-specific deployment automation, nginx/systemd configuration containing environment topology, backup destinations, recovery authority and production evidence belong in a separate private operations repository or private infrastructure system.
+No Git submodules are used for normal product composition. Cross-repository product dependencies are released/versioned artifacts with explicit compatibility ranges.
 
 ## Release consequence
 
-The platform runtime can release independently of official packages. SDK compatibility is versioned explicitly. Official packages declare the SDK/platform versions they support.
+The platform runtime can release independently of official packages. SDK compatibility is versioned explicitly. Official packages declare the SDK/platform versions they support. Releases are validated privately before publication; the public repositories contain product source and reproducible build/use documentation rather than the internal validation implementation.
