@@ -1,0 +1,1 @@
+"""PLAIK Admin application."""
