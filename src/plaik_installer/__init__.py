@@ -1,0 +1,1 @@
+"""PLAIK Installer application."""
