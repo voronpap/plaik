@@ -1,0 +1,50 @@
+name: Apply complete PLAIK runtime
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[runtime-migrated]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify runtime artifact
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            'https://sdmntprpolandcentral.oaiusercontent.com/files/00000000-9274-820a-93ab-7c3786e5bf8a/raw?se=2026-08-14T21%3A51%3A58Z&sp=r&sv=2026-02-06&sr=b&scid=6323b806-9a92-52a8-b769-346a70c1b550&skoid=061609b8-1cdb-4a5b-9e68-c7ab9a523a8f&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-14T06%3A44%3A43Z&ske=2026-08-15T06%3A44%3A43Z&sks=b&skv=2026-02-06&sig=zVmqOOSj3MjIVek7AKUY1vPizDh3ZGYp77WEdC5/2XM%3D' \
+            --output /tmp/plaik-runtime.zip
+          echo '507d72e582e328b0a6465799b2f587a8f1e5b14dae5773c15289ec21e9608bf9  /tmp/plaik-runtime.zip' | sha256sum -c -
+          unzip -q /tmp/plaik-runtime.zip -d /tmp/plaik-runtime
+          echo 'f6117d13a2b2c10c0b86a87489d7942e58a771c054516ae1db9cfee2e9ee527c  /tmp/plaik-runtime/runtime_bundle.py' | sha256sum -c -
+      - name: Apply full runtime snapshot
+        shell: bash
+        run: |
+          rm -rf src/plaik_core src/plaik_admin src/plaik_installer src/plaik_web resources/themes/default
+          python /tmp/plaik-runtime/runtime_bundle.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('pyproject.toml')
+          text = path.read_text()
+          old = 'plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@14fc89644ec27e99a4d45dbdad7d66af71aac6ed'
+          new = 'plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@a95b486358d328e2ff3d3a275790768d85276ad6'
+          if old not in text:
+              raise SystemExit('expected old SDK pin not found')
+          path.write_text(text.replace(old, new))
+          PY
+          python -m compileall -q src
+      - name: Commit complete runtime migration
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -rf .migration
+          git rm -f .github/workflows/apply-runtime-artifact.yml
+          git add -A src resources pyproject.toml .migration
+          git commit -m 'Complete PLAIK runtime migration [runtime-migrated]'
+          git push origin HEAD:main
