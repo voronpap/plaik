@@ -1,0 +1,19 @@
+{
+  "id": "default",
+  "type": "theme",
+  "version": "1.0.0",
+  "name": "PLAIK Default",
+  "core": ">=0.2.0.dev0",
+  "parent": null,
+  "layouts": ["full-width"],
+  "assets": {
+    "css": ["assets/css/theme.css"],
+    "js": []
+  },
+  "hooks": [
+    "displayHeader",
+    "displayHome",
+    "displayContent",
+    "displayFooter"
+  ]
+}
