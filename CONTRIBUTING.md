@@ -12,7 +12,7 @@ PLAIK is a modular platform with strict boundaries between the domain-neutral ru
 
 ## Repository responsibilities
 
-- `plaik`: runtime, Core, Installer, Admin, Storefront shell, CLI and distribution assembly.
+- `plaik`: runtime, Core, Installer, Admin, Web app, CLI and distribution assembly.
 - `plaik-sdk`: public contracts, SDK, schemas, validators, scaffolding and developer tooling.
 - `plaik-packages`: official modules, integrations, themes and packs.
 
