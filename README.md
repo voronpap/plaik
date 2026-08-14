@@ -4,17 +4,17 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: pre-release. The public repository is being bootstrapped from the validated platform baseline; production-host evidence and private operations remain outside this repository.
+> Status: pre-release. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
 PLAIK is intentionally split into three public repositories:
 
 - **`plaik`** — runtime, Core, Installer, Admin, Storefront shell, CLI, default theme and distribution assembly;
-- **`plaik-sdk`** — public contracts, SDK, schemas, extension test harness and developer tooling;
+- **`plaik-sdk`** — public contracts, SDK, schemas, validators, scaffolding and developer documentation;
 - **`plaik-packages`** — official modules, integrations, themes and packs, including commerce packages.
 
-Private deployment/infrastructure belongs outside the public product repositories.
+Private engineering and operations live in **`plaik-internal`** and are not part of the public product repositories. This includes internal test suites, agent instructions, CI/release gates, host-specific deployment, infrastructure configuration and operational evidence.
 
 ## Architecture
 
