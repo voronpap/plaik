@@ -9,7 +9,8 @@ PLAIK is split by release responsibility and dependency direction, not by arbitr
 Owns the executable platform distribution:
 
 - Core runtime and domain-neutral mechanisms;
-- Installer, Admin and Storefront process compositions;
+- Installer, Admin and Web process compositions;
+- public Web application namespace `plaik_web`;
 - CLI and distribution assembly;
 - Core migrations and persistence adapters;
 - package lifecycle/runtime orchestration;
