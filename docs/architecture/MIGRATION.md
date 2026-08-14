@@ -5,7 +5,7 @@ The PLAIK public repository is initialized as a clean snapshot rather than by pu
 ## Included
 
 - domain-neutral Core runtime;
-- Installer, Admin and Storefront application compositions;
+- Installer, Admin and Web application compositions;
 - public specifications required to use and integrate the runtime;
 - protected fallback theme;
 - generic build and packaging tooling required by users.
@@ -24,4 +24,4 @@ The PLAIK public repository is initialized as a clean snapshot rather than by pu
 
 Internal validation remains mandatory before release, but its implementation lives in private `plaik-internal` rather than in the public source repositories.
 
-Public contracts/SDK may temporarily remain in-tree during bootstrap only until the companion `plaik-sdk` release exists; extraction must preserve compatibility.
+Public contracts and SDK live in `plaik-sdk`; the runtime consumes their released or bootstrap-pinned interfaces.
