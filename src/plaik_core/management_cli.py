@@ -32,6 +32,7 @@ from .postgresql_provision import (
     provision_local_postgresql,
 )
 from .requirements import RequirementCheck, SystemRequirements
+from .secret_store import LocalFileSecretProvider
 from .service_control import (
     ServiceControlError,
     finalize_installed_services,
