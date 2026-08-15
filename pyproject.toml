@@ -14,7 +14,7 @@ dependencies = [
   "fastapi==0.138.2",
   "jinja2==3.1.6",
   "packaging==26.3",
-  "plaik-sdk @ git+https://github.com/voronpap/plaik-sdk.git@a95b486358d328e2ff3d3a275790768d85276ad6",
+  "plaik-sdk>=0.2.0,<0.3.0",
   "psycopg[binary]==3.3.4",
   "pydantic==2.13.4",
   "uvicorn[standard]==0.52.1",
@@ -28,9 +28,6 @@ plaik-ops = "plaik_core.cli:main"
 Repository = "https://github.com/voronpap/plaik"
 SDK = "https://github.com/voronpap/plaik-sdk"
 Packages = "https://github.com/voronpap/plaik-packages"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = [
