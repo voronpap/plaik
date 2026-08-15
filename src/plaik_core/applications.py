@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import stat
 import threading
 from collections import Counter
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -205,11 +207,22 @@ def create_installer_app(settings: CoreSettings | None = None) -> FastAPI:
     _copy_routes(core, application, ("/health", "/api/install"))
 
     @application.get("/", response_class=HTMLResponse, include_in_schema=False)
-    def installer_shell(request: Request) -> HTMLResponse:
-        application.state.require_installer_access(request)
+    def installer_shell() -> HTMLResponse:
         if application.state.install_store.read() == InstallState.COMPLETED:
             raise HTTPException(status_code=410, detail="installer is closed")
-        return HTMLResponse(_INSTALLER_HTML, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(
+            _installer_wizard_html(),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "script-src 'unsafe-inline'; img-src 'self' data:; "
+                    "connect-src 'self'; form-action 'self'; base-uri 'none'; "
+                    "frame-ancestors 'none'"
+                ),
+            },
+        )
 
     _instrument(application)
     return application
@@ -1079,6 +1092,17 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
 
     _instrument(application)
     return application
+
+
+def _installer_wizard_html() -> str:
+    path = Path(__file__).resolve().parent.parent / "plaik_installer" / "wizard.html"
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return _INSTALLER_HTML
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return _INSTALLER_HTML
+    return path.read_text(encoding="utf-8")
 
 
 _INSTALLER_HTML = """<!doctype html>

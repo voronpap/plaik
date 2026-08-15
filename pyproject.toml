@@ -39,3 +39,4 @@ packages = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "resources/themes/default" = "plaik_core/_bundled/themes/default"
+"src/plaik_installer/wizard.html" = "plaik_installer/wizard.html"

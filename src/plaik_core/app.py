@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 
 from plaik_contracts import PackageManifest
 
@@ -76,6 +76,24 @@ class TransitionRequest(BaseModel):
 class AdminBootstrapRequest(BaseModel):
     email: str
     password: SecretStr
+
+
+class InstallerCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    migrator_password: SecretStr
+    runtime_password: SecretStr
+    checkpoint_password: SecretStr
+
+    @field_validator(
+        "migrator_password", "runtime_password", "checkpoint_password"
+    )
+    @classmethod
+    def validate_secret_length(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        if len(raw) < 12 or len(raw.encode("utf-8")) > 256:
+            raise ValueError("password length is invalid")
+        return value
 
 
 def create_app(settings: CoreSettings | None = None) -> FastAPI:
@@ -881,6 +899,27 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 installation_id=configuration.installation_id
             )
             return {"configuration": stored.redacted()}
+
+    @application.post(
+        "/api/install/credentials", dependencies=[Depends(require_installer_open)]
+    )
+    def write_install_credentials(request: InstallerCredentialRequest) -> dict:
+        secrets_dir = LocalFileSecretProvider(runtime.secrets_dir)
+        try:
+            secrets_dir.write(
+                "database/migrator", request.migrator_password, version="v1"
+            )
+            secrets_dir.write(
+                "database/runtime", request.runtime_password, version="v1"
+            )
+            secrets_dir.write(
+                "database/checkpoint", request.checkpoint_password, version="v1"
+            )
+        except SecretStoreError:
+            raise HTTPException(
+                status_code=422, detail="credentials could not be stored"
+            ) from None
+        return {"stored": True}
 
     @application.post(
         "/api/install/admin", dependencies=[Depends(require_installer_access)]

@@ -65,6 +65,8 @@ system bootstrap.
 
 The CLI is an adapter over the existing installer API and Core state machine;
 it does not implement a second set of database/theme/admin lifecycle rules.
+The same wizard is also available locally in the browser at
+`http://127.0.0.1:8765/` while the installer service is open.
 The canonical sequence remains:
 
 ```text
