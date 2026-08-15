@@ -46,9 +46,11 @@ plaik-admin.service      127.0.0.1:8081
 Before setup is complete only the installer service is enabled. After setup is
 sealed the installer service is disabled and Web/Admin are enabled.
 
-Release installation is fail-closed: the release must contain one PLAIK wheel
-and the matching `<wheel>.sha256` asset. For development only, a local wheel can
-be supplied with `--wheel` or `PLAIK_WHEEL_FILE`.
+Release installation is fail-closed: the GitHub Release must contain exactly one
+PLAIK runtime wheel, exactly one PLAIK SDK wheel, and a matching `<wheel>.sha256`
+asset for each. For development only, local wheels can be supplied together with
+`--wheel` and `--sdk-wheel`, optionally with `PLAIK_WHEEL_SHA256` and
+`PLAIK_SDK_WHEEL_SHA256`.
 
 ## Stage 2 — PLAIK setup
 
