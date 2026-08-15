@@ -4,7 +4,7 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: pre-release. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
+> Status: 0.2.0 is the first production runtime release. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
