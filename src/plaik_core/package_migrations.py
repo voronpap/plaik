@@ -434,7 +434,7 @@ def validate_package_postgresql_statement(
             raise MigrationError(
                 f"PostgreSQL package migration must not reference {name.lower()}"
             )
-    other_pkg = re.search(r"MODULARIS_PKG_[A-Z0-9_]+", executable)
+    other_pkg = re.search(r"PLAIK_PKG_[A-Z0-9_]+", executable)
     if other_pkg and other_pkg.group(0).lower() != scope.schema:
         raise MigrationError(
             "PostgreSQL package migration must not reference another package schema"
