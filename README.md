@@ -16,6 +16,30 @@ PLAIK is intentionally split into three public repositories:
 
 Private engineering and operations live in **`plaik-internal`** and are not part of the public product repositories. This includes internal test suites, agent instructions, CI/release gates, host-specific deployment, infrastructure configuration and operational evidence.
 
+## Installation
+
+PLAIK uses a two-stage, terminal-first installation flow on supported Linux hosts:
+
+```bash
+curl -fsSL https://github.com/voronpap/plaik/releases/latest/download/install.sh -o install.sh
+sudo sh install.sh
+sudo plaik setup
+```
+
+The first command bootstraps the Linux runtime, private Python environment and systemd services. Domain, database, administrator and theme configuration belongs to the second `plaik setup` stage. The setup command is resumable and uses the same Core installer state machine as the Installer application.
+
+Operational lifecycle commands include:
+
+```bash
+plaik status
+plaik doctor
+sudo plaik reset
+sudo plaik uninstall
+sudo plaik uninstall --purge --yes
+```
+
+See [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md) for the installation contract, non-interactive TOML setup and reset/uninstall safety rules.
+
 ## Core acceptance boundary
 
 **Core 0.2 platform-kernel acceptance** covers the domain-neutral runtime mechanisms, package lifecycle, migrations, identity/session boundaries, audit/integrity, backup/restore contracts, extension runtime, Installer/Admin/Web compositions and the public SDK boundary. Business-domain packages, including commerce modules, and host-specific production operations remain separate scopes and do not redefine Core completion.

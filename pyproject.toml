@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
+plaik = "plaik_core.management_cli:main"
 plaik-ops = "plaik_core.cli:main"
 
 [project.urls]

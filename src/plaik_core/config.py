@@ -49,7 +49,22 @@ def _installed_data_dir() -> Path:
     return home / ".local" / "share" / "plaik"
 
 
+def _configured_data_dir() -> Path | None:
+    """Return the deployment-owned data root when explicitly configured."""
+
+    value = os.environ.get("PLAIK_DATA_DIR")
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("PLAIK_DATA_DIR must be an absolute path")
+    return candidate
+
+
 def _default_data_dir() -> Path:
+    configured = _configured_data_dir()
+    if configured is not None:
+        return configured
     if _SOURCE_REPOSITORY_ROOT is not None:
         return _SOURCE_REPOSITORY_ROOT / "data"
     return _installed_data_dir()
@@ -89,6 +104,8 @@ class CoreSettings:
     admin_path: str = field(default_factory=_admin_path_from_environment)
 
     def __post_init__(self) -> None:
+        if not self.data_dir.is_absolute():
+            raise ValueError("PLAIK data directory must be absolute")
         if not _ADMIN_PATH.fullmatch(self.admin_path):
             raise ValueError("invalid Admin path")
         if self.admin_path in _RESERVED_ADMIN_PATHS:
