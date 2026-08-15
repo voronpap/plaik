@@ -82,16 +82,25 @@ persisted installer state.
 
 ### Interactive setup
 
-Production setup asks for:
+Production setup first shows detected host state (PostgreSQL listeners,
+inspectable local databases and PLAIK backup artifacts). It then asks for:
 
 - domain (stored as the production HTTPS public URL);
 - locale and timezone;
-- PostgreSQL endpoint/database;
+- PostgreSQL source: `use-detected`, `create`, `manual` or `restore`;
+- PostgreSQL endpoint/database, including the port;
 - distinct migration, runtime and checkpoint PostgreSQL identities;
 - database passwords, written to the PLAIK local secret provider without being
   stored in installer configuration;
 - first administrator email and password;
 - default theme activation.
+
+`use-detected` selects an empty local `plaik` database when one is visible.
+`create` provisions an empty local loopback database plus the three production
+roles through the host `postgres` peer identity. It refuses occupied databases,
+Docker listeners without local peer access, and foreign SQL dumps. `restore` is
+rejected: dump restore is a separate operational procedure, not Stage 2 setup.
+`manual` lets you enter host, port and database yourself.
 
 SQLite is accepted only in development/reference modes, matching the Core
 installer configuration contract.
@@ -124,6 +133,8 @@ username = "plaik_migrator"
 runtime_username = "plaik_runtime"
 checkpoint_username = "plaik_checkpoint"
 ssl_mode = "require"
+# source = "create"   # provision empty local DB+roles when none exists
+# provision = true    # same as source = "create"
 password_env = "PLAIK_DB_MIGRATOR_PASSWORD"
 runtime_password_env = "PLAIK_DB_RUNTIME_PASSWORD"
 checkpoint_password_env = "PLAIK_DB_CHECKPOINT_PASSWORD"
