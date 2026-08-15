@@ -16,6 +16,12 @@ PLAIK is intentionally split into three public repositories:
 
 Private engineering and operations live in **`plaik-internal`** and are not part of the public product repositories. This includes internal test suites, agent instructions, CI/release gates, host-specific deployment, infrastructure configuration and operational evidence.
 
+## Core acceptance boundary
+
+**Core 0.2 platform-kernel acceptance** covers the domain-neutral runtime mechanisms, package lifecycle, migrations, identity/session boundaries, audit/integrity, backup/restore contracts, extension runtime, Installer/Admin/Web compositions and the public SDK boundary. Business-domain packages and host-specific production operations remain separate scopes and do not redefine Core completion.
+
+The private acceptance suite is the authoritative regression/security gate for this boundary. Public release readiness additionally requires the public repositories to remain free of legacy product namespaces and deployment-specific private evidence.
+
 ## Architecture
 
 ```text
