@@ -149,15 +149,43 @@ def provision_local_postgresql(
         f"{runtime_role}, {checkpoint_role};\n"
         "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
         f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
-        f"GRANT USAGE ON SCHEMAS TO {runtime_role}, {checkpoint_role};\n"
+        f"GRANT USAGE ON SCHEMAS TO {runtime_role};\n"
         f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
         "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "
-        f"{runtime_role}, {checkpoint_role};\n"
+        f"{runtime_role};\n"
         f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
         "GRANT USAGE, SELECT ON SEQUENCES TO "
-        f"{runtime_role}, {checkpoint_role};"
+        f"{runtime_role};"
     )
     _psql(execute, port, database, grant_sql)
+
+
+def restricted_identity_grants(runtime_role: str, checkpoint_role: str) -> tuple[str, ...]:
+    """Return migrator-owned grants that keep checkpoint off runtime tables.
+
+    Checkpoint receives USAGE on ``plaik_core`` and SELECT/INSERT only on
+    ``plaik_integrity_checkpoints``. Runtime receives DML on existing Core
+    objects. Future migrator tables follow the runtime-only default privileges
+    installed during local provision.
+    """
+
+    if any(IDENTIFIER.fullmatch(value) is None for value in (runtime_role, checkpoint_role)):
+        raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
+    if runtime_role == checkpoint_role:
+        raise PostgreSQLProvisionError("PostgreSQL database and roles must be distinct")
+    return (
+        f"GRANT USAGE ON SCHEMA plaik_core TO {runtime_role}, {checkpoint_role}",
+        f"GRANT USAGE ON SCHEMA plaik_meta TO {runtime_role}",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA plaik_core TO {runtime_role}",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA plaik_meta TO {runtime_role}",
+        f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA plaik_core TO {runtime_role}",
+        f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA plaik_meta TO {runtime_role}",
+        f"GRANT SELECT, INSERT ON TABLE plaik_core.plaik_integrity_checkpoints TO {checkpoint_role}",
+        (
+            "REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
+            f"ON TABLE plaik_core.plaik_integrity_checkpoints FROM {checkpoint_role}"
+        ),
+    )
 
 
 def _existing_roles(
