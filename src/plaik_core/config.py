@@ -14,23 +14,15 @@ _INSTALLER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
 
 
 def _source_repository_root() -> Path | None:
-    """Recognize the checked-out monorepo layout without assuming it in wheels."""
+    """Recognize the checked-out PLAIK runtime repository layout."""
 
     source_directory = PACKAGE_ROOT.parent
-    core_directory = source_directory.parent
-    platform_directory = core_directory.parent
-    if (
-        source_directory.name != "src"
-        or core_directory.name != "core"
-        or platform_directory.name != "platform"
-    ):
+    if source_directory.name != "src":
         return None
-    candidate = platform_directory.parent
+    candidate = source_directory.parent
     if not (candidate / "pyproject.toml").is_file():
         return None
-    if not (
-        candidate / "extensions" / "themes" / "default" / "manifest.json"
-    ).is_file():
+    if not (candidate / "resources" / "themes" / "default" / "manifest.json").is_file():
         return None
     return candidate
 
@@ -65,25 +57,23 @@ def _default_data_dir() -> Path:
 
 def _default_themes_dir() -> Path:
     if _SOURCE_REPOSITORY_ROOT is not None:
-        return _SOURCE_REPOSITORY_ROOT / "extensions" / "themes"
+        return _SOURCE_REPOSITORY_ROOT / "resources" / "themes"
     return PACKAGE_ROOT / "_bundled" / "themes"
 
 
 def _default_modules_dir() -> Path:
-    if _SOURCE_REPOSITORY_ROOT is not None:
-        return _SOURCE_REPOSITORY_ROOT / "extensions" / "modules"
     return _default_data_dir() / "extensions" / "modules"
 
 
 def _installer_token_from_environment() -> str | None:
     """Load the bootstrap token without copying it into diagnostics or repr."""
 
-    value = os.environ.get("MODULARIS_INSTALLER_TOKEN")
+    value = os.environ.get("PLAIK_INSTALLER_TOKEN")
     return value if value else None
 
 
 def _admin_path_from_environment() -> str:
-    return os.environ.get("MODULARIS_ADMIN_PATH") or "/control-center"
+    return os.environ.get("PLAIK_ADMIN_PATH") or "/control-center"
 
 
 @dataclass(frozen=True, slots=True)
