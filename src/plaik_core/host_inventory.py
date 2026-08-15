@@ -107,6 +107,24 @@ class HostInventory:
                 return item.name
         return None
 
+    def public_inventory(self) -> dict[str, object]:
+        suggested = None
+        listener = self.suggested_listener
+        if listener is not None and self.suggested_database:
+            suggested = {
+                "host": listener.host,
+                "port": listener.port,
+                "database": self.suggested_database,
+            }
+        return {
+            "suggested": suggested,
+            "create_supported": any(
+                item.process == "postgres" and item.host in {"127.0.0.1", "::1"}
+                for item in self.listeners
+            ),
+            "restore_blocked": True,
+        }
+
     def observations(self) -> tuple[RequirementCheck, ...]:
         if self.listeners:
             listener_detail = "; ".join(

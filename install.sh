@@ -5,7 +5,9 @@ PLAIK_RUNTIME_DIR="${PLAIK_RUNTIME_DIR:-/opt/plaik}"
 PLAIK_DATA_DIR="${PLAIK_DATA_DIR:-/var/lib/plaik}"
 PLAIK_CONFIG_DIR="${PLAIK_CONFIG_DIR:-/etc/plaik}"
 PLAIK_LOG_DIR="${PLAIK_LOG_DIR:-/var/log/plaik}"
-PLAIK_SERVICE_USER="${PLAIK_SERVICE_USER:-plaik}"
+PLAIK_INSTALLER_USER="${PLAIK_INSTALLER_USER:-plaik-installer}"
+PLAIK_ADMIN_USER="${PLAIK_ADMIN_USER:-plaik-admin}"
+PLAIK_PUBLIC_USER="${PLAIK_PUBLIC_USER:-plaik-public}"
 PLAIK_UV_VERSION="${PLAIK_UV_VERSION:-0.12.3}"
 PLAIK_RELEASE_REPOSITORY="${PLAIK_RELEASE_REPOSITORY:-voronpap/plaik}"
 PLAIK_RELEASE_TAG="${PLAIK_RELEASE_TAG:-}"
@@ -13,6 +15,9 @@ PLAIK_WHEEL_FILE="${PLAIK_WHEEL_FILE:-}"
 PLAIK_WHEEL_SHA256="${PLAIK_WHEEL_SHA256:-}"
 PLAIK_SDK_WHEEL_FILE="${PLAIK_SDK_WHEEL_FILE:-}"
 PLAIK_SDK_WHEEL_SHA256="${PLAIK_SDK_WHEEL_SHA256:-}"
+PLAIK_MAX_WHEEL_BYTES="${PLAIK_MAX_WHEEL_BYTES:-83886080}"
+PLAIK_MAX_CHECKSUM_BYTES="${PLAIK_MAX_CHECKSUM_BYTES:-8192}"
+PLAIK_MAX_UV_BYTES="${PLAIK_MAX_UV_BYTES:-41943040}"
 FORCE=0
 
 usage() {
@@ -20,7 +25,8 @@ usage() {
 Usage: sudo ./install.sh [--force] [--wheel /path/to/plaik.whl --sdk-wheel /path/to/plaik_sdk.whl]
 
 System bootstrap only. It installs the PLAIK runtime and systemd services.
-Domain, database and administrator configuration happens later with:
+Stage 2 uses the local web installer at http://127.0.0.1:8765/
+CLI remains available as headless fallback:
 
     sudo plaik setup
 
@@ -50,6 +56,10 @@ while [ "$#" -gt 0 ]; do
             PLAIK_SDK_WHEEL_FILE=$2
             shift 2
             ;;
+        --validate-paths)
+            PLAIK_INSTALL_ACTION=validate-paths
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -61,6 +71,107 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+is_dangerous_root() {
+    case "$1" in
+        /|/etc|/usr|/var|/home|/boot|/root|/proc|/sys|/dev|/run|/opt|/tmp|/mnt|/media|/usr/bin|/usr/lib|/var/lib|/var/log)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+reject_symlink_components() {
+    path=$1
+    prefix=""
+    old_ifs=$IFS
+    IFS=/
+    # shellcheck disable=SC2086
+    set -- $path
+    IFS=$old_ifs
+    for part in "$@"; do
+        [ -n "$part" ] || continue
+        prefix="$prefix/$part"
+        if [ -L "$prefix" ]; then
+            echo "install.sh: refusing symlink path component: $prefix" >&2
+            exit 1
+        fi
+    done
+}
+
+canonicalize_path() {
+    path=$1
+    label=$2
+    case "$path" in
+        /*) ;;
+        *)
+            echo "install.sh: $label must be an absolute path" >&2
+            exit 1
+            ;;
+    esac
+    case "$path" in
+        *..*)
+            echo "install.sh: $label must not contain .." >&2
+            exit 1
+            ;;
+    esac
+    reject_symlink_components "$path"
+    if command -v realpath >/dev/null 2>&1; then
+        path=$(realpath -m "$path")
+    fi
+    if is_dangerous_root "$path"; then
+        echo "install.sh: refusing dangerous $label: $path" >&2
+        exit 1
+    fi
+    printf '%s\n' "$path"
+}
+
+validate_configured_paths() {
+    PLAIK_RUNTIME_DIR=$(canonicalize_path "$PLAIK_RUNTIME_DIR" "PLAIK_RUNTIME_DIR")
+    PLAIK_DATA_DIR=$(canonicalize_path "$PLAIK_DATA_DIR" "PLAIK_DATA_DIR")
+    PLAIK_CONFIG_DIR=$(canonicalize_path "$PLAIK_CONFIG_DIR" "PLAIK_CONFIG_DIR")
+    PLAIK_LOG_DIR=$(canonicalize_path "$PLAIK_LOG_DIR" "PLAIK_LOG_DIR")
+    if [ "$PLAIK_RUNTIME_DIR" = "$PLAIK_DATA_DIR" ] \
+        || [ "$PLAIK_RUNTIME_DIR" = "$PLAIK_CONFIG_DIR" ] \
+        || [ "$PLAIK_RUNTIME_DIR" = "$PLAIK_LOG_DIR" ] \
+        || [ "$PLAIK_DATA_DIR" = "$PLAIK_CONFIG_DIR" ] \
+        || [ "$PLAIK_DATA_DIR" = "$PLAIK_LOG_DIR" ] \
+        || [ "$PLAIK_CONFIG_DIR" = "$PLAIK_LOG_DIR" ]; then
+        echo "install.sh: runtime, data, config and log paths must be distinct" >&2
+        exit 1
+    fi
+}
+
+atomic_switch_release() {
+    new_release=$1
+    current_link=$2
+    [ -d "$new_release" ] || { echo "install.sh: new release is missing" >&2; exit 1; }
+    [ -x "$new_release/venv/bin/plaik" ] || { echo "install.sh: new release is not executable" >&2; exit 1; }
+    tmp_link="${current_link}.new"
+    ln -sfn "$new_release" "$tmp_link"
+    mv -Tf "$tmp_link" "$current_link"
+}
+
+ensure_system_user() {
+    account=$1
+    home=$2
+    if ! getent passwd "$account" >/dev/null 2>&1; then
+        useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$account"
+    fi
+}
+
+if [ "${PLAIK_INSTALL_ACTION:-}" = "validate-paths" ]; then
+    validate_configured_paths
+    echo "paths ok"
+    exit 0
+fi
+
+if [ "${PLAIK_INSTALL_ACTION:-}" = "switch-release" ]; then
+    atomic_switch_release "$PLAIK_INSTALL_NEW_RELEASE" "$PLAIK_INSTALL_CURRENT_LINK"
+    exit 0
+fi
+
+validate_configured_paths
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "install.sh: run as root (sudo ./install.sh)" >&2
@@ -92,7 +203,13 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ -x "$PLAIK_RUNTIME_DIR/venv/bin/plaik" ] && [ "$FORCE" -ne 1 ]; then
+CURRENT_LINK="$PLAIK_RUNTIME_DIR/current"
+if [ -x "$CURRENT_LINK/venv/bin/plaik" ] && [ "$FORCE" -ne 1 ]; then
+    echo "PLAIK runtime is already installed. Use --force to reinstall runtime files." >&2
+    echo "Existing PLAIK data is not modified." >&2
+    exit 1
+fi
+if [ ! -e "$CURRENT_LINK" ] && [ -x "$PLAIK_RUNTIME_DIR/venv/bin/plaik" ] && [ "$FORCE" -ne 1 ]; then
     echo "PLAIK runtime is already installed. Use --force to reinstall runtime files." >&2
     echo "Existing PLAIK data is not modified." >&2
     exit 1
@@ -102,20 +219,15 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends ca-certificates curl git >/dev/null
 
-if ! getent passwd "$PLAIK_SERVICE_USER" >/dev/null 2>&1; then
-    useradd \
-        --system \
-        --user-group \
-        --home-dir "$PLAIK_DATA_DIR" \
-        --shell /usr/sbin/nologin \
-        "$PLAIK_SERVICE_USER"
-fi
+ensure_system_user "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
+ensure_system_user "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
+ensure_system_user "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR"
 
-PLAIK_GROUP=$(id -gn "$PLAIK_SERVICE_USER")
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR"
-install -d -m 0700 -o "$PLAIK_SERVICE_USER" -g "$PLAIK_GROUP" "$PLAIK_DATA_DIR"
-install -d -m 0750 -o root -g "$PLAIK_GROUP" "$PLAIK_CONFIG_DIR"
-install -d -m 0750 -o "$PLAIK_SERVICE_USER" -g "$PLAIK_GROUP" "$PLAIK_LOG_DIR"
+install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/releases"
+install -d -m 0700 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
+install -d -m 0750 -o root -g "$PLAIK_ADMIN_USER" "$PLAIK_CONFIG_DIR"
+install -d -m 0750 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_LOG_DIR"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/bin"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/python"
 
@@ -127,24 +239,42 @@ trap cleanup EXIT HUP INT TERM
 
 UV_BIN="$PLAIK_RUNTIME_DIR/bootstrap/bin/uv"
 if [ ! -x "$UV_BIN" ]; then
-    UV_INSTALLER="$TMP_DIR/uv-install.sh"
-    curl -fsSL \
-        "https://astral.sh/uv/${PLAIK_UV_VERSION}/install.sh" \
-        -o "$UV_INSTALLER"
-    env \
-        UV_UNMANAGED_INSTALL="$PLAIK_RUNTIME_DIR/bootstrap/bin" \
-        UV_NO_MODIFY_PATH=1 \
-        sh "$UV_INSTALLER"
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64) UV_TARGET=x86_64-unknown-linux-gnu ;;
+        aarch64|arm64) UV_TARGET=aarch64-unknown-linux-gnu ;;
+        *)
+            echo "install.sh: unsupported architecture for uv: $ARCH" >&2
+            exit 1
+            ;;
+    esac
+    UV_TAR="uv-${UV_TARGET}.tar.gz"
+    UV_URL="https://github.com/astral-sh/uv/releases/download/${PLAIK_UV_VERSION}/${UV_TAR}"
+    UV_SHA_URL="${UV_URL}.sha256"
+    curl -fsSL --max-filesize "$PLAIK_MAX_UV_BYTES" "$UV_URL" -o "$TMP_DIR/$UV_TAR"
+    curl -fsSL --max-filesize "$PLAIK_MAX_CHECKSUM_BYTES" "$UV_SHA_URL" -o "$TMP_DIR/$UV_TAR.sha256"
+    expected=$(awk 'NF {print $1; exit}' "$TMP_DIR/$UV_TAR.sha256")
+    if ! printf '%s\n' "$expected" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+        echo "install.sh: uv checksum is invalid" >&2
+        exit 1
+    fi
+    actual=$(sha256sum "$TMP_DIR/$UV_TAR" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        echo "install.sh: uv SHA-256 mismatch" >&2
+        exit 1
+    fi
+    tar -xzf "$TMP_DIR/$UV_TAR" -C "$TMP_DIR"
+    UV_EXTRACTED=$(find "$TMP_DIR" -type f -name uv | head -n 1)
+    [ -n "$UV_EXTRACTED" ] || { echo "install.sh: uv binary missing from release archive" >&2; exit 1; }
+    install -m 0755 "$UV_EXTRACTED" "$UV_BIN"
 fi
 
 export UV_PYTHON_INSTALL_DIR="$PLAIK_RUNTIME_DIR/bootstrap/python"
 "$UV_BIN" python install 3.12 >/dev/null
-rm -rf "$PLAIK_RUNTIME_DIR/venv"
-"$UV_BIN" venv --python 3.12 "$PLAIK_RUNTIME_DIR/venv" >/dev/null
-PYTHON_BIN="$PLAIK_RUNTIME_DIR/venv/bin/python"
+BOOTSTRAP_PYTHON=$("$UV_BIN" python find 3.12)
 
 resolve_release_assets() {
-    "$PYTHON_BIN" - "$PLAIK_RELEASE_REPOSITORY" "$PLAIK_RELEASE_TAG" <<'PY'
+    "$BOOTSTRAP_PYTHON" - "$PLAIK_RELEASE_REPOSITORY" "$PLAIK_RELEASE_TAG" <<'PY'
 import json
 import re
 import sys
@@ -166,6 +296,7 @@ except Exception as error:
     raise SystemExit(f"cannot resolve PLAIK release: {type(error).__name__}")
 if release.get("draft"):
     raise SystemExit("PLAIK release is still a draft")
+tag_name = str(release.get("tag_name") or "")
 assets = [item for item in (release.get("assets") or []) if isinstance(item, dict)]
 runtime_pattern = re.compile(r"^plaik-[0-9][A-Za-z0-9._+!-]*-py3-none-any\.whl$")
 sdk_pattern = re.compile(r"^plaik_sdk-[0-9][A-Za-z0-9._+!-]*-py3-none-any\.whl$")
@@ -182,19 +313,25 @@ def pair(wheel):
     checksums = [item for item in assets if item.get("name") == checksum_name]
     if len(checksums) != 1:
         raise SystemExit(f"release is missing checksum asset: {checksum_name}")
+    size = int(wheel.get("size") or 0)
+    if size <= 0 or size > 83886080:
+        raise SystemExit(f"release asset is oversized: {wheel_name}")
     wheel_url = str(wheel.get("browser_download_url", ""))
     checksum_url = str(checksums[0].get("browser_download_url", ""))
     prefix = f"https://github.com/{repository}/releases/download/"
     if not wheel_url.startswith(prefix) or not checksum_url.startswith(prefix):
         raise SystemExit("release asset URL is outside the configured PLAIK repository")
-    return wheel_url, checksum_url
+    return wheel_url, checksum_url, wheel_name
 
 runtime = pair(runtime_wheels[0])
 sdk = pair(sdk_wheels[0])
+print(tag_name)
 print(runtime[0])
 print(runtime[1])
+print(runtime[2])
 print(sdk[0])
 print(sdk[1])
+print(sdk[2])
 PY
 }
 
@@ -204,6 +341,11 @@ verify_local_wheel() {
     label=$3
     if [ ! -f "$path" ]; then
         echo "install.sh: local $label wheel does not exist: $path" >&2
+        exit 1
+    fi
+    size=$(wc -c < "$path")
+    if [ "$size" -gt "$PLAIK_MAX_WHEEL_BYTES" ]; then
+        echo "install.sh: local $label wheel is oversized" >&2
         exit 1
     fi
     if [ -n "$expected" ]; then
@@ -227,8 +369,8 @@ download_verified_wheel() {
     destination=$3
     label=$4
     checksum_path="$destination.sha256"
-    curl -fsSL "$wheel_url" -o "$destination"
-    curl -fsSL --max-filesize 4096 "$checksum_url" -o "$checksum_path"
+    curl -fsSL --max-filesize "$PLAIK_MAX_WHEEL_BYTES" "$wheel_url" -o "$destination"
+    curl -fsSL --max-filesize "$PLAIK_MAX_CHECKSUM_BYTES" "$checksum_url" -o "$checksum_path"
     expected=$(awk 'NF {print $1; exit}' "$checksum_path")
     if ! printf '%s\n' "$expected" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
         echo "install.sh: release $label checksum is invalid" >&2
@@ -241,6 +383,46 @@ download_verified_wheel() {
     fi
 }
 
+verify_wheel_bundle() {
+    "$BOOTSTRAP_PYTHON" - "$1" "$2" "$3" "$4" <<'PY'
+import re
+import sys
+import zipfile
+from email.parser import Parser
+
+runtime_path, sdk_path, expected_tag, expected_runtime_name = sys.argv[1:]
+
+def metadata(path):
+    with zipfile.ZipFile(path) as archive:
+        names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(names) != 1:
+            raise SystemExit(f"wheel METADATA is missing: {path}")
+        return Parser().parsestr(archive.read(names[0]).decode("utf-8"))
+
+runtime = metadata(runtime_path)
+sdk = metadata(sdk_path)
+runtime_version = runtime.get("Version", "")
+sdk_version = sdk.get("Version", "")
+runtime_name = f"plaik-{runtime_version}-py3-none-any.whl"
+if runtime.get("Name") != "plaik" or not runtime_version:
+    raise SystemExit("runtime wheel METADATA version is invalid")
+if expected_runtime_name and expected_runtime_name != runtime_name:
+    raise SystemExit("wheel filename version does not match METADATA")
+tag = expected_tag.lstrip("v")
+if expected_tag and tag != runtime_version:
+    raise SystemExit("release tag/version mismatch")
+if sdk.get("Name") not in {"plaik-sdk", "plaik_sdk"} or not sdk_version:
+    raise SystemExit("SDK wheel METADATA version is invalid")
+requires = " ".join(runtime.get_all("Requires-Dist") or [])
+if "plaik-sdk" not in requires:
+    raise SystemExit("runtime wheel does not declare plaik-sdk compatibility")
+spec = re.search(r"plaik-sdk\s*\(([^)]+)\)", requires) or re.search(r"plaik-sdk([^;]+)", requires)
+if spec is None:
+    raise SystemExit("runtime SDK compatibility range is missing")
+print(runtime_version)
+PY
+}
+
 if [ -n "$PLAIK_WHEEL_FILE" ] || [ -n "$PLAIK_SDK_WHEEL_FILE" ]; then
     if [ -z "$PLAIK_WHEEL_FILE" ] || [ -z "$PLAIK_SDK_WHEEL_FILE" ]; then
         echo "install.sh: local development mode requires both --wheel and --sdk-wheel" >&2
@@ -250,13 +432,17 @@ if [ -n "$PLAIK_WHEEL_FILE" ] || [ -n "$PLAIK_SDK_WHEEL_FILE" ]; then
     verify_local_wheel "$PLAIK_SDK_WHEEL_FILE" "$PLAIK_SDK_WHEEL_SHA256" "SDK"
     WHEEL_PATH=$PLAIK_WHEEL_FILE
     SDK_WHEEL_PATH=$PLAIK_SDK_WHEEL_FILE
+    RELEASE_TAG=${PLAIK_RELEASE_TAG:-local}
+    WHEEL_NAME=$(basename "$WHEEL_PATH")
 else
     ASSET_INFO="$TMP_DIR/assets.txt"
     resolve_release_assets > "$ASSET_INFO"
-    WHEEL_URL=$(sed -n '1p' "$ASSET_INFO")
-    CHECKSUM_URL=$(sed -n '2p' "$ASSET_INFO")
-    SDK_WHEEL_URL=$(sed -n '3p' "$ASSET_INFO")
-    SDK_CHECKSUM_URL=$(sed -n '4p' "$ASSET_INFO")
+    RELEASE_TAG=$(sed -n '1p' "$ASSET_INFO")
+    WHEEL_URL=$(sed -n '2p' "$ASSET_INFO")
+    CHECKSUM_URL=$(sed -n '3p' "$ASSET_INFO")
+    WHEEL_NAME=$(sed -n '4p' "$ASSET_INFO")
+    SDK_WHEEL_URL=$(sed -n '5p' "$ASSET_INFO")
+    SDK_CHECKSUM_URL=$(sed -n '6p' "$ASSET_INFO")
     [ -n "$WHEEL_URL" ] && [ -n "$CHECKSUM_URL" ] \
         && [ -n "$SDK_WHEEL_URL" ] && [ -n "$SDK_CHECKSUM_URL" ] || {
         echo "install.sh: release asset resolution failed" >&2
@@ -268,27 +454,114 @@ else
     download_verified_wheel "$SDK_WHEEL_URL" "$SDK_CHECKSUM_URL" "$SDK_WHEEL_PATH" "SDK"
 fi
 
+RELEASE_VERSION=$(verify_wheel_bundle "$WHEEL_PATH" "$SDK_WHEEL_PATH" "$RELEASE_TAG" "$WHEEL_NAME")
+RELEASE_ID="${RELEASE_VERSION}-$(date -u +%Y%m%d%H%M%S)"
+NEW_RELEASE="$PLAIK_RUNTIME_DIR/releases/${RELEASE_ID}.new"
+rm -rf "$NEW_RELEASE"
+"$UV_BIN" venv --python 3.12 "$NEW_RELEASE/venv" >/dev/null
+PYTHON_BIN="$NEW_RELEASE/venv/bin/python"
 "$UV_BIN" pip install --python "$PYTHON_BIN" "$SDK_WHEEL_PATH" "$WHEEL_PATH" >/dev/null
+"$PYTHON_BIN" -c 'import plaik_core, plaik_installer, plaik_web, plaik_admin' >/dev/null
+READY_RELEASE="$PLAIK_RUNTIME_DIR/releases/$RELEASE_ID"
+mv "$NEW_RELEASE" "$READY_RELEASE"
+atomic_switch_release "$READY_RELEASE" "$CURRENT_LINK"
+PYTHON_BIN="$CURRENT_LINK/venv/bin/python"
 
-ENV_FILE="$PLAIK_CONFIG_DIR/plaik.env"
-if [ ! -f "$ENV_FILE" ]; then
-    INSTALLER_TOKEN=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(48))')
+SHARED_ENV="$PLAIK_CONFIG_DIR/plaik.env"
+INSTALLER_ENV="$PLAIK_CONFIG_DIR/installer.env"
+WEB_ENV="$PLAIK_CONFIG_DIR/web.env"
+ADMIN_ENV="$PLAIK_CONFIG_DIR/admin.env"
+if [ ! -f "$SHARED_ENV" ]; then
     umask 027
-    cat > "$ENV_FILE" <<EOF
+    cat > "$SHARED_ENV" <<EOF
 PLAIK_DATA_DIR=$PLAIK_DATA_DIR
-PLAIK_INSTALLER_TOKEN=$INSTALLER_TOKEN
 PLAIK_ADMIN_PATH=/control-center
 EOF
 fi
-chown root:"$PLAIK_GROUP" "$ENV_FILE"
-chmod 0640 "$ENV_FILE"
+if grep -q '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" 2>/dev/null && [ ! -f "$INSTALLER_ENV" ]; then
+    umask 027
+    grep '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" > "$INSTALLER_ENV"
+    tmp_env="$SHARED_ENV.tmp"
+    grep -v '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" > "$tmp_env"
+    mv "$tmp_env" "$SHARED_ENV"
+fi
+if [ ! -f "$INSTALLER_ENV" ]; then
+    INSTALLER_TOKEN=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(48))')
+    umask 027
+    printf 'PLAIK_INSTALLER_TOKEN=%s\n' "$INSTALLER_TOKEN" > "$INSTALLER_ENV"
+fi
+if [ ! -f "$WEB_ENV" ]; then
+    umask 027
+    cat > "$WEB_ENV" <<EOF
+PLAIK_DATA_DIR=$PLAIK_DATA_DIR
+PLAIK_ADMIN_PATH=/control-center
+PLAIK_SECRETS_DIR=$PLAIK_CONFIG_DIR/web-secrets
+EOF
+fi
+if [ ! -f "$ADMIN_ENV" ]; then
+    umask 027
+    cat > "$ADMIN_ENV" <<EOF
+PLAIK_DATA_DIR=$PLAIK_DATA_DIR
+PLAIK_ADMIN_PATH=/control-center
+EOF
+fi
+chown root:"$PLAIK_ADMIN_USER" "$SHARED_ENV"
+chmod 0640 "$SHARED_ENV"
+chown root:"$PLAIK_INSTALLER_USER" "$INSTALLER_ENV"
+chmod 0640 "$INSTALLER_ENV"
+chown root:"$PLAIK_PUBLIC_USER" "$WEB_ENV"
+chmod 0640 "$WEB_ENV"
+chown root:"$PLAIK_ADMIN_USER" "$ADMIN_ENV"
+chmod 0640 "$ADMIN_ENV"
+install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_CONFIG_DIR/web-secrets"
 
-write_unit() {
+COMMON_HARDENING=$(cat <<'EOF'
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RemoveIPC=yes
+MemoryDenyWriteExecute=yes
+DevicePolicy=closed
+TasksMax=128
+LimitNOFILE=4096
+EOF
+)
+
+# Units are generated with separate identities:
+#   User=$PLAIK_INSTALLER_USER
+#   User=$PLAIK_ADMIN_USER
+#   User=$PLAIK_PUBLIC_USER
+write_app_unit() {
     UNIT_PATH=$1
-    ENTRYPOINT=$2
-    PORT=$3
-    DESCRIPTION=$4
-    cat > "$UNIT_PATH" <<EOF
+    USER_NAME=$2
+    GROUP_NAME=$3
+    ENV_FILES=$4
+    ENTRYPOINT=$5
+    PORT=$6
+    DESCRIPTION=$7
+    EXTRA=$8
+    MEMORY=$9
+    {
+        cat <<EOF
 [Unit]
 Description=$DESCRIPTION
 After=network-online.target
@@ -296,38 +569,88 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$PLAIK_SERVICE_USER
-Group=$PLAIK_GROUP
-EnvironmentFile=$ENV_FILE
+User=$USER_NAME
+Group=$GROUP_NAME
+$ENV_FILES
 WorkingDirectory=$PLAIK_DATA_DIR
-ExecStart=$PLAIK_RUNTIME_DIR/venv/bin/uvicorn $ENTRYPOINT --host 127.0.0.1 --port $PORT --workers 1
-Restart=on-failure
-RestartSec=2
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-LockPersonality=true
-RestrictSUIDSGID=true
+ExecStart=$CURRENT_LINK/venv/bin/uvicorn $ENTRYPOINT --host 127.0.0.1 --port $PORT --workers 1
+$COMMON_HARDENING
+MemoryMax=$MEMORY
 ReadOnlyPaths=$PLAIK_RUNTIME_DIR $PLAIK_CONFIG_DIR
 ReadWritePaths=$PLAIK_DATA_DIR $PLAIK_LOG_DIR
+$EXTRA
+[Install]
+WantedBy=multi-user.target
+EOF
+    } > "$UNIT_PATH"
+    chmod 0644 "$UNIT_PATH"
+}
+
+write_app_unit /etc/systemd/system/plaik-installer.service \
+    "$PLAIK_INSTALLER_USER" "$PLAIK_INSTALLER_USER" \
+    "EnvironmentFile=$SHARED_ENV
+EnvironmentFile=$INSTALLER_ENV" \
+    plaik_installer.app:app 8765 "PLAIK setup service" "" "512M"
+
+write_app_unit /etc/systemd/system/plaik-admin.service \
+    "$PLAIK_ADMIN_USER" "$PLAIK_ADMIN_USER" \
+    "EnvironmentFile=$SHARED_ENV
+EnvironmentFile=$ADMIN_ENV" \
+    plaik_admin.app:app 8081 "PLAIK Admin" "" "512M"
+
+PUBLIC_EXTRA=$(cat <<EOF
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/secrets -$PLAIK_DATA_DIR/identities.json -$PLAIK_DATA_DIR/sessions.json -$PLAIK_DATA_DIR/audit.jsonl -$PLAIK_DATA_DIR/installer-operations.jsonl -$PLAIK_DATA_DIR/package-inbox -$PLAIK_DATA_DIR/package-transactions
+EOF
+)
+write_app_unit /etc/systemd/system/plaik-web.service \
+    "$PLAIK_PUBLIC_USER" "$PLAIK_PUBLIC_USER" \
+    "EnvironmentFile=$WEB_ENV" \
+    plaik_web.app:app 8080 "PLAIK Web" "$PUBLIC_EXTRA" "256M"
+
+write_oneshot() {
+    cat > "$1" <<EOF
+[Unit]
+Description=$2
+
+[Service]
+Type=oneshot
+EnvironmentFile=$SHARED_ENV
+ExecStart=$CURRENT_LINK/venv/bin/plaik privileged $3
+EOF
+    chmod 0644 "$1"
+}
+
+write_oneshot /etc/systemd/system/plaik-finalize.service "PLAIK installer service finalization" finalize-services
+write_oneshot /etc/systemd/system/plaik-provision.service "PLAIK installer database provisioning" provision-database
+
+cat > /etc/systemd/system/plaik-finalize.path <<EOF
+[Unit]
+Description=PLAIK installer finalization trigger
+
+[Path]
+PathExists=$PLAIK_DATA_DIR/run/finalize.request
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$UNIT_PATH"
-}
+cat > /etc/systemd/system/plaik-provision.path <<EOF
+[Unit]
+Description=PLAIK installer provisioning trigger
 
-write_unit /etc/systemd/system/plaik-installer.service plaik_installer.app:app 8765 "PLAIK setup service"
-write_unit /etc/systemd/system/plaik-web.service plaik_web.app:app 8080 "PLAIK Web"
-write_unit /etc/systemd/system/plaik-admin.service plaik_admin.app:app 8081 "PLAIK Admin"
+[Path]
+PathExists=$PLAIK_DATA_DIR/run/provision.request
 
-ln -sfn "$PLAIK_RUNTIME_DIR/venv/bin/plaik" /usr/local/bin/plaik
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 /etc/systemd/system/plaik-finalize.path /etc/systemd/system/plaik-provision.path
+
+ln -sfn "$CURRENT_LINK/venv/bin/plaik" /usr/local/bin/plaik
 systemctl daemon-reload
+systemctl enable plaik-finalize.path plaik-provision.path >/dev/null
 
 if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
     && grep -Eq '"state"[[:space:]]*:[[:space:]]*"completed"' "$PLAIK_DATA_DIR/install-state.json"; then
@@ -339,6 +662,5 @@ else
     systemctl enable --now plaik-installer.service >/dev/null
     echo "PLAIK system bootstrap completed."
     echo
-    echo "Next step:"
-    echo "  sudo plaik setup"
+    echo "Next step: open http://127.0.0.1:8765/ or run sudo plaik setup"
 fi

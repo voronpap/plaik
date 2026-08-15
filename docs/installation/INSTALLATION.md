@@ -1,6 +1,8 @@
 # PLAIK installation
 
-PLAIK uses a two-stage, terminal-first installation model.
+PLAIK uses a two-stage installation model. Stage 2 for a normal operator is
+the local web installer. `sudo plaik setup` remains as headless automation
+and recovery fallback.
 
 ## Stage 1 — system bootstrap
 
@@ -29,18 +31,19 @@ sudo sh install.sh
 The bootstrap creates:
 
 ```text
-/opt/plaik/        runtime, bootstrap tooling and virtual environment
-/etc/plaik/        host configuration and installer token
-/var/lib/plaik/    persistent PLAIK data
-/var/log/plaik/    service logs/runtime log target
+/opt/plaik/current     atomic runtime symlink
+/opt/plaik/releases    verified runtime versions
+/etc/plaik/            host configuration; installer token only in installer.env
+/var/lib/plaik/        persistent PLAIK data
+/var/log/plaik/        service logs/runtime log target
 ```
 
-and installs three loopback-only systemd services:
+and installs loopback-only systemd services with separate Unix identities:
 
 ```text
-plaik-installer.service  127.0.0.1:8765
-plaik-web.service        127.0.0.1:8080
-plaik-admin.service      127.0.0.1:8081
+plaik-installer.service  127.0.0.1:8765  User=plaik-installer
+plaik-web.service        127.0.0.1:8080  User=plaik-public
+plaik-admin.service      127.0.0.1:8081  User=plaik-admin
 ```
 
 Before setup is complete only the installer service is enabled. After setup is
@@ -54,7 +57,13 @@ asset for each. For development only, local wheels can be supplied together with
 
 ## Stage 2 — PLAIK setup
 
-Run:
+Open the local web installer:
+
+```text
+http://127.0.0.1:8765/
+```
+
+The CLI remains a fallback:
 
 ```bash
 sudo plaik setup
@@ -65,8 +74,8 @@ system bootstrap.
 
 The CLI is an adapter over the existing installer API and Core state machine;
 it does not implement a second set of database/theme/admin lifecycle rules.
-The same wizard is also available locally in the browser at
-`http://127.0.0.1:8765/` while the installer service is open.
+The web wizard uses the same API. Both remain resumable from persisted Core
+state. After COMPLETED they request the same privileged service finalization.
 The canonical sequence remains:
 
 ```text

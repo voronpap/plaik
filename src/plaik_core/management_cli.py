@@ -32,14 +32,21 @@ from .postgresql_provision import (
     provision_local_postgresql,
 )
 from .requirements import RequirementCheck, SystemRequirements
-from .secret_store import LocalFileSecretProvider
+from .service_control import (
+    ServiceControlError,
+    finalize_installed_services,
+    installer_env_file,
+    run_privileged_action,
+)
 
 
 class PlaikCLIError(RuntimeError):
     """A user-facing PLAIK management command failed safely."""
 
 
-_SERVICE_USER = os.environ.get("PLAIK_SERVICE_USER", "plaik")
+_SERVICE_USER = os.environ.get("PLAIK_SERVICE_USER", "plaik-installer")
+_ADMIN_USER = os.environ.get("PLAIK_ADMIN_USER", "plaik-admin")
+_PUBLIC_USER = os.environ.get("PLAIK_PUBLIC_USER", "plaik-public")
 _INSTALLER_URL = os.environ.get("PLAIK_INSTALLER_URL", "http://127.0.0.1:8765")
 
 
@@ -67,6 +74,12 @@ def _log_dir() -> Path:
 
 def _env_file() -> Path:
     return Path(os.environ.get("PLAIK_ENV_FILE", str(_config_dir() / "plaik.env")))
+
+
+def _installer_env_file() -> Path:
+    return Path(
+        os.environ.get("PLAIK_INSTALLER_ENV_FILE", str(installer_env_file()))
+    )
 
 
 def _systemd_dir() -> Path:
@@ -172,13 +185,10 @@ def _ensure_installer_service() -> None:
 
 
 def _finalize_services() -> None:
-    if not _is_real_system_root():
-        return
-    for name in ("plaik-web.service", "plaik-admin.service"):
-        if _service_exists(name):
-            _systemctl("enable", "--now", name)
-    if _service_exists("plaik-installer.service"):
-        _systemctl("disable", "--now", "plaik-installer.service", check=False)
+    try:
+        finalize_installed_services()
+    except ServiceControlError as error:
+        raise PlaikCLIError(str(error)) from None
 
 
 class _InstallerClient:
@@ -245,10 +255,13 @@ class _InstallerClient:
 def _installer_token() -> str:
     value = os.environ.get("PLAIK_INSTALLER_TOKEN")
     if not value:
-        value = _load_env_file().get("PLAIK_INSTALLER_TOKEN")
+        value = _load_env_file(_installer_env_file()).get("PLAIK_INSTALLER_TOKEN")
+    if not value:
+        value = _load_env_file(_env_file()).get("PLAIK_INSTALLER_TOKEN")
     if not value:
         raise PlaikCLIError(
-            f"installer token is unavailable; expected PLAIK_INSTALLER_TOKEN or {_env_file()}"
+            "installer token is unavailable; expected PLAIK_INSTALLER_TOKEN or "
+            f"{_installer_env_file()}"
         )
     return value
 
@@ -964,6 +977,10 @@ def _uninstall_plan(settings: CoreSettings, *, purge: bool) -> list[Path]:
         _systemd_dir() / "plaik-installer.service",
         _systemd_dir() / "plaik-web.service",
         _systemd_dir() / "plaik-admin.service",
+        _systemd_dir() / "plaik-finalize.service",
+        _systemd_dir() / "plaik-finalize.path",
+        _systemd_dir() / "plaik-provision.service",
+        _systemd_dir() / "plaik-provision.path",
     ]
     if purge:
         paths.extend(
@@ -1012,9 +1029,14 @@ def _uninstall(args: argparse.Namespace) -> int:
         _remove_tree(path)
     _systemctl("daemon-reload", check=False)
 
-    if args.purge and _is_real_system_root() and _service_user_exists():
-        if shutil.which("userdel"):
-            _run(["userdel", _SERVICE_USER], check=False)
+    if args.purge and _is_real_system_root():
+        for account in (_SERVICE_USER, _ADMIN_USER, _PUBLIC_USER):
+            try:
+                pwd.getpwnam(account)
+            except KeyError:
+                continue
+            if shutil.which("userdel"):
+                _run(["userdel", account], check=False)
     print("PLAIK uninstalled." + (" Local PLAIK data purged." if args.purge else " Data preserved."))
     return 0
 
@@ -1030,6 +1052,16 @@ def _secret_write(args: argparse.Namespace) -> int:
         value,
         version=args.version,
     )
+    return 0
+
+
+def _privileged(args: argparse.Namespace) -> int:
+    _apply_install_environment()
+    _require_root()
+    try:
+        run_privileged_action(args.action)
+    except ServiceControlError as error:
+        raise PlaikCLIError(str(error)) from None
     return 0
 
 
@@ -1067,6 +1099,13 @@ def _parser() -> argparse.ArgumentParser:
     hidden.add_argument("--key", required=True)
     hidden.add_argument("--version", required=True)
     hidden.set_defaults(handler=_secret_write)
+
+    privileged = commands.add_parser("privileged", help=argparse.SUPPRESS)
+    privileged.add_argument(
+        "action",
+        choices=("finalize-services", "provision-database"),
+    )
+    privileged.set_defaults(handler=_privileged)
     return parser
 
 
