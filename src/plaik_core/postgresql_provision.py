@@ -105,20 +105,26 @@ def provision_local_postgresql(
         raise PostgreSQLProvisionError(
             "database already exists; choose use-detected or another name"
         )
+    existing_roles = _existing_roles(
+        execute,
+        port,
+        (migrator_role, runtime_role, checkpoint_role),
+    )
+    if existing_roles:
+        raise PostgreSQLProvisionError(
+            "refusing to reuse existing PostgreSQL roles"
+        )
     role_sql = []
     for role, password, limit in zip(
         (migrator_role, runtime_role, checkpoint_role),
         passwords,
         (5, 30, 5),
+        strict=True,
     ):
-        role_sql.extend(
-            (
-                "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles "
-                f"WHERE rolname={literal(role)}) THEN CREATE ROLE {role} "
-                "LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                "NOREPLICATION NOBYPASSRLS; END IF; END $$;",
-                f"ALTER ROLE {role} CONNECTION LIMIT {limit} PASSWORD {literal(password)};",
-            )
+        role_sql.append(
+            f"CREATE ROLE {role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+            f"NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT {limit} "
+            f"PASSWORD {literal(password)};"
         )
     _psql(execute, port, "postgres", "\n".join(role_sql))
     createdb = execute(
@@ -137,15 +143,54 @@ def provision_local_postgresql(
     )
     if createdb[0] != 0:
         raise PostgreSQLProvisionError("PostgreSQL database creation failed")
-    _psql(
-        execute,
-        port,
-        database,
+    grant_sql = (
         f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
         f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
         f"{runtime_role}, {checkpoint_role};\n"
-        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;",
+        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
+        f"GRANT USAGE ON SCHEMAS TO {runtime_role}, {checkpoint_role};\n"
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "
+        f"{runtime_role}, {checkpoint_role};\n"
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
+        "GRANT USAGE, SELECT ON SEQUENCES TO "
+        f"{runtime_role}, {checkpoint_role};"
     )
+    _psql(execute, port, database, grant_sql)
+
+
+def _existing_roles(
+    runner: CommandRunner, port: int, roles: tuple[str, str, str]
+) -> tuple[str, ...]:
+    listed = ", ".join(literal(role) for role in roles)
+    code, output = runner(
+        [
+            "runuser",
+            "-u",
+            "postgres",
+            "--",
+            "psql",
+            "--no-psqlrc",
+            "--set=ON_ERROR_STOP=1",
+            "-At",
+            "-p",
+            str(port),
+            "--dbname",
+            "postgres",
+            "--command",
+            "SELECT rolname FROM pg_roles WHERE rolname IN "
+            f"({listed}) ORDER BY rolname;",
+        ]
+    )
+    if code != 0:
+        raise PostgreSQLProvisionError("PostgreSQL role inspection failed")
+    found = tuple(
+        line.strip()
+        for line in (output or "").splitlines()
+        if line.strip()
+    )
+    return found
 
 
 def _psql(runner: CommandRunner, port: int, database: str, sql: str) -> None:
