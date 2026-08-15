@@ -1,8 +1,9 @@
 """Privileged host finalization shared by CLI setup and the web installer.
 
 The installer process is unprivileged and must not run systemd itself. It
-writes a bounded request file; a root oneshot or an already-root CLI command
-performs the same finalization function.
+writes a bounded request file. An already-active systemd path unit starts the
+root oneshot, or an already-root CLI command performs the same function
+in-process. The unprivileged installer never calls ``systemctl start``.
 """
 
 from __future__ import annotations
@@ -135,7 +136,6 @@ def _systemctl(*arguments: str, check: bool = True) -> subprocess.CompletedProce
 
 def _write_request(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o750)
     path.write_text(payload, encoding="utf-8")
     os.chmod(path, 0o600)
 
@@ -183,6 +183,147 @@ def publish_public_runtime_secret(settings: CoreSettings) -> None:
     destination.write("database/runtime", secret, version="v1")
 
 
+_PUBLIC_READ_FILES = (
+    "install-state.json",
+    "installer-config.json",
+    "active-themes.json",
+    "packages.json",
+    "package-permissions.json",
+    "settings.json",
+)
+_PUBLIC_READ_DIRS = ("installed-packages",)
+_PRIVATE_NAMES = frozenset(
+    {
+        "secrets",
+        "identities.json",
+        "sessions.json",
+        "audit.jsonl",
+        "installer-operations.jsonl",
+        "package-inbox",
+        "package-transactions",
+        "platform.sqlite3",
+        "trusted-package-signing-keys.json",
+        "trusted-release-signing-keys.json",
+        "jobs.json",
+        "maintenance-state.json",
+        "installer-operation",
+        "extension-operation",
+        "extensions",
+    }
+)
+_SKIP_HANDOFF = frozenset({"public", "run"})
+
+
+def public_state_dir(settings: CoreSettings) -> Path:
+    return settings.data_dir / "public"
+
+
+def apply_identity_isolation(settings: CoreSettings) -> None:
+    """Split installer/admin/public state so the data root is not shared-writable."""
+
+    data = settings.data_dir
+    data.mkdir(parents=True, exist_ok=True)
+    public = public_state_dir(settings)
+    run = request_dir(settings)
+    public.mkdir(parents=True, exist_ok=True)
+    run.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(public, 0o750)
+        os.chmod(run, 0o770)
+    except OSError:
+        pass
+    geteuid = getattr(os, "geteuid", lambda: None)
+    if geteuid() != 0:
+        return
+    import pwd
+
+    installer_name = os.environ.get("PLAIK_INSTALLER_USER", "plaik-installer")
+    admin_name = os.environ.get("PLAIK_ADMIN_USER", "plaik-admin")
+    public_name = os.environ.get("PLAIK_PUBLIC_USER", "plaik-public")
+    try:
+        installer = pwd.getpwnam(installer_name)
+        admin = pwd.getpwnam(admin_name)
+        public_user = pwd.getpwnam(public_name)
+    except KeyError:
+        raise ServiceControlError("required PLAIK service identities are missing") from None
+
+    os.chown(data, 0, admin.pw_gid)
+    os.chmod(data, 0o771)
+    os.chown(run, 0, installer.pw_gid)
+    os.chmod(run, 0o770)
+    os.chown(public, public_user.pw_uid, public_user.pw_gid)
+    os.chmod(public, 0o750)
+
+    for child in data.iterdir():
+        if child.name in _SKIP_HANDOFF:
+            continue
+        if child.name in _PRIVATE_NAMES:
+            _chown_tree(child, admin.pw_uid, admin.pw_gid)
+            _chmod_private(child)
+            continue
+        if child.name in _PUBLIC_READ_FILES and child.is_file():
+            os.chown(child, admin.pw_uid, public_user.pw_gid)
+            os.chmod(child, 0o640)
+            continue
+        if child.name in _PUBLIC_READ_DIRS:
+            _chmod_public_readable_tree(child, admin.pw_uid, public_user.pw_gid)
+            _try_setfacl_public_read(child, public_name)
+            continue
+        _chown_tree(child, admin.pw_uid, admin.pw_gid)
+
+
+def _chown_tree(path: Path, uid: int, gid: int) -> None:
+    os.lchown(path, uid, gid)
+    if path.is_symlink() or not path.is_dir():
+        return
+    for child in path.iterdir():
+        _chown_tree(child, uid, gid)
+
+
+def _chmod_private(path: Path) -> None:
+    if path.is_symlink():
+        return
+    if path.is_dir():
+        os.chmod(path, 0o700)
+        for child in path.iterdir():
+            _chmod_private(child)
+        return
+    if path.is_file():
+        os.chmod(path, 0o600)
+
+
+def _chmod_public_readable_tree(path: Path, uid: int, gid: int) -> None:
+    if path.is_symlink():
+        return
+    os.lchown(path, uid, gid)
+    if path.is_dir():
+        os.chmod(path, 0o2750)
+        for child in path.iterdir():
+            _chmod_public_readable_tree(child, uid, gid)
+        return
+    if path.is_file():
+        os.chmod(path, 0o640)
+
+
+def _try_setfacl_public_read(path: Path, public_user: str) -> None:
+    if shutil.which("setfacl") is None:
+        return
+    subprocess.run(
+        [
+            "setfacl",
+            "-m",
+            f"u:{public_user}:r-x",
+            "-d",
+            "-m",
+            f"u:{public_user}:r-x",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def finalize_installed_services(settings: CoreSettings | None = None) -> None:
     """Enable Web/Admin, disable the installer, and revoke installer credentials.
 
@@ -193,6 +334,7 @@ def finalize_installed_services(settings: CoreSettings | None = None) -> None:
     state = InstallStateStore(runtime.install_state_path).read()
     if state != InstallState.COMPLETED:
         raise ServiceControlError("service finalization requires a completed installation")
+    apply_identity_isolation(runtime)
     publish_public_runtime_secret(runtime)
     if _is_real_system_root():
         for name in (WEB_SERVICE, ADMIN_SERVICE):
@@ -269,8 +411,21 @@ def run_privileged_action(action: str, settings: CoreSettings | None = None) -> 
     provision_database_from_request(runtime)
 
 
-def _privileged_helper_available(unit: str) -> bool:
-    return _is_real_system_root() and _service_exists(unit)
+def _path_unit(action: str) -> str:
+    return (
+        "plaik-finalize.path"
+        if action == "finalize-services"
+        else "plaik-provision.path"
+    )
+
+
+def _path_helper_available(action: str) -> bool:
+    return _is_real_system_root() and _service_exists(_path_unit(action))
+
+
+def _path_helper_active(action: str) -> bool:
+    completed = _systemctl("is-active", "--quiet", _path_unit(action), check=False)
+    return completed is not None and completed.returncode == 0
 
 
 def request_service_finalization(
@@ -285,7 +440,7 @@ def request_service_finalization(
         raise ServiceControlError("service finalization requires a completed installation")
     marker = finalize_request_path(settings)
     _write_request(marker, "requested\n")
-    helper = _privileged_helper_available("plaik-finalize.service")
+    helper = _path_helper_available("finalize-services")
     _dispatch_or_run("finalize-services", settings)
     if marker.exists() and helper:
         _wait_until(lambda: not marker.exists(), wait_seconds, "service finalization")
@@ -303,7 +458,7 @@ def request_database_provision(
     error_path.unlink(missing_ok=True)
     write_json_atomic(path, validated)
     os.chmod(path, 0o600)
-    helper = _privileged_helper_available("plaik-provision.service")
+    helper = _path_helper_available("provision-database")
     _dispatch_or_run("provision-database", settings)
     if path.exists() and helper:
 
@@ -323,19 +478,15 @@ def request_database_provision(
 
 
 def _dispatch_or_run(action: str, settings: CoreSettings) -> None:
-    unit = (
-        "plaik-finalize.service"
-        if action == "finalize-services"
-        else "plaik-provision.service"
-    )
     geteuid = getattr(os, "geteuid", None)
     if geteuid is not None and geteuid() == 0:
         run_privileged_action(action, settings)
         return
-    if not _privileged_helper_available(unit):
-        run_privileged_action(action, settings)
+    if _path_helper_available(action):
+        if not _path_helper_active(action):
+            raise ServiceControlError("privileged path helper is not running")
         return
-    _systemctl("start", unit, check=False)
+    run_privileged_action(action, settings)
 
 
 def _wait_until(predicate, wait_seconds: float, label: str) -> None:

@@ -221,13 +221,21 @@ apt-get install -y --no-install-recommends ca-certificates curl git >/dev/null
 
 ensure_system_user "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
 ensure_system_user "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
-ensure_system_user "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR"
+ensure_system_user "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR/public"
 
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/releases"
-install -d -m 0700 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
+# Data root is traversable; only installer may create platform files during setup.
+# After handoff, finalize reowns the root to root:plaik-admin 0771. Public never
+# gets write on the whole tree — only $PLAIK_DATA_DIR/public.
+install -d -m 0771 -o root -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
+install -d -m 0770 -o root -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR/run"
+install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR/public"
 install -d -m 0750 -o root -g "$PLAIK_ADMIN_USER" "$PLAIK_CONFIG_DIR"
-install -d -m 0750 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_LOG_DIR"
+install -d -m 0751 -o root -g root "$PLAIK_LOG_DIR"
+install -d -m 0750 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_LOG_DIR/installer"
+install -d -m 0750 -o "$PLAIK_ADMIN_USER" -g "$PLAIK_ADMIN_USER" "$PLAIK_LOG_DIR/admin"
+install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_LOG_DIR/public"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/bin"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/python"
 
@@ -572,12 +580,12 @@ Type=simple
 User=$USER_NAME
 Group=$GROUP_NAME
 $ENV_FILES
-WorkingDirectory=$PLAIK_DATA_DIR
+WorkingDirectory=$WORKDIR
 ExecStart=$CURRENT_LINK/venv/bin/uvicorn $ENTRYPOINT --host 127.0.0.1 --port $PORT --workers 1
 $COMMON_HARDENING
 MemoryMax=$MEMORY
 ReadOnlyPaths=$PLAIK_RUNTIME_DIR $PLAIK_CONFIG_DIR
-ReadWritePaths=$PLAIK_DATA_DIR $PLAIK_LOG_DIR
+ReadWritePaths=$RWPATHS
 $EXTRA
 [Install]
 WantedBy=multi-user.target
@@ -586,25 +594,33 @@ EOF
     chmod 0644 "$UNIT_PATH"
 }
 
+WORKDIR=$PLAIK_DATA_DIR
+RWPATHS="$PLAIK_DATA_DIR $PLAIK_LOG_DIR/installer $PLAIK_DATA_DIR/run"
 write_app_unit /etc/systemd/system/plaik-installer.service \
     "$PLAIK_INSTALLER_USER" "$PLAIK_INSTALLER_USER" \
     "EnvironmentFile=$SHARED_ENV
 EnvironmentFile=$INSTALLER_ENV" \
     plaik_installer.app:app 8765 "PLAIK setup service" "" "512M"
 
+WORKDIR=$PLAIK_DATA_DIR
+RWPATHS="$PLAIK_DATA_DIR $PLAIK_LOG_DIR/admin"
 write_app_unit /etc/systemd/system/plaik-admin.service \
     "$PLAIK_ADMIN_USER" "$PLAIK_ADMIN_USER" \
     "EnvironmentFile=$SHARED_ENV
 EnvironmentFile=$ADMIN_ENV" \
-    plaik_admin.app:app 8081 "PLAIK Admin" "" "512M"
+    plaik_admin.app:app 8081 "PLAIK Admin" "UMask=0027
+" "512M"
 
 PUBLIC_EXTRA=$(cat <<EOF
+UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
-InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/secrets -$PLAIK_DATA_DIR/identities.json -$PLAIK_DATA_DIR/sessions.json -$PLAIK_DATA_DIR/audit.jsonl -$PLAIK_DATA_DIR/installer-operations.jsonl -$PLAIK_DATA_DIR/package-inbox -$PLAIK_DATA_DIR/package-transactions
+InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/run -$PLAIK_DATA_DIR/secrets -$PLAIK_DATA_DIR/identities.json -$PLAIK_DATA_DIR/sessions.json -$PLAIK_DATA_DIR/audit.jsonl -$PLAIK_DATA_DIR/installer-operations.jsonl -$PLAIK_DATA_DIR/package-inbox -$PLAIK_DATA_DIR/package-transactions
 EOF
 )
+WORKDIR=$PLAIK_DATA_DIR/public
+RWPATHS="$PLAIK_DATA_DIR/public $PLAIK_LOG_DIR/public $PLAIK_CONFIG_DIR/web-secrets"
 write_app_unit /etc/systemd/system/plaik-web.service \
     "$PLAIK_PUBLIC_USER" "$PLAIK_PUBLIC_USER" \
     "EnvironmentFile=$WEB_ENV" \
@@ -632,6 +648,7 @@ Description=PLAIK installer finalization trigger
 
 [Path]
 PathExists=$PLAIK_DATA_DIR/run/finalize.request
+Unit=plaik-finalize.service
 
 [Install]
 WantedBy=multi-user.target
@@ -642,6 +659,7 @@ Description=PLAIK installer provisioning trigger
 
 [Path]
 PathExists=$PLAIK_DATA_DIR/run/provision.request
+Unit=plaik-provision.service
 
 [Install]
 WantedBy=multi-user.target
@@ -650,10 +668,12 @@ chmod 0644 /etc/systemd/system/plaik-finalize.path /etc/systemd/system/plaik-pro
 
 ln -sfn "$CURRENT_LINK/venv/bin/plaik" /usr/local/bin/plaik
 systemctl daemon-reload
-systemctl enable plaik-finalize.path plaik-provision.path >/dev/null
+systemctl enable --now plaik-finalize.path plaik-provision.path >/dev/null
 
 if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
     && grep -Eq '"state"[[:space:]]*:[[:space:]]*"completed"' "$PLAIK_DATA_DIR/install-state.json"; then
+    chgrp "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
+    chmod 0771 "$PLAIK_DATA_DIR"
     systemctl disable --now plaik-installer.service >/dev/null 2>&1 || true
     systemctl enable --now plaik-web.service plaik-admin.service >/dev/null
     echo "PLAIK runtime reinstalled; existing completed installation was preserved."
