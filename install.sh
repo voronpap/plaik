@@ -11,11 +11,13 @@ PLAIK_RELEASE_REPOSITORY="${PLAIK_RELEASE_REPOSITORY:-voronpap/plaik}"
 PLAIK_RELEASE_TAG="${PLAIK_RELEASE_TAG:-}"
 PLAIK_WHEEL_FILE="${PLAIK_WHEEL_FILE:-}"
 PLAIK_WHEEL_SHA256="${PLAIK_WHEEL_SHA256:-}"
+PLAIK_SDK_WHEEL_FILE="${PLAIK_SDK_WHEEL_FILE:-}"
+PLAIK_SDK_WHEEL_SHA256="${PLAIK_SDK_WHEEL_SHA256:-}"
 FORCE=0
 
 usage() {
     cat <<'EOF'
-Usage: sudo ./install.sh [--force] [--wheel /path/to/plaik.whl]
+Usage: sudo ./install.sh [--force] [--wheel /path/to/plaik.whl --sdk-wheel /path/to/plaik_sdk.whl]
 
 System bootstrap only. It installs the PLAIK runtime and systemd services.
 Domain, database and administrator configuration happens later with:
@@ -24,8 +26,10 @@ Domain, database and administrator configuration happens later with:
 
 Environment overrides:
   PLAIK_RELEASE_TAG       release tag to install instead of latest
-  PLAIK_WHEEL_FILE        local wheel for development/testing
-  PLAIK_WHEEL_SHA256      expected SHA-256 for a local wheel
+  PLAIK_WHEEL_FILE        local runtime wheel for development/testing
+  PLAIK_WHEEL_SHA256      expected SHA-256 for the local runtime wheel
+  PLAIK_SDK_WHEEL_FILE    local SDK wheel for development/testing
+  PLAIK_SDK_WHEEL_SHA256  expected SHA-256 for the local SDK wheel
   PLAIK_UV_VERSION        pinned uv bootstrap version
 EOF
 }
@@ -39,6 +43,11 @@ while [ "$#" -gt 0 ]; do
         --wheel)
             [ "$#" -ge 2 ] || { echo "install.sh: --wheel requires a path" >&2; exit 2; }
             PLAIK_WHEEL_FILE=$2
+            shift 2
+            ;;
+        --sdk-wheel)
+            [ "$#" -ge 2 ] || { echo "install.sh: --sdk-wheel requires a path" >&2; exit 2; }
+            PLAIK_SDK_WHEEL_FILE=$2
             shift 2
             ;;
         -h|--help)
@@ -137,6 +146,7 @@ PYTHON_BIN="$PLAIK_RUNTIME_DIR/venv/bin/python"
 resolve_release_assets() {
     "$PYTHON_BIN" - "$PLAIK_RELEASE_REPOSITORY" "$PLAIK_RELEASE_TAG" <<'PY'
 import json
+import re
 import sys
 import urllib.request
 
@@ -154,62 +164,111 @@ try:
         release = json.load(response)
 except Exception as error:
     raise SystemExit(f"cannot resolve PLAIK release: {type(error).__name__}")
-assets = release.get("assets") or []
-wheels = [
-    item for item in assets
-    if isinstance(item, dict)
-    and str(item.get("name", "")).startswith("plaik-")
-    and str(item.get("name", "")).endswith(".whl")
-]
-if len(wheels) != 1:
+if release.get("draft"):
+    raise SystemExit("PLAIK release is still a draft")
+assets = [item for item in (release.get("assets") or []) if isinstance(item, dict)]
+runtime_pattern = re.compile(r"^plaik-[0-9][A-Za-z0-9._+!-]*-py3-none-any\.whl$")
+sdk_pattern = re.compile(r"^plaik_sdk-[0-9][A-Za-z0-9._+!-]*-py3-none-any\.whl$")
+runtime_wheels = [item for item in assets if runtime_pattern.fullmatch(str(item.get("name", "")))]
+sdk_wheels = [item for item in assets if sdk_pattern.fullmatch(str(item.get("name", "")))]
+if len(runtime_wheels) != 1:
     raise SystemExit("release must contain exactly one PLAIK runtime wheel")
-wheel = wheels[0]
-checksum_name = str(wheel["name"]) + ".sha256"
-checksums = [item for item in assets if item.get("name") == checksum_name]
-if len(checksums) != 1:
-    raise SystemExit(f"release is missing checksum asset: {checksum_name}")
-print(wheel["browser_download_url"])
-print(checksums[0]["browser_download_url"])
+if len(sdk_wheels) != 1:
+    raise SystemExit("release must contain exactly one PLAIK SDK wheel")
+
+def pair(wheel):
+    wheel_name = str(wheel["name"])
+    checksum_name = wheel_name + ".sha256"
+    checksums = [item for item in assets if item.get("name") == checksum_name]
+    if len(checksums) != 1:
+        raise SystemExit(f"release is missing checksum asset: {checksum_name}")
+    wheel_url = str(wheel.get("browser_download_url", ""))
+    checksum_url = str(checksums[0].get("browser_download_url", ""))
+    prefix = f"https://github.com/{repository}/releases/download/"
+    if not wheel_url.startswith(prefix) or not checksum_url.startswith(prefix):
+        raise SystemExit("release asset URL is outside the configured PLAIK repository")
+    return wheel_url, checksum_url
+
+runtime = pair(runtime_wheels[0])
+sdk = pair(sdk_wheels[0])
+print(runtime[0])
+print(runtime[1])
+print(sdk[0])
+print(sdk[1])
 PY
 }
 
-if [ -n "$PLAIK_WHEEL_FILE" ]; then
-    if [ ! -f "$PLAIK_WHEEL_FILE" ]; then
-        echo "install.sh: local wheel does not exist: $PLAIK_WHEEL_FILE" >&2
+verify_local_wheel() {
+    path=$1
+    expected=$2
+    label=$3
+    if [ ! -f "$path" ]; then
+        echo "install.sh: local $label wheel does not exist: $path" >&2
         exit 1
     fi
-    WHEEL_PATH=$PLAIK_WHEEL_FILE
-    if [ -n "$PLAIK_WHEEL_SHA256" ]; then
-        ACTUAL=$(sha256sum "$WHEEL_PATH" | awk '{print $1}')
-        if [ "$ACTUAL" != "$PLAIK_WHEEL_SHA256" ]; then
-            echo "install.sh: local wheel SHA-256 mismatch" >&2
+    if [ -n "$expected" ]; then
+        if ! printf '%s\n' "$expected" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+            echo "install.sh: local $label SHA-256 is invalid" >&2
+            exit 1
+        fi
+        actual=$(sha256sum "$path" | awk '{print $1}')
+        if [ "$actual" != "$expected" ]; then
+            echo "install.sh: local $label wheel SHA-256 mismatch" >&2
             exit 1
         fi
     else
-        echo "install.sh: warning: local development wheel has no explicit SHA-256" >&2
+        echo "install.sh: warning: local development $label wheel has no explicit SHA-256" >&2
     fi
+}
+
+download_verified_wheel() {
+    wheel_url=$1
+    checksum_url=$2
+    destination=$3
+    label=$4
+    checksum_path="$destination.sha256"
+    curl -fsSL "$wheel_url" -o "$destination"
+    curl -fsSL --max-filesize 4096 "$checksum_url" -o "$checksum_path"
+    expected=$(awk 'NF {print $1; exit}' "$checksum_path")
+    if ! printf '%s\n' "$expected" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+        echo "install.sh: release $label checksum is invalid" >&2
+        exit 1
+    fi
+    actual=$(sha256sum "$destination" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        echo "install.sh: release $label wheel SHA-256 mismatch" >&2
+        exit 1
+    fi
+}
+
+if [ -n "$PLAIK_WHEEL_FILE" ] || [ -n "$PLAIK_SDK_WHEEL_FILE" ]; then
+    if [ -z "$PLAIK_WHEEL_FILE" ] || [ -z "$PLAIK_SDK_WHEEL_FILE" ]; then
+        echo "install.sh: local development mode requires both --wheel and --sdk-wheel" >&2
+        exit 1
+    fi
+    verify_local_wheel "$PLAIK_WHEEL_FILE" "$PLAIK_WHEEL_SHA256" "runtime"
+    verify_local_wheel "$PLAIK_SDK_WHEEL_FILE" "$PLAIK_SDK_WHEEL_SHA256" "SDK"
+    WHEEL_PATH=$PLAIK_WHEEL_FILE
+    SDK_WHEEL_PATH=$PLAIK_SDK_WHEEL_FILE
 else
     ASSET_INFO="$TMP_DIR/assets.txt"
     resolve_release_assets > "$ASSET_INFO"
     WHEEL_URL=$(sed -n '1p' "$ASSET_INFO")
     CHECKSUM_URL=$(sed -n '2p' "$ASSET_INFO")
-    [ -n "$WHEEL_URL" ] && [ -n "$CHECKSUM_URL" ] || {
+    SDK_WHEEL_URL=$(sed -n '3p' "$ASSET_INFO")
+    SDK_CHECKSUM_URL=$(sed -n '4p' "$ASSET_INFO")
+    [ -n "$WHEEL_URL" ] && [ -n "$CHECKSUM_URL" ] \
+        && [ -n "$SDK_WHEEL_URL" ] && [ -n "$SDK_CHECKSUM_URL" ] || {
         echo "install.sh: release asset resolution failed" >&2
         exit 1
     }
     WHEEL_PATH="$TMP_DIR/$(basename "$WHEEL_URL")"
-    CHECKSUM_PATH="$TMP_DIR/$(basename "$CHECKSUM_URL")"
-    curl -fsSL "$WHEEL_URL" -o "$WHEEL_PATH"
-    curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH"
-    EXPECTED=$(awk 'NF {print $1; exit}' "$CHECKSUM_PATH")
-    ACTUAL=$(sha256sum "$WHEEL_PATH" | awk '{print $1}')
-    if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
-        echo "install.sh: release wheel SHA-256 mismatch" >&2
-        exit 1
-    fi
+    SDK_WHEEL_PATH="$TMP_DIR/$(basename "$SDK_WHEEL_URL")"
+    download_verified_wheel "$WHEEL_URL" "$CHECKSUM_URL" "$WHEEL_PATH" "runtime"
+    download_verified_wheel "$SDK_WHEEL_URL" "$SDK_CHECKSUM_URL" "$SDK_WHEEL_PATH" "SDK"
 fi
 
-"$UV_BIN" pip install --python "$PYTHON_BIN" "$WHEEL_PATH" >/dev/null
+"$UV_BIN" pip install --python "$PYTHON_BIN" "$SDK_WHEEL_PATH" "$WHEEL_PATH" >/dev/null
 
 ENV_FILE="$PLAIK_CONFIG_DIR/plaik.env"
 if [ ! -f "$ENV_FILE" ]; then
