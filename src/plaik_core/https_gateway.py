@@ -3,12 +3,16 @@
 This layer runs ``plan → validate → apply → verify → inspect`` against the
 current ``RemoteControlRecord``. It never binds WAN listeners itself, never
 writes nginx configuration, never reopens the installer, and never moves
-installation off ``COMPLETED``. Failure must prove the actual gateway is
-CLOSED; a successful ``rollback()`` that restores a previously open surface
-is not containment.
+installation off ``COMPLETED``.
+
+Provider side effects are serialized by a dedicated cross-process lock, separate
+from the RemoteControlStore lock. Core persists ``ERROR`` (derived CLOSED) only
+after inspection proves the gateway is actually CLOSED.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,6 +33,7 @@ from .remote_control import (
     is_forbidden_wan_bind,
     records_match,
 )
+from .storage import exclusive_file_lock
 
 
 class GatewayTransactionError(RemoteControlError):
@@ -45,6 +50,12 @@ class HttpsGatewayTransactionResult(BaseModel):
     failed: bool = False
     error_code: str | None = None
     steps: tuple[str, ...] = ()
+
+
+def gateway_transaction_lock_path(store_path: Path) -> Path:
+    """Lock target for provider publication. Distinct from the store lock file."""
+
+    return store_path.with_name("https-gateway.transaction")
 
 
 def _require_completed(install_state: InstallState) -> None:
@@ -164,12 +175,19 @@ class HttpsGatewayTransaction:
         self,
         provider: HttpsGatewayProvider,
         store: RemoteControlStore,
+        *,
+        lock_path: Path | None = None,
     ) -> None:
         self._provider = provider
         self._store = store
+        self.lock_path = lock_path or gateway_transaction_lock_path(store.path)
 
     def run(self, *, install_state: InstallState) -> HttpsGatewayTransactionResult:
         _require_completed(install_state)
+        with exclusive_file_lock(self.lock_path):
+            return self._run_locked(install_state=install_state)
+
+    def _run_locked(self, *, install_state: InstallState) -> HttpsGatewayTransactionResult:
         record = self._store.read()
         if record.intent is None:
             return HttpsGatewayTransactionResult(
@@ -269,10 +287,9 @@ class HttpsGatewayTransaction:
         error_code: str,
         expected_provider: GatewayProviderName | None,
     ) -> HttpsGatewayTransactionResult:
-        needs_contain = apply_attempted or error_code == "gateway_record_drifted"
         contained = False
         rolled_back = False
-        if needs_contain and snapshot.intent is not None and expected_provider is not None:
+        if expected_provider is not None and snapshot.intent is not None:
             rolled_back, contained = self._contain_closed(
                 snapshot,
                 steps,
@@ -281,15 +298,16 @@ class HttpsGatewayTransaction:
             )
             if not contained:
                 error_code = "gateway_containment_failed"
-        persisted: RemoteControlRecord
         if error_code == "gateway_record_drifted":
             persisted = self._store.read()
-        else:
+        elif contained:
             persisted = self._store.fail_if_current(
                 snapshot,
                 error_code,
                 install_state=install_state,
             )
+        else:
+            persisted = self._store.read()
         return HttpsGatewayTransactionResult(
             record=persisted,
             applied=applied,
