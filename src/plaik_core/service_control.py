@@ -36,6 +36,8 @@ class ServiceControlError(RuntimeError):
 WEB_SERVICE = "plaik-web.service"
 ADMIN_SERVICE = "plaik-admin.service"
 INSTALLER_SERVICE = "plaik-installer.service"
+INSTALLER_STOP_TIMER = "plaik-installer-stop.timer"
+INSTALLER_STOP_SERVICE = "plaik-installer-stop.service"
 PRIVILEGED_ACTIONS = frozenset({"finalize-services", "provision-database"})
 HANDOFF_NOT_STARTED = "not_started"
 HANDOFF_PENDING = "pending"
@@ -125,18 +127,25 @@ def provision_error_path(settings: CoreSettings) -> Path:
 
 
 def handoff_state_path(settings: CoreSettings) -> Path:
+    return request_dir(settings) / "service-handoff.json"
+
+
+def _handoff_read_path(settings: CoreSettings) -> Path:
+    current = handoff_state_path(settings)
+    if current.is_file():
+        return current
     return settings.data_dir / "service-handoff.json"
 
 
 def handoff_snapshot(settings: CoreSettings) -> dict[str, str]:
-    if not handoff_state_path(settings).is_file():
+    if not _handoff_read_path(settings).is_file():
         status = (
             HANDOFF_NOT_STARTED
             if InstallStateStore(settings.install_state_path).read() != InstallState.COMPLETED
             else HANDOFF_PENDING
         )
         return {"status": status, "detail": ""}
-    payload = json.loads(handoff_state_path(settings).read_text(encoding="utf-8"))
+    payload = json.loads(_handoff_read_path(settings).read_text(encoding="utf-8"))
     status = str(payload.get("status") or HANDOFF_PENDING)
     detail = str(payload.get("detail") or "")
     if status not in {HANDOFF_NOT_STARTED, HANDOFF_PENDING, HANDOFF_FAILED, HANDOFF_READY}:
@@ -153,13 +162,30 @@ def mark_handoff(settings: CoreSettings, status: str, detail: str = "") -> dict[
     if status not in {HANDOFF_PENDING, HANDOFF_FAILED, HANDOFF_READY}:
         raise ServiceControlError("service handoff status is invalid")
     payload = {"status": status, "detail": detail}
-    write_json_atomic(handoff_state_path(settings), payload)
-    os.chmod(handoff_state_path(settings), 0o640)
+    path = handoff_state_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, payload)
+    os.chmod(path, 0o640)
+    geteuid = getattr(os, "geteuid", lambda: None)
+    if geteuid() == 0:
+        import pwd
+
+        installer_name = os.environ.get("PLAIK_INSTALLER_USER", "plaik-installer")
+        try:
+            installer = pwd.getpwnam(installer_name)
+        except KeyError:
+            raise ServiceControlError("required PLAIK service identities are missing") from None
+        os.chown(path, 0, installer.pw_gid)
     return payload
 
 
 def confirm_service_handoff(settings: CoreSettings) -> None:
-    """Require web/admin on, installer off, and installer token revoked."""
+    """Require web/admin on and installer token revoked.
+
+    Installer stop is scheduled asynchronously so the HTTP request that
+    asked for finalization can return. The installer unit is already
+    disabled for future boots.
+    """
 
     if installer_env_file().is_file():
         raise ServiceControlError("installer token has not been revoked")
@@ -171,19 +197,13 @@ def confirm_service_handoff(settings: CoreSettings) -> None:
         raise ServiceControlError("installer token has not been revoked")
     if not _is_real_system_root():
         return
-    for unit, must_run in (
-        (WEB_SERVICE, True),
-        (ADMIN_SERVICE, True),
-        (INSTALLER_SERVICE, False),
-    ):
+    for unit in (WEB_SERVICE, ADMIN_SERVICE):
         if not _service_exists(unit):
             continue
         active = _systemctl("is-active", "--quiet", unit, check=False)
         running = active is not None and active.returncode == 0
-        if must_run and not running:
+        if not running:
             raise ServiceControlError("web and admin services are not running")
-        if not must_run and running:
-            raise ServiceControlError("installer service is still running")
 
 
 def _service_exists(name: str) -> bool:
@@ -287,7 +307,7 @@ _PRIVATE_NAMES = frozenset(
         "extensions",
     }
 )
-_SKIP_HANDOFF = frozenset({"public", "run"})
+_SKIP_HANDOFF = frozenset({"public", "run", "service-handoff.json"})
 
 
 def public_state_dir(settings: CoreSettings) -> Path:
@@ -346,6 +366,40 @@ def apply_identity_isolation(settings: CoreSettings) -> None:
             _try_setfacl_public_read(child, public_name)
             continue
         _chown_tree(child, admin.pw_uid, admin.pw_gid)
+
+
+def _handoff_systemd_units() -> None:
+    """Enable Web/Admin now; disable installer for future boots without self-stop."""
+
+    if not _is_real_system_root():
+        return
+    for name in (WEB_SERVICE, ADMIN_SERVICE):
+        if _service_exists(name):
+            _systemctl("enable", "--now", name)
+    if not _service_exists(INSTALLER_SERVICE):
+        return
+    _systemctl("disable", INSTALLER_SERVICE, check=False)
+    if _service_exists(INSTALLER_STOP_TIMER):
+        _systemctl("start", INSTALLER_STOP_TIMER, check=False)
+        return
+    if shutil.which("systemd-run") is None:
+        return
+    subprocess.run(
+        [
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            "--on-active=3s",
+            "--unit=plaik-installer-stop",
+            "systemctl",
+            "disable",
+            "--now",
+            INSTALLER_SERVICE,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _chown_tree(path: Path, uid: int, gid: int) -> None:
@@ -414,12 +468,7 @@ def finalize_installed_services(settings: CoreSettings | None = None) -> None:
     try:
         apply_identity_isolation(runtime)
         publish_public_runtime_secret(runtime)
-        if _is_real_system_root():
-            for name in (WEB_SERVICE, ADMIN_SERVICE):
-                if _service_exists(name):
-                    _systemctl("enable", "--now", name)
-            if _service_exists(INSTALLER_SERVICE):
-                _systemctl("disable", "--now", INSTALLER_SERVICE, check=False)
+        _handoff_systemd_units()
         revoke_installer_token()
         confirm_service_handoff(runtime)
         mark_handoff(runtime, HANDOFF_READY)

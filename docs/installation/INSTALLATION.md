@@ -151,7 +151,8 @@ inspectable local databases and PLAIK backup artifacts). It then asks for:
 roles through the host `postgres` peer identity. It refuses occupied databases,
 Docker listeners without local peer access, and foreign SQL dumps. `restore` is
 rejected: dump restore is a separate operational procedure, not Stage 2 setup.
-`manual` lets you enter host, port and database yourself.
+`manual` lets you enter host, port and database yourself. The host must still
+be loopback in this release.
 
 SQLite is accepted only in development/reference modes, matching the Core
 installer configuration contract.
@@ -249,7 +250,11 @@ explicit operator action.
   opening.
 - The installer token is generated during system bootstrap and stored under
   `/etc/plaik` with restricted permissions.
-- PLAIK services run as the dedicated `plaik` system user.
+- PLAIK services run as three dedicated identities: `plaik-installer`,
+  `plaik-admin` and `plaik-public`.
+- Stage 2 PostgreSQL in this release is loopback-only (`127.0.0.1` /
+  `localhost` / `::1`), matching the public Web unit which may reach
+  localhost only.
 - Runtime files are read-only to the service account; persistent writes are
   restricted to PLAIK data/log paths.
 - Database passwords are persisted through the existing local secret provider,

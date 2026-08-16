@@ -83,6 +83,8 @@ class PostgreSQLDatabase(BaseModel):
             raise ValueError("invalid PostgreSQL host")
         if "/" in value or "@" in value:
             raise ValueError("PostgreSQL host must not contain credentials or a path")
+        if value not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("PostgreSQL host must be loopback in this release")
         return value
 
     @model_validator(mode="after")

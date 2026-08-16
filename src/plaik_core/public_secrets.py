@@ -52,9 +52,15 @@ class PublishedRuntimeSecretProvider:
             current_uid = geteuid()
             if not stat.S_ISREG(file_stat.st_mode):
                 raise SecretStoreError(f"secret is not a regular file ({reference})")
-            if current_uid is not None and file_stat.st_uid != current_uid:
-                raise SecretStoreError(f"secret has an unexpected owner ({reference})")
-            if stat.S_IMODE(file_stat.st_mode) != 0o400:
+            if file_stat.st_uid != 0:
+                raise SecretStoreError(f"secret must be owned by root ({reference})")
+            if current_uid is not None:
+                identity_gid = pwd.getpwuid(current_uid).pw_gid
+                if file_stat.st_gid != identity_gid:
+                    raise SecretStoreError(
+                        f"secret group does not match the public identity ({reference})"
+                    )
+            if stat.S_IMODE(file_stat.st_mode) != 0o440:
                 raise SecretStoreError(f"secret has unsafe file permissions ({reference})")
             if file_stat.st_nlink != 1:
                 raise SecretStoreError(
@@ -116,11 +122,9 @@ class PublishedRuntimeSecretProvider:
                 raise SecretStoreError("published secret path is not a directory")
             if stat.S_IMODE(path_stat.st_mode) & 0o022:
                 raise SecretStoreError("published secret directory is writable by others")
-            geteuid = getattr(os, "geteuid", lambda: None)
-            current_uid = geteuid()
-            if current_uid is not None and path_stat.st_uid == current_uid:
+            if path_stat.st_uid != 0:
                 raise SecretStoreError(
-                    "published secret directory must not be owned by the public identity"
+                    "published secret directory must be owned by root"
                 )
         finally:
             os.close(descriptor)
@@ -143,21 +147,19 @@ def publish_runtime_secret(
     destination.mkdir(parents=True, exist_ok=True)
     path = _secret_path(destination, key, version)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_readonly_secret(path, raw)
+    _write_readonly_secret(path, raw, mode=0o440)
     geteuid = getattr(os, "geteuid", lambda: None)
     if geteuid() != 0:
         os.chmod(destination, 0o750)
-        os.chmod(path, 0o400)
+        os.chmod(path.parent, 0o750)
+        os.chmod(path, 0o440)
         return
     account = public_user or os.environ.get("PLAIK_PUBLIC_USER", "plaik-public")
     try:
         identity = pwd.getpwnam(account)
     except KeyError:
         raise SecretStoreError("public service identity is missing") from None
-    os.chown(destination, 0, identity.pw_gid)
-    os.chmod(destination, 0o750)
-    os.chown(path, identity.pw_uid, identity.pw_gid)
-    os.chmod(path, 0o400)
+    _lock_published_tree(destination, identity.pw_gid)
 
 
 def read_private_secret_for_publication(
@@ -219,22 +221,37 @@ def _secret_path(root: Path, key: str, version: str | None) -> Path:
     return candidate
 
 
-def _write_readonly_secret(path: Path, value: str) -> None:
+def _write_readonly_secret(path: Path, value: str, *, mode: int = 0o440) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}-",
         dir=path.parent,
     )
     temporary_path = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o400)
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             descriptor = -1
             stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_path, path)
-        os.chmod(path, 0o400)
+        os.chmod(path, mode)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
         temporary_path.unlink(missing_ok=True)
+
+
+def _lock_published_tree(root: Path, gid: int) -> None:
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        path = Path(current)
+        os.chown(path, 0, gid)
+        os.chmod(path, 0o750)
+        for name in filenames:
+            file_path = path / name
+            if file_path.is_symlink():
+                raise SecretStoreError("published secret tree must not contain symlinks")
+            os.chown(file_path, 0, gid)
+            os.chmod(file_path, 0o440)
+        if any(Path(current, name).is_symlink() for name in dirnames):
+            raise SecretStoreError("published secret tree must not contain symlinks")

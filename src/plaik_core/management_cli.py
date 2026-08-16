@@ -532,6 +532,10 @@ def _postgresql_payload(
             label="PostgreSQL host",
             default="127.0.0.1",
         )
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise PlaikCLIError(
+                "PostgreSQL host must be loopback in this release"
+            )
         port = _prompt_port(database, default_port, non_interactive=non_interactive)
         name = _value(
             database,

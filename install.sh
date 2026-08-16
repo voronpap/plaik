@@ -158,8 +158,77 @@ atomic_switch_release() {
 ensure_system_user() {
     account=$1
     home=$2
-    if ! getent passwd "$account" >/dev/null 2>&1; then
-        useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$account"
+    if getent passwd "$account" >/dev/null 2>&1; then
+        validate_existing_system_user "$account" "$home"
+        return
+    fi
+    useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$account"
+}
+
+validate_existing_system_user() {
+    account=$1
+    expected_home=$2
+    entry=$(getent passwd "$account") || {
+        echo "install.sh: missing system user: $account" >&2
+        exit 1
+    }
+    uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+    gid=$(printf '%s\n' "$entry" | cut -d: -f4)
+    home=$(printf '%s\n' "$entry" | cut -d: -f6)
+    shell=$(printf '%s\n' "$entry" | cut -d: -f7)
+    case "$uid" in
+        ''|*[!0-9]*)
+            echo "install.sh: invalid uid for $account" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$uid" -eq 0 ] || [ "$uid" -ge 1000 ]; then
+        echo "install.sh: refusing to reuse a non-system account: $account" >&2
+        exit 1
+    fi
+    group_entry=$(getent group "$account") || {
+        echo "install.sh: missing dedicated group: $account" >&2
+        exit 1
+    }
+    group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+    if [ "$gid" != "$group_gid" ]; then
+        echo "install.sh: $account must use a dedicated primary group" >&2
+        exit 1
+    fi
+    case "$shell" in
+        /usr/sbin/nologin|/sbin/nologin|/usr/bin/nologin|/bin/nologin|/bin/false|/usr/bin/false) ;;
+        *)
+            echo "install.sh: $account must use a noninteractive shell" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$home" != "$expected_home" ]; then
+        echo "install.sh: $account home directory is not the PLAIK identity home" >&2
+        exit 1
+    fi
+}
+
+validate_plaik_identities() {
+    if [ "$PLAIK_INSTALLER_USER" = "$PLAIK_ADMIN_USER" ] \
+        || [ "$PLAIK_INSTALLER_USER" = "$PLAIK_PUBLIC_USER" ] \
+        || [ "$PLAIK_ADMIN_USER" = "$PLAIK_PUBLIC_USER" ]; then
+        echo "install.sh: PLAIK service identities must be distinct" >&2
+        exit 1
+    fi
+    installer_uid=$(getent passwd "$PLAIK_INSTALLER_USER" | cut -d: -f3)
+    admin_uid=$(getent passwd "$PLAIK_ADMIN_USER" | cut -d: -f3)
+    public_uid=$(getent passwd "$PLAIK_PUBLIC_USER" | cut -d: -f3)
+    installer_gid=$(getent passwd "$PLAIK_INSTALLER_USER" | cut -d: -f4)
+    admin_gid=$(getent passwd "$PLAIK_ADMIN_USER" | cut -d: -f4)
+    public_gid=$(getent passwd "$PLAIK_PUBLIC_USER" | cut -d: -f4)
+    if [ "$installer_uid" = "$admin_uid" ] \
+        || [ "$installer_uid" = "$public_uid" ] \
+        || [ "$admin_uid" = "$public_uid" ] \
+        || [ "$installer_gid" = "$admin_gid" ] \
+        || [ "$installer_gid" = "$public_gid" ] \
+        || [ "$admin_gid" = "$public_gid" ]; then
+        echo "install.sh: PLAIK service identities must be distinct" >&2
+        exit 1
     fi
 }
 
@@ -400,6 +469,15 @@ if [ "${PLAIK_INSTALL_ACTION:-}" = "print-stage2-access" ]; then
     exit 0
 fi
 
+if [ "${PLAIK_INSTALL_ACTION:-}" = "validate-identities" ]; then
+    ensure_system_user "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
+    ensure_system_user "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
+    ensure_system_user "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR/public"
+    validate_plaik_identities
+    echo "identities ok"
+    exit 0
+fi
+
 if [ "${PLAIK_INSTALL_ACTION:-}" = "verify-wheels" ]; then
     [ -n "${PLAIK_WHEEL_FILE:-}" ] && [ -n "${PLAIK_SDK_WHEEL_FILE:-}" ] || {
         echo "install.sh: verify-wheels requires PLAIK_WHEEL_FILE and PLAIK_SDK_WHEEL_FILE" >&2
@@ -465,8 +543,7 @@ apt-get install -y --no-install-recommends ca-certificates curl git >/dev/null
 ensure_system_user "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
 ensure_system_user "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
 ensure_system_user "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR/public"
-
-install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR"
+validate_plaik_identities
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/releases"
 # Data root is traversable; only installer may create platform files during setup.
 # After handoff, finalize reowns the root to root:plaik-admin 0771. Public never
@@ -829,7 +906,7 @@ InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/run -$PLAIK_DATA_DIR/secrets 
 EOF
 )
 WORKDIR=$PLAIK_DATA_DIR/public
-RWPATHS="$PLAIK_DATA_DIR/public $PLAIK_LOG_DIR/public $PLAIK_CONFIG_DIR/web-secrets"
+RWPATHS="$PLAIK_DATA_DIR/public $PLAIK_LOG_DIR/public"
 write_app_unit /etc/systemd/system/plaik-web.service \
     "$PLAIK_PUBLIC_USER" "$PLAIK_PUBLIC_USER" \
     "EnvironmentFile=$WEB_ENV" \
@@ -850,6 +927,27 @@ EOF
 
 write_oneshot /etc/systemd/system/plaik-finalize.service "PLAIK installer service finalization" finalize-services
 write_oneshot /etc/systemd/system/plaik-provision.service "PLAIK installer database provisioning" provision-database
+
+cat > /etc/systemd/system/plaik-installer-stop.service <<'EOF'
+[Unit]
+Description=PLAIK installer stop after confirmed handoff
+After=plaik-finalize.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl disable --now plaik-installer.service
+EOF
+cat > /etc/systemd/system/plaik-installer-stop.timer <<'EOF'
+[Unit]
+Description=PLAIK delayed installer stop after handoff
+
+[Timer]
+OnActiveSec=3
+AccuracySec=1s
+Unit=plaik-installer-stop.service
+RemainAfterElapse=no
+EOF
+chmod 0644 /etc/systemd/system/plaik-installer-stop.service /etc/systemd/system/plaik-installer-stop.timer
 
 cat > /etc/systemd/system/plaik-finalize.path <<EOF
 [Unit]
@@ -881,10 +979,12 @@ systemctl enable --now plaik-finalize.path plaik-provision.path >/dev/null
 
 if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
     && grep -Eq '"state"[[:space:]]*:[[:space:]]*"completed"' "$PLAIK_DATA_DIR/install-state.json"; then
-    chgrp "$PLAIK_ADMIN_USER" "$PLAIK_DATA_DIR"
-    chmod 0771 "$PLAIK_DATA_DIR"
-    systemctl disable --now plaik-installer.service >/dev/null 2>&1 || true
-    systemctl enable --now plaik-web.service plaik-admin.service >/dev/null
+    export PLAIK_DATA_DIR PLAIK_CONFIG_DIR
+    export PLAIK_INSTALLER_USER PLAIK_ADMIN_USER PLAIK_PUBLIC_USER
+    if ! "$CURRENT_LINK/venv/bin/plaik" privileged finalize-services; then
+        echo "install.sh: completed installation could not be finalized" >&2
+        exit 1
+    fi
     echo "PLAIK runtime reinstalled; existing completed installation was preserved."
 else
     systemctl disable --now plaik-web.service plaik-admin.service >/dev/null 2>&1 || true
