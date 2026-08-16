@@ -26,6 +26,9 @@ Usage: sudo ./install.sh [--force] [--wheel /path/to/plaik.whl --sdk-wheel /path
 
 System bootstrap only. It installs the PLAIK runtime and systemd services.
 Stage 2 uses the local web installer at http://127.0.0.1:8765/
+The installer binds loopback only. Remote access is an SSH tunnel from
+your local computer, not a LAN or public listener.
+
 CLI remains available as headless fallback:
 
     sudo plaik setup
@@ -242,9 +245,158 @@ print(runtime_version)
 PY
 }
 
+is_safe_ssh_user() {
+    value=$1
+    case "$value" in
+        ''|*[!a-zA-Z0-9_-]*|-*) return 1 ;;
+    esac
+    case "$value" in
+        [A-Za-z_]*) ;;
+        *) return 1 ;;
+    esac
+    [ "${#value}" -le 32 ]
+}
+
+is_safe_tcp_port() {
+    value=$1
+    case "$value" in
+        ''|*[!0-9]*|0|0*) return 1 ;;
+    esac
+    [ "$value" -ge 1 ] && [ "$value" -le 65535 ]
+}
+
+is_safe_ipv4() {
+    value=$1
+    case "$value" in
+        ''|*[!0-9.]*|.*|*..*|*.) return 1 ;;
+    esac
+    old_ifs=$IFS
+    IFS=.
+    # shellcheck disable=SC2086
+    set -- $value
+    IFS=$old_ifs
+    [ "$#" -eq 4 ] || return 1
+    for octet in "$@"; do
+        case "$octet" in
+            ''|*[!0-9]*) return 1 ;;
+            0) ;;
+            0*) return 1 ;;
+        esac
+        [ "$octet" -ge 0 ] && [ "$octet" -le 255 ] || return 1
+    done
+    [ "$value" != "0.0.0.0" ] && [ "$value" != "127.0.0.1" ]
+}
+
+is_safe_ipv6() {
+    value=$1
+    case "$value" in
+        ''|*[!0-9a-fA-F:]*|*:::*|[Ff][Ee]80:*) return 1 ;;
+    esac
+    [ "${#value}" -ge 2 ] && [ "${#value}" -le 39 ] || return 1
+    case "$value" in
+        *:*) ;;
+        *) return 1 ;;
+    esac
+    rest=${value#*::}
+    case "$value" in
+        *::*)
+            case "$rest" in
+                *::*) return 1 ;;
+            esac
+            ;;
+    esac
+    [ "$value" != "::1" ] && [ "$value" != "::" ]
+}
+
+ssh_host_token() {
+    value=$1
+    if is_safe_ipv4 "$value"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    if is_safe_ipv6 "$value"; then
+        printf '[%s]\n' "$value"
+        return 0
+    fi
+    return 1
+}
+
+format_ssh_tunnel_command() {
+    user="<user>"
+    host="<server>"
+    port=""
+    if is_safe_ssh_user "${SUDO_USER:-}"; then
+        user=$SUDO_USER
+    fi
+    set -f
+    # shellcheck disable=SC2086
+    set -- ${SSH_CONNECTION:-}
+    set +f
+    if [ "$#" -eq 4 ] && is_safe_tcp_port "$2" && is_safe_tcp_port "$4"; then
+        if token=$(ssh_host_token "$3"); then
+            host=$token
+        fi
+        if [ "$4" != 22 ]; then
+            port=$4
+        fi
+    else
+        set -f
+        # shellcheck disable=SC2086
+        set -- ${SSH_CLIENT:-}
+        set +f
+        if [ "$#" -eq 3 ] && is_safe_tcp_port "$2" && is_safe_tcp_port "$3" && [ "$3" != 22 ]; then
+            port=$3
+        fi
+    fi
+    if [ -n "$port" ]; then
+        printf 'ssh -p %s -N -L 8765:127.0.0.1:8765 %s@%s\n' "$port" "$user" "$host"
+    else
+        printf 'ssh -N -L 8765:127.0.0.1:8765 %s@%s\n' "$user" "$host"
+    fi
+}
+
+print_stage2_access() {
+    tunnel_command=$(format_ssh_tunnel_command)
+    cat <<EOF
+PLAIK Stage 1 installation complete.
+
+Secure Web Installer:
+  http://127.0.0.1:8765/
+
+The installer listens on 127.0.0.1:8765 only. It is not opened on LAN or a public interface.
+
+If this server is local:
+  Open http://127.0.0.1:8765/ in a browser.
+
+If you installed PLAIK over SSH:
+  Run this command ON YOUR LOCAL COMPUTER, in a second terminal.
+  Do not run it inside this SSH session on the server.
+
+  ${tunnel_command}
+
+  Use the same SSH login as this session: key or password.
+  If you sign in with a password, OpenSSH will prompt for it locally.
+  Do not put the password in the command.
+
+  Then open:
+  http://127.0.0.1:8765/
+
+Keep the SSH tunnel open while completing installation.
+After Stage 2 finishes (installer off, Web/Admin on), you can close the tunnel.
+
+CLI fallback:
+  sudo plaik setup
+EOF
+}
+
 if [ "${PLAIK_INSTALL_ACTION:-}" = "validate-paths" ]; then
     validate_configured_paths
     echo "paths ok"
+    exit 0
+fi
+
+if [ "${PLAIK_INSTALL_ACTION:-}" = "print-stage2-access" ]; then
+    print_stage2_access
     exit 0
 fi
 
@@ -737,7 +889,5 @@ if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
 else
     systemctl disable --now plaik-web.service plaik-admin.service >/dev/null 2>&1 || true
     systemctl enable --now plaik-installer.service >/dev/null
-    echo "PLAIK system bootstrap completed."
-    echo
-    echo "Next step: open http://127.0.0.1:8765/ or run sudo plaik setup"
+    print_stage2_access
 fi

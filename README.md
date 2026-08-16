@@ -26,7 +26,7 @@ sudo sh install.sh
 sudo plaik setup
 ```
 
-The first command bootstraps the Linux runtime, private Python environment and systemd services. Domain, database, administrator and theme configuration belongs to the local web wizard at `http://127.0.0.1:8765/` while the installer service is open. `sudo plaik setup` remains as the headless automation and recovery fallback.
+The first command bootstraps the Linux runtime, private Python environment and systemd services. Domain, database, administrator and theme configuration belongs to the local web wizard at `http://127.0.0.1:8765/` while the installer service is open. The wizard binds loopback only; from another computer use an SSH tunnel as documented in [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md). `sudo plaik setup` remains as the headless automation and recovery fallback.
 
 Operational lifecycle commands include:
 

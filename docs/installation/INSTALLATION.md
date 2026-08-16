@@ -57,20 +57,11 @@ asset for each. For development only, local wheels can be supplied together with
 
 ## Stage 2 — PLAIK setup
 
-Open the local web installer:
-
-```text
-http://127.0.0.1:8765/
-```
-
-The CLI remains a fallback:
-
-```bash
-sudo plaik setup
-```
-
 This is the product configuration stage. The domain belongs here, not in the
-system bootstrap.
+system bootstrap. The Web Installer listens only on `127.0.0.1:8765`. It does
+not bind a LAN or public address, does not add a firewall exception, and does
+not sit behind a reverse proxy. Remote access is an SSH local forward from a
+computer that already has SSH access to the server.
 
 The CLI is an adapter over the existing installer API and Core state machine;
 it does not implement a second set of database/theme/admin lifecycle rules.
@@ -90,6 +81,55 @@ NOT_STARTED
 
 The setup is resumable. Re-running `sudo plaik setup` continues from the
 persisted installer state.
+
+### Local installation
+
+If the browser runs on the same machine as PLAIK, open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+### Remote installation over SSH
+
+If Stage 1 was installed over SSH, keep that session on the server and run
+the tunnel command **on your local computer**, in a second terminal. Do not
+run it inside the SSH session on the server.
+
+Linux, macOS, and Windows PowerShell use the same OpenSSH command:
+
+```powershell
+ssh -N -L 8765:127.0.0.1:8765 user@server
+```
+
+For a non-standard SSH port:
+
+```powershell
+ssh -p 2222 -N -L 8765:127.0.0.1:8765 user@server
+```
+
+The command is the same for SSH key and SSH password logins. If this server
+asks for a password, OpenSSH prompts for it in that local terminal. Do not
+put the password on the command line.
+
+Then open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+The browser runs on your local computer. The SSH tunnel forwards local port
+`8765` to the server's loopback port `8765`. Keep the tunnel open until Stage
+2 finishes. After confirmed handoff (`installer` off, Web/Admin on, installer
+token revoked) port `8765` is no longer needed and the tunnel can be closed.
+
+### CLI fallback
+
+Headless automation and recovery remain:
+
+```bash
+sudo plaik setup
+```
 
 ### Interactive setup
 
@@ -204,7 +244,9 @@ explicit operator action.
 
 ## Security boundaries
 
-- Installer API binds to loopback by default.
+- Installer API binds to loopback only (`127.0.0.1:8765`). Remote Stage 2
+  access is an SSH local forward, not a LAN/public listener or firewall
+  opening.
 - The installer token is generated during system bootstrap and stored under
   `/etc/plaik` with restricted permissions.
 - PLAIK services run as the dedicated `plaik` system user.
@@ -212,8 +254,9 @@ explicit operator action.
   restricted to PLAIK data/log paths.
 - Database passwords are persisted through the existing local secret provider,
   not inside `installer-config.json`.
-- Completing setup seals the installer configuration and disables the installer
-  systemd service.
+- Completing setup seals the installer configuration, disables the installer
+  systemd service, and revokes the installer token. The SSH tunnel to port
+  `8765` can be closed after that confirmed handoff.
 
 ## Not part of Stage 1
 
