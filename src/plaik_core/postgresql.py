@@ -1498,7 +1498,7 @@ class PostgreSQLAdapter:
         return PostgreSQLBootstrapResult(preflight=preflight, migrations=migrations)
 
     def grant_restricted_identities(self) -> None:
-        """Grant runtime DML and checkpoint-only history access after migrations."""
+        """Grant runtime Core DML and keep plaik_meta off runtime/checkpoint."""
 
         database = self.configuration.database
         if not isinstance(database, PostgreSQLDatabase):
@@ -1512,6 +1512,7 @@ class PostgreSQLAdapter:
 
         try:
             statements = restricted_identity_grants(
+                database.username,
                 database.runtime_username,
                 database.checkpoint_username,
             )
