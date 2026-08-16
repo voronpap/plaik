@@ -147,43 +147,56 @@ def provision_local_postgresql(
         f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
         f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
         f"{runtime_role}, {checkpoint_role};\n"
-        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
-        f"GRANT USAGE ON SCHEMAS TO {runtime_role};\n"
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "
-        f"{runtime_role};\n"
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
-        "GRANT USAGE, SELECT ON SEQUENCES TO "
-        f"{runtime_role};"
+        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
     )
     _psql(execute, port, database, grant_sql)
 
 
-def restricted_identity_grants(runtime_role: str, checkpoint_role: str) -> tuple[str, ...]:
-    """Return migrator-owned grants that keep checkpoint off runtime tables.
+def restricted_identity_grants(
+    migrator_role: str,
+    runtime_role: str,
+    checkpoint_role: str,
+) -> tuple[str, ...]:
+    """Return migrator-owned grants that keep runtime off migration evidence.
 
-    Checkpoint receives USAGE on ``plaik_core`` and SELECT/INSERT only on
-    ``plaik_integrity_checkpoints``. Runtime receives DML on existing Core
-    objects. Future migrator tables follow the runtime-only default privileges
-    installed during local provision.
+    Runtime receives DML only on ``plaik_core``. ``plaik_meta`` stays
+    migrator/control-plane authority. Checkpoint receives SELECT/INSERT only on
+    ``plaik_integrity_checkpoints``. Future Core tables follow default
+    privileges limited to ``plaik_core``.
     """
 
-    if any(IDENTIFIER.fullmatch(value) is None for value in (runtime_role, checkpoint_role)):
+    roles = (migrator_role, runtime_role, checkpoint_role)
+    if any(IDENTIFIER.fullmatch(value) is None for value in roles):
         raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
-    if runtime_role == checkpoint_role:
+    if len(set(roles)) != len(roles):
         raise PostgreSQLProvisionError("PostgreSQL database and roles must be distinct")
     return (
         f"GRANT USAGE ON SCHEMA plaik_core TO {runtime_role}, {checkpoint_role}",
-        f"GRANT USAGE ON SCHEMA plaik_meta TO {runtime_role}",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA plaik_core TO {runtime_role}",
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA plaik_meta TO {runtime_role}",
         f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA plaik_core TO {runtime_role}",
-        f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA plaik_meta TO {runtime_role}",
         f"GRANT SELECT, INSERT ON TABLE plaik_core.plaik_integrity_checkpoints TO {checkpoint_role}",
         (
             "REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
             f"ON TABLE plaik_core.plaik_integrity_checkpoints FROM {checkpoint_role}"
+        ),
+        f"REVOKE ALL ON SCHEMA plaik_meta FROM {runtime_role}, {checkpoint_role}",
+        f"REVOKE ALL ON ALL TABLES IN SCHEMA plaik_meta FROM {runtime_role}, {checkpoint_role}",
+        f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA plaik_meta FROM {runtime_role}, {checkpoint_role}",
+        (
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
+            f"REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM {runtime_role}"
+        ),
+        (
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} "
+            f"REVOKE USAGE, SELECT ON SEQUENCES FROM {runtime_role}"
+        ),
+        (
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} IN SCHEMA plaik_core "
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime_role}"
+        ),
+        (
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migrator_role} IN SCHEMA plaik_core "
+            f"GRANT USAGE, SELECT ON SEQUENCES TO {runtime_role}"
         ),
     )
 
