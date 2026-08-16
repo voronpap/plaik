@@ -32,31 +32,36 @@ from .storage import fsync_directory_best_effort
 
 MANAGED_MARKER = "plaik-managed-https-gateway"
 SURFACE_MARKER = "plaik-wan-surface"
+MANAGED_CONFIG_NAME = "plaik-remote-control.conf"
 WEB_PROXY = "http://127.0.0.1:8080"
 CONTROL_PROXY = "http://127.0.0.1:8081"
 MAX_CONFIG_BYTES = 256 * 1024
 _LISTEN_UNSAFE = re.compile(r"(8081|8765)")
 _INJECT = re.compile(r"[\n;{}]")
+_PATH_UNSAFE = re.compile(r'[\n;{}`"\'\\$]')
 _LISTEN_8081 = re.compile(r"listen\s+\S*8081\b")
 _LISTEN_8765 = re.compile(r"listen\s+\S*8765\b")
 _PROXY_INSTALLER = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8765\b")
+_PROXY_8081 = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8081\b")
 _PROXY_CONTROL_ROOT = re.compile(
-    r"location\s+/\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:8081",
+    r"location\s+/\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:\d+",
     re.DOTALL,
 )
 _PROXY_ADMIN = re.compile(
-    r"location\s+/api/admin[^\n]*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:8081",
+    r"location\s+/api/admin[^\n]*\{[^}]*proxy_pass\s+",
     re.DOTALL,
 )
 _PROXY_CONTROL_CENTER = re.compile(
-    r"location\s+/control-center[^\n]*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:8081",
+    r"location\s+/control-center[^\n]*\{[^}]*proxy_pass\s+",
     re.DOTALL,
 )
 _ACTIVATE_PROXY = re.compile(
-    r"location\s+=\s+/activate/?\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:8081",
+    r"location\s+=\s+/activate/?\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:\d+",
     re.DOTALL,
 )
-_SERVER_BLOCK = re.compile(r"\bserver\s*\{")
+_LOOPBACK_PROXY = re.compile(r"^http://127\.0\.0\.1:([1-9][0-9]{0,4})$")
+_SERVER_NAME = re.compile(r"server_name\s+(\S+);")
+_MARKER_VALUE = re.compile(r"# plaik-(public|control)-hostname:\s*(\S+)")
 
 
 class NginxGatewayError(RemoteControlError):
@@ -121,7 +126,8 @@ def _write_text_atomic(path: Path, text: str) -> None:
     if len(payload) > MAX_CONFIG_BYTES:
         raise NginxGatewayError("nginx config exceeds the size limit")
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.parent.is_dir():
+        raise NginxGatewayError("managed nginx parent directory does not exist")
     handle, temporary_name = tempfile.mkstemp(
         prefix=f".{target.name}-", dir=target.parent
     )
@@ -162,16 +168,68 @@ def _safe_listen(listen: str) -> str:
     return candidate
 
 
-def _safe_file(path: Path, *, label: str) -> Path:
+def _safe_loopback_proxy(url: str, *, label: str) -> str:
+    candidate = url.strip()
+    match = _LOOPBACK_PROXY.fullmatch(candidate)
+    if not match:
+        raise NginxGatewayError(f"{label} must be http://127.0.0.1:<port>")
+    port = int(match.group(1))
+    if port > 65535 or port == 8765:
+        raise NginxGatewayError(f"{label} cannot target the installer or an invalid port")
+    return candidate
+
+
+def _readable_cert_path(path: Path, *, label: str) -> Path:
+    """Read-only TLS path. Symlink chains (certbot live/) are allowed."""
+
     target = Path(path).expanduser()
     if not target.is_absolute():
         raise NginxGatewayError(f"{label} must be an absolute path")
+    rendered = str(target)
+    if _PATH_UNSAFE.search(rendered) or " " in rendered:
+        raise NginxGatewayError(f"{label} is not a safe nginx path")
+    if ".." in target.parts:
+        raise NginxGatewayError(f"{label} must not contain parent-directory segments")
     try:
-        metadata = os.lstat(target)
+        if not target.is_file():
+            raise NginxGatewayError(f"{label} cannot be read")
     except OSError as error:
         raise NginxGatewayError(f"{label} cannot be read") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise NginxGatewayError(f"{label} must be a regular file")
+    return target
+
+
+def _require_managed_root(path: Path) -> Path:
+    root = Path(path).expanduser()
+    if not root.is_absolute():
+        raise NginxGatewayError("managed root must be an absolute path")
+    if ".." in root.parts:
+        raise NginxGatewayError("managed root must not contain parent-directory segments")
+    try:
+        metadata = os.lstat(root)
+    except OSError as error:
+        raise NginxGatewayError("managed root does not exist") from error
+    if stat.S_ISLNK(metadata.st_mode):
+        raise NginxGatewayError("managed root cannot be a symlink")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise NginxGatewayError("managed root must be a directory")
+    return root
+
+
+def _managed_config_path(managed_root: Path) -> Path:
+    root = _require_managed_root(managed_root)
+    target = root / MANAGED_CONFIG_NAME
+    if target.exists() or target.is_symlink():
+        try:
+            metadata = os.lstat(target)
+        except OSError as error:
+            raise NginxGatewayError("managed nginx config cannot be read") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise NginxGatewayError("managed nginx config cannot be a symlink")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise NginxGatewayError("managed nginx config must be a regular file")
+        existing = target.read_text(encoding="utf-8")
+        if existing.strip() and MANAGED_MARKER not in existing:
+            raise NginxGatewayError("refusing to overwrite a non-PLAIK nginx file")
     return target
 
 
@@ -208,11 +266,15 @@ def render_nginx_gateway_config(
     certificate_path: Path | None,
     certificate_key_path: Path | None,
     listen: str = "443 ssl",
+    web_proxy: str = WEB_PROXY,
+    control_proxy: str = CONTROL_PROXY,
 ) -> str:
     """Render the managed snippet for ``plan.wan_surface``."""
 
     intent = plan.intent
     listen = _safe_listen(listen)
+    web_proxy = _safe_loopback_proxy(web_proxy, label="web_proxy")
+    control_proxy = _safe_loopback_proxy(control_proxy, label="control_proxy")
     public_hostname = _safe_token(intent.public_hostname, label="public_hostname")
     control_hostname = _safe_token(intent.control_hostname, label="control_hostname")
     lines = [
@@ -229,11 +291,11 @@ def render_nginx_gateway_config(
         return text
     if certificate_path is None or certificate_key_path is None:
         raise NginxGatewayError("TLS certificate and key are required to publish WAN")
-    certificate = _safe_file(certificate_path, label="ssl_certificate")
-    certificate_key = _safe_file(certificate_key_path, label="ssl_certificate_key")
+    certificate = _readable_cert_path(certificate_path, label="ssl_certificate")
+    certificate_key = _readable_cert_path(certificate_key_path, label="ssl_certificate_key")
     public_locations = (
         "    location / {\n"
-        f"        proxy_pass {WEB_PROXY};\n"
+        f"        proxy_pass {web_proxy};\n"
         f"{_proxy_headers()}\n"
         "    }\n"
     )
@@ -249,11 +311,11 @@ def render_nginx_gateway_config(
     if plan.wan_surface is WanSurface.ACTIVATE_ONLY:
         control_locations = (
             "    location = /activate {\n"
-            f"        proxy_pass {CONTROL_PROXY};\n"
+            f"        proxy_pass {control_proxy};\n"
             f"{_proxy_headers()}\n"
             "    }\n"
             "    location = /activate/ {\n"
-            f"        proxy_pass {CONTROL_PROXY};\n"
+            f"        proxy_pass {control_proxy};\n"
             f"{_proxy_headers()}\n"
             "    }\n"
             "    location /control-center { return 404; }\n"
@@ -263,7 +325,7 @@ def render_nginx_gateway_config(
     else:
         control_locations = (
             "    location / {\n"
-            f"        proxy_pass {CONTROL_PROXY};\n"
+            f"        proxy_pass {control_proxy};\n"
             f"{_proxy_headers()}\n"
             "    }\n"
         )
@@ -283,6 +345,101 @@ def render_nginx_gateway_config(
     return text
 
 
+def _server_blocks(text: str) -> list[str]:
+    blocks: list[str] = []
+    for match in re.finditer(r"\bserver\s*\{", text):
+        start = match.start()
+        depth = 0
+        for index, char in enumerate(text[start:]):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(text[start : start + index + 1])
+                    break
+        else:
+            raise NginxGatewayError("unknown managed nginx topology")
+    return blocks
+
+
+def _marker_hostnames(text: str) -> tuple[str | None, str | None]:
+    public = control = None
+    for match in _MARKER_VALUE.finditer(text):
+        if match.group(1) == "public":
+            public = match.group(2)
+        else:
+            control = match.group(2)
+    return public, control
+
+
+def _proxy_targets(block: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"proxy_pass\s+(http://127\.0\.0\.1:\d+)\b", block))
+
+
+def _assert_public_web_only(block: str) -> None:
+    if _PROXY_8081.search(block):
+        raise NginxGatewayError("public hostname cannot proxy Control Center")
+    targets = _proxy_targets(block)
+    if len(targets) != 1 or not targets[0].startswith("http://127.0.0.1:"):
+        raise NginxGatewayError("unknown managed nginx topology")
+    if targets[0].endswith(":8765") or targets[0].endswith(":8081"):
+        raise NginxGatewayError("unknown managed nginx topology")
+
+
+def inspect_nginx_config(text: str) -> WanSurface:
+    """Derive WAN surface from the managed snippet.
+
+    ``CLOSED`` is only valid when no ``server`` blocks exist. Any unknown
+    topology, including an unexpected 8081 proxy, is an inspection failure.
+    """
+
+    if _LISTEN_8081.search(text) or _LISTEN_8765.search(text) or _PROXY_INSTALLER.search(text):
+        raise NginxGatewayError("managed nginx config exposes a forbidden listener")
+    blocks = _server_blocks(text)
+    if not blocks:
+        if _PROXY_8081.search(text):
+            raise NginxGatewayError("unknown managed nginx topology")
+        return WanSurface.CLOSED
+    public, control = _marker_hostnames(text)
+    if public is None or control is None or public == control:
+        raise NginxGatewayError("unknown managed nginx topology")
+    names: dict[str, str] = {}
+    for block in blocks:
+        match = _SERVER_NAME.search(block)
+        if match is None:
+            raise NginxGatewayError("unknown managed nginx topology")
+        name = match.group(1)
+        if name in names:
+            raise NginxGatewayError("unknown managed nginx topology")
+        names[name] = block
+    if set(names) != {public, control}:
+        raise NginxGatewayError("unknown managed nginx topology")
+    public_block = names[public]
+    control_block = names[control]
+    _assert_public_web_only(public_block)
+    control_targets = _proxy_targets(control_block)
+    if any(target.endswith(":8765") for target in control_targets):
+        raise NginxGatewayError("managed nginx config cannot proxy the installer")
+    if _PROXY_CONTROL_ROOT.search(control_block) and not _ACTIVATE_PROXY.search(control_block):
+        if len(control_targets) != 1:
+            raise NginxGatewayError("unknown managed nginx topology")
+        if _PROXY_ADMIN.search(control_block) or _PROXY_CONTROL_CENTER.search(control_block):
+            raise NginxGatewayError("unknown managed nginx topology")
+        return WanSurface.CONTROL_CENTER
+    if _ACTIVATE_PROXY.search(control_block) and not _PROXY_CONTROL_ROOT.search(control_block):
+        if _PROXY_ADMIN.search(control_block) or _PROXY_CONTROL_CENTER.search(control_block):
+            raise NginxGatewayError("activate-only config proxies the Control Center")
+        if len(control_targets) != 2:
+            raise NginxGatewayError("unknown managed nginx topology")
+        if "location /control-center { return 404; }" not in control_block:
+            raise NginxGatewayError("unknown managed nginx topology")
+        if "location /api/admin { return 404; }" not in control_block:
+            raise NginxGatewayError("unknown managed nginx topology")
+        return WanSurface.ACTIVATE_ONLY
+    raise NginxGatewayError("unknown managed nginx topology")
+
+
 def _assert_rendered_safe(text: str, plan: GatewayPlan) -> None:
     if len(text.encode("utf-8")) > MAX_CONFIG_BYTES:
         raise NginxGatewayError("nginx config exceeds the size limit")
@@ -293,39 +450,11 @@ def _assert_rendered_safe(text: str, plan: GatewayPlan) -> None:
     if "0.0.0.0:8081" in text or "[::]:8081" in text:
         raise NginxGatewayError("rendered nginx config cannot expose Control Center on WAN")
     if plan.wan_surface is WanSurface.CLOSED:
-        if _SERVER_BLOCK.search(text):
+        if _server_blocks(text):
             raise NginxGatewayError("closed WAN surface cannot contain server blocks")
         return
-    if plan.wan_surface is WanSurface.ACTIVATE_ONLY:
-        if not _ACTIVATE_PROXY.search(text):
-            raise NginxGatewayError("activate-only surface must proxy /activate")
-        if _PROXY_CONTROL_ROOT.search(text):
-            raise NginxGatewayError("activate-only surface cannot proxy Control Center /")
-        if _PROXY_ADMIN.search(text) or _PROXY_CONTROL_CENTER.search(text):
-            raise NginxGatewayError(
-                "activate-only surface cannot proxy /api/admin or /control-center"
-            )
-        return
-    if not _PROXY_CONTROL_ROOT.search(text):
-        raise NginxGatewayError("Control Center surface must proxy / to 127.0.0.1:8081")
-
-
-def inspect_nginx_config(text: str) -> WanSurface:
-    """Derive WAN surface from the managed snippet. Marker is not trusted alone."""
-
-    if MANAGED_MARKER not in text or not text.strip():
-        return WanSurface.CLOSED
-    if not _SERVER_BLOCK.search(text):
-        return WanSurface.CLOSED
-    if _LISTEN_8081.search(text) or _LISTEN_8765.search(text) or _PROXY_INSTALLER.search(text):
-        raise NginxGatewayError("managed nginx config exposes a forbidden listener")
-    if _PROXY_CONTROL_ROOT.search(text):
-        return WanSurface.CONTROL_CENTER
-    if _ACTIVATE_PROXY.search(text):
-        if _PROXY_ADMIN.search(text) or _PROXY_CONTROL_CENTER.search(text):
-            raise NginxGatewayError("activate-only config proxies the Control Center")
-        return WanSurface.ACTIVATE_ONLY
-    return WanSurface.CLOSED
+    if inspect_nginx_config(text) is not plan.wan_surface:
+        raise NginxGatewayError("rendered nginx config does not match the planned WAN surface")
 
 
 class NginxHttpsGatewayProvider:
@@ -336,19 +465,34 @@ class NginxHttpsGatewayProvider:
     def __init__(
         self,
         *,
-        config_path: Path,
+        managed_root: Path,
         certificate_path: Path | None = None,
         certificate_key_path: Path | None = None,
         listen: str = "443 ssl",
         nginx: NginxProcess | None = None,
+        web_proxy: str = WEB_PROXY,
+        control_proxy: str = CONTROL_PROXY,
     ) -> None:
-        self.config_path = Path(config_path)
+        self.managed_root = _require_managed_root(managed_root)
+        self.config_path = _managed_config_path(self.managed_root)
         self.certificate_path = certificate_path
         self.certificate_key_path = certificate_key_path
         self.listen = listen
+        self.web_proxy = _safe_loopback_proxy(web_proxy, label="web_proxy")
+        self.control_proxy = _safe_loopback_proxy(control_proxy, label="control_proxy")
         self.nginx = nginx or SubprocessNginxProcess()
         self._previous: str | None = None
         self._last_plan: GatewayPlan | None = None
+
+    def _render(self, plan: GatewayPlan) -> str:
+        return render_nginx_gateway_config(
+            plan,
+            certificate_path=self.certificate_path,
+            certificate_key_path=self.certificate_key_path,
+            listen=self.listen,
+            web_proxy=self.web_proxy,
+            control_proxy=self.control_proxy,
+        )
 
     def plan(self, record: RemoteControlRecord) -> GatewayPlan:
         return GatewayPlan.from_record(record)
@@ -356,20 +500,12 @@ class NginxHttpsGatewayProvider:
     def validate(self, plan: GatewayPlan) -> None:
         if plan.intent.gateway_provider is not GatewayProviderName.NGINX:
             raise NginxGatewayError("nginx provider cannot publish a non-nginx intent")
-        render_nginx_gateway_config(
-            plan,
-            certificate_path=self.certificate_path,
-            certificate_key_path=self.certificate_key_path,
-            listen=self.listen,
-        )
+        self.config_path = _managed_config_path(self.managed_root)
+        self._render(plan)
 
     def apply(self, plan: GatewayPlan) -> None:
-        rendered = render_nginx_gateway_config(
-            plan,
-            certificate_path=self.certificate_path,
-            certificate_key_path=self.certificate_key_path,
-            listen=self.listen,
-        )
+        self.config_path = _managed_config_path(self.managed_root)
+        rendered = self._render(plan)
         previous = ""
         if self.config_path.is_file():
             previous = self.config_path.read_text(encoding="utf-8")
@@ -387,14 +523,17 @@ class NginxHttpsGatewayProvider:
         if not self.config_path.is_file():
             raise NginxGatewayError("managed nginx config is missing")
         self.nginx.test()
+        text = self.config_path.read_text(encoding="utf-8")
+        current = inspect_nginx_config(text)
         if self._last_plan is not None:
-            current = inspect_nginx_config(self.config_path.read_text(encoding="utf-8"))
-            if current is not self._last_plan.wan_surface:
+            expected = self._render(self._last_plan)
+            if text != expected or current is not self._last_plan.wan_surface:
                 raise NginxGatewayError("nginx verify does not match the applied surface")
 
     def rollback(self) -> None:
         if self._previous is None:
             return
+        self.config_path = _managed_config_path(self.managed_root)
         _write_text_atomic(self.config_path, self._previous)
         self.nginx.test()
         self.nginx.reload()
@@ -402,9 +541,16 @@ class NginxHttpsGatewayProvider:
 
     def inspect(self) -> GatewayInspection:
         if not self.config_path.is_file():
-            surface = WanSurface.CLOSED
-        else:
-            surface = inspect_nginx_config(self.config_path.read_text(encoding="utf-8"))
+            return GatewayInspection(
+                provider=GatewayProviderName.NGINX,
+                wan_surface=WanSurface.CLOSED,
+            )
+        text = self.config_path.read_text(encoding="utf-8")
+        surface = inspect_nginx_config(text)
+        if self._last_plan is not None:
+            expected = self._render(self._last_plan)
+            if text != expected or surface is not self._last_plan.wan_surface:
+                raise NginxGatewayError("managed nginx config drifted from the applied plan")
         return GatewayInspection(
             provider=GatewayProviderName.NGINX,
             wan_surface=surface,
