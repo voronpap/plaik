@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
 
-from .host_inventory import CommandRunner, HostInventory, PostgreSQLListener
+from .host_inventory import HostInventory, PostgreSQLListener
+
+ProvisionRunner = Callable[..., tuple[int, str]]
 
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
@@ -25,10 +28,11 @@ def literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _default_runner(command: list[str]) -> tuple[int, str]:
+def _default_runner(command: list[str], input_text: str | None = None) -> tuple[int, str]:
     try:
         completed = subprocess.run(
             command,
+            input=input_text,
             check=False,
             capture_output=True,
             text=True,
@@ -37,6 +41,22 @@ def _default_runner(command: list[str]) -> tuple[int, str]:
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
     return completed.returncode, completed.stdout or completed.stderr
+
+
+def _run(
+    runner: ProvisionRunner | None,
+    command: list[str],
+    input_text: str | None = None,
+) -> tuple[int, str]:
+    execute = runner or _default_runner
+    try:
+        return execute(command, input_text)
+    except TypeError:
+        if input_text is not None:
+            raise PostgreSQLProvisionError(
+                "PostgreSQL provision runner cannot accept stdin"
+            ) from None
+        return execute(command)
 
 
 def provisionable_listener(
@@ -80,9 +100,8 @@ def provision_local_postgresql(
     runtime_password: str,
     checkpoint_password: str,
     inventory: HostInventory,
-    runner: CommandRunner | None = None,
+    runner: ProvisionRunner | None = None,
 ) -> None:
-    execute = runner or _default_runner
     if provisionable_listener(inventory, port) is None:
         raise PostgreSQLProvisionError(
             "cannot create a database on a listener without local postgres peer access"
@@ -106,7 +125,7 @@ def provision_local_postgresql(
             "database already exists; choose use-detected or another name"
         )
     existing_roles = _existing_roles(
-        execute,
+        runner,
         port,
         (migrator_role, runtime_role, checkpoint_role),
     )
@@ -114,42 +133,67 @@ def provision_local_postgresql(
         raise PostgreSQLProvisionError(
             "refusing to reuse existing PostgreSQL roles"
         )
-    role_sql = []
-    for role, password, limit in zip(
-        (migrator_role, runtime_role, checkpoint_role),
-        passwords,
-        (5, 30, 5),
-        strict=True,
-    ):
-        role_sql.append(
-            f"CREATE ROLE {role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
-            f"NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT {limit} "
-            f"PASSWORD {literal(password)};"
+    created_roles: list[str] = []
+    created_database = False
+    try:
+        for role, password, limit in zip(
+            (migrator_role, runtime_role, checkpoint_role),
+            passwords,
+            (5, 30, 5),
+            strict=True,
+        ):
+            _psql(
+                runner,
+                port,
+                "postgres",
+                (
+                    f"CREATE ROLE {role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+                    f"NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT {limit} "
+                    f"PASSWORD {literal(password)};"
+                ),
+            )
+            created_roles.append(role)
+        createdb = _run(
+            runner,
+            [
+                "runuser",
+                "-u",
+                "postgres",
+                "--",
+                "createdb",
+                "--port",
+                str(port),
+                "--owner",
+                migrator_role,
+                database,
+            ],
         )
-    _psql(execute, port, "postgres", "\n".join(role_sql))
-    createdb = execute(
-        [
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "createdb",
-            "--port",
-            str(port),
-            "--owner",
-            migrator_role,
-            database,
-        ]
-    )
-    if createdb[0] != 0:
-        raise PostgreSQLProvisionError("PostgreSQL database creation failed")
-    grant_sql = (
-        f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
-        f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
-        f"{runtime_role}, {checkpoint_role};\n"
-        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
-    )
-    _psql(execute, port, database, grant_sql)
+        if createdb[0] != 0:
+            raise PostgreSQLProvisionError("PostgreSQL database creation failed")
+        created_database = True
+        grant_sql = (
+            f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
+            f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
+            f"{runtime_role}, {checkpoint_role};\n"
+            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+        )
+        _psql(runner, port, database, grant_sql)
+    except Exception as error:
+        try:
+            _drop_created_resources(
+                runner,
+                port,
+                database,
+                created_roles=tuple(created_roles),
+                created_database=created_database,
+            )
+        except Exception:
+            raise PostgreSQLProvisionError(
+                "PostgreSQL provision failed and leftover roles/database could not be removed"
+            ) from error
+        if isinstance(error, PostgreSQLProvisionError):
+            raise
+        raise PostgreSQLProvisionError("PostgreSQL provision failed") from error
 
 
 def restricted_identity_grants(
@@ -202,27 +246,15 @@ def restricted_identity_grants(
 
 
 def _existing_roles(
-    runner: CommandRunner, port: int, roles: tuple[str, str, str]
+    runner: ProvisionRunner | None, port: int, roles: tuple[str, str, str]
 ) -> tuple[str, ...]:
     listed = ", ".join(literal(role) for role in roles)
-    code, output = runner(
-        [
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--set=ON_ERROR_STOP=1",
-            "-At",
-            "-p",
-            str(port),
-            "--dbname",
-            "postgres",
-            "--command",
-            "SELECT rolname FROM pg_roles WHERE rolname IN "
-            f"({listed}) ORDER BY rolname;",
-        ]
+    code, output = _psql_query(
+        runner,
+        port,
+        "postgres",
+        "SELECT rolname FROM pg_roles WHERE rolname IN "
+        f"({listed}) ORDER BY rolname;",
     )
     if code != 0:
         raise PostgreSQLProvisionError("PostgreSQL role inspection failed")
@@ -234,26 +266,50 @@ def _existing_roles(
     return found
 
 
-def _psql(runner: CommandRunner, port: int, database: str, sql: str) -> None:
+def _drop_created_resources(
+    runner: ProvisionRunner | None,
+    port: int,
+    database: str,
+    *,
+    created_roles: tuple[str, ...],
+    created_database: bool,
+) -> None:
+    if created_database:
+        _psql(runner, port, "postgres", f"DROP DATABASE IF EXISTS {database};")
+    for role in reversed(created_roles):
+        _psql(runner, port, "postgres", f"DROP ROLE IF EXISTS {role};")
+
+
+def _psql_command(port: int, database: str) -> list[str]:
     if IDENTIFIER.fullmatch(database) is None and database != "postgres":
         raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
-    code, _output = runner(
-        [
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--set=ON_ERROR_STOP=1",
-            "-At",
-            "-p",
-            str(port),
-            "--dbname",
-            database,
-            "--command",
-            sql,
-        ]
-    )
+    return [
+        "runuser",
+        "-u",
+        "postgres",
+        "--",
+        "psql",
+        "--no-psqlrc",
+        "--set=ON_ERROR_STOP=1",
+        "-At",
+        "-p",
+        str(port),
+        "--dbname",
+        database,
+        "--file",
+        "-",
+    ]
+
+
+def _psql_query(
+    runner: ProvisionRunner | None, port: int, database: str, sql: str
+) -> tuple[int, str]:
+    return _run(runner, _psql_command(port, database), sql)
+
+
+def _psql(
+    runner: ProvisionRunner | None, port: int, database: str, sql: str
+) -> None:
+    code, _output = _psql_query(runner, port, database, sql)
     if code != 0:
         raise PostgreSQLProvisionError("PostgreSQL provision statement failed")
