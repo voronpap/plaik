@@ -29,6 +29,7 @@ from .config import CoreSettings
 from .host_inventory import HostInventory, discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import DeploymentMode, InstallerConfigurationStore
+from .pairing import PairingIssueUnavailable, PairingStore
 from .postgresql_provision import (
     PostgreSQLProvisionError,
     generate_role_secret,
@@ -36,6 +37,7 @@ from .postgresql_provision import (
 )
 from .requirements import RequirementCheck, SystemRequirements
 from .secret_store import LocalFileSecretProvider
+from .remote_control import RemoteControlStore
 from .service_control import (
     ServiceControlError,
     finalize_installed_services,
@@ -1247,6 +1249,33 @@ def _print_installer_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_remote_pairing(_args: argparse.Namespace) -> int:
+    _apply_install_environment()
+    _require_root()
+    settings = CoreSettings()
+    configuration = InstallerConfigurationStore(settings.installer_config_path).read()
+    if configuration is None:
+        raise PlaikCLIError("installation identity is unavailable")
+    try:
+        issued = PairingStore(settings.remote_control_pairing_path).issue(
+            remote=RemoteControlStore(settings.remote_control_path).read(),
+            installation_id=configuration.installation_id,
+            install_state=InstallStateStore(settings.install_state_path).read(),
+        )
+    except PairingIssueUnavailable as error:
+        raise PlaikCLIError(str(error)) from None
+    print(f"Activate: {issued.activate_url}")
+    print(f"Code: {issued.code}")
+    print(f"Expires: {issued.expires_at.isoformat()}")
+    qrencode = shutil.which("qrencode")
+    if qrencode is not None:
+        subprocess.run(
+            [qrencode, "-t", "ANSIUTF8", issued.activate_url],
+            check=False,
+        )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plaik")
     parser.add_argument("--version", action="version", version=f"PLAIK {__version__}")
@@ -1294,6 +1323,12 @@ def _parser() -> argparse.ArgumentParser:
         help="print the one-time Stage 2 installer token (root only)",
     )
     token.set_defaults(handler=_print_installer_token)
+
+    pairing = commands.add_parser(
+        "remote-pairing",
+        help="issue a one-time Remote Control pairing code (root only)",
+    )
+    pairing.set_defaults(handler=_print_remote_pairing)
     return parser
 
 
