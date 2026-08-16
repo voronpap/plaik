@@ -14,10 +14,12 @@ import os
 import pwd
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,10 @@ _SERVICE_USER = os.environ.get("PLAIK_SERVICE_USER", "plaik-installer")
 _ADMIN_USER = os.environ.get("PLAIK_ADMIN_USER", "plaik-admin")
 _PUBLIC_USER = os.environ.get("PLAIK_PUBLIC_USER", "plaik-public")
 _INSTALLER_URL = os.environ.get("PLAIK_INSTALLER_URL", "http://127.0.0.1:8765")
+_DOCTOR_HEALTH_KEYS = frozenset(
+    {"status", "reason", "core_version", "install_state", "default_theme"}
+)
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _system_root() -> Path:
@@ -177,6 +183,154 @@ def _service_active(name: str) -> bool:
         return False
     result = _systemctl("is-active", "--quiet", name, check=False)
     return result is not None and result.returncode == 0
+
+
+def _web_health_url() -> str:
+    return os.environ.get("PLAIK_WEB_HEALTH_URL", "http://127.0.0.1:8080/health")
+
+
+def _admin_health_url() -> str:
+    return os.environ.get("PLAIK_ADMIN_HEALTH_URL", "http://127.0.0.1:8081/health")
+
+
+def _installer_port() -> int:
+    raw = os.environ.get("PLAIK_INSTALLER_PORT", "8765")
+    try:
+        port = int(raw)
+    except ValueError:
+        return 8765
+    if not 1 <= port <= 65535:
+        return 8765
+    return port
+
+
+def _require_loopback_http_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in _LOOPBACK_HOSTS:
+        raise PlaikCLIError("doctor health URLs must be loopback HTTP")
+
+
+def _sanitize_health_payload(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    sanitized: dict[str, str] = {}
+    for key in _DOCTOR_HEALTH_KEYS:
+        value = payload.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (str, int)):
+            text = str(value)
+            if 0 < len(text) <= 64:
+                sanitized[key] = text
+    return sanitized
+
+
+def _http_get_json(url: str, timeout: float = 3.0) -> tuple[int, dict[str, str]]:
+    _require_loopback_http_url(url)
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(response.getcode() or 0)
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        status = int(error.code)
+        raw = error.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return 0, {}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        payload = {}
+    return status, _sanitize_health_payload(payload)
+
+
+def _loopback_port_closed(port: int, *, timeout: float = 0.3) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return False
+    except ConnectionRefusedError:
+        return True
+    except TimeoutError:
+        return False
+    except OSError:
+        return False
+
+
+def _doctor_mark(passed: bool, check_id: str, detail: str) -> bool:
+    print(f"{'✓' if passed else '✗'} {check_id}: {detail}")
+    return not passed
+
+
+def _completed_health_ok(status: int, payload: dict[str, str]) -> bool:
+    return (
+        status == 200
+        and payload.get("status") == "ok"
+        and payload.get("core_version") == __version__
+    )
+
+
+def _completed_health_detail(
+    status: int,
+    payload: dict[str, str],
+    *,
+    ok: bool,
+) -> str:
+    if status == 0:
+        return "unreachable"
+    if ok:
+        return payload.get("core_version") or "ok"
+    if payload.get("status") == "ok":
+        return payload.get("core_version") or "missing-core-version"
+    return payload.get("reason") or payload.get("status") or str(status)
+
+
+def _doctor_completed_runtime() -> bool:
+    failed = False
+    installer_active = _service_active("plaik-installer.service")
+    failed = _doctor_mark(
+        not installer_active,
+        "plaik-installer.service",
+        "active" if installer_active else "inactive",
+    ) or failed
+    token_present = _installer_env_file().is_file()
+    failed = _doctor_mark(
+        not token_present,
+        "installer-token",
+        "present" if token_present else "revoked",
+    ) or failed
+    installer_port = _installer_port()
+    port_closed = _loopback_port_closed(installer_port)
+    failed = _doctor_mark(
+        port_closed,
+        f"installer-port-{installer_port}",
+        "closed" if port_closed else "open",
+    ) or failed
+    for service in ("plaik-web.service", "plaik-admin.service"):
+        active = _service_active(service)
+        failed = _doctor_mark(
+            active,
+            service,
+            "active" if active else "inactive",
+        ) or failed
+    web_status, web_payload = _http_get_json(_web_health_url())
+    web_ok = _completed_health_ok(web_status, web_payload)
+    failed = _doctor_mark(
+        web_ok,
+        "web-health",
+        _completed_health_detail(web_status, web_payload, ok=web_ok),
+    ) or failed
+    admin_status, admin_payload = _http_get_json(_admin_health_url())
+    admin_ok = _completed_health_ok(admin_status, admin_payload)
+    failed = _doctor_mark(
+        admin_ok,
+        "admin-health",
+        _completed_health_detail(admin_status, admin_payload, ok=admin_ok),
+    ) or failed
+    return failed
 
 
 def _ensure_installer_service() -> None:
@@ -925,10 +1079,7 @@ def _doctor(_args: argparse.Namespace) -> int:
         _print_host_state(report.observations)
     state = InstallStateStore(settings.install_state_path).read()
     if state == InstallState.COMPLETED and _is_real_system_root():
-        for service in ("plaik-web.service", "plaik-admin.service"):
-            active = _service_active(service)
-            print(f"{'✓' if active else '✗'} {service}: {'active' if active else 'inactive'}")
-            failed = failed or not active
+        failed = _doctor_completed_runtime() or failed
     return 1 if failed else 0
 
 
