@@ -40,10 +40,11 @@ MAX_DUMP_BYTES = 8 * 1024 * 1024
 _LISTEN_UNSAFE = re.compile(r"(8081|8765)")
 _INJECT = re.compile(r"[\n;{}]")
 _PATH_UNSAFE = re.compile(r'[\n;{}`"\'\\$]')
-_LISTEN_8081 = re.compile(r"listen\s+\S*8081\b")
-_LISTEN_8765 = re.compile(r"listen\s+\S*8765\b")
+_LISTEN_8081 = re.compile(r"listen\s+(?:\S+:)?8081\b")
+_LISTEN_8765 = re.compile(r"listen\s+(?:\S+:)?8765\b")
 _LISTEN_SPEC = re.compile(r"listen\s+([^;]+);")
 _CONFIG_FILE_HEADER = re.compile(r"^# configuration file (.+):\s*$", re.MULTILINE)
+_SERVER_NAME_LIST = re.compile(r"server_name\s+([^;]+);")
 _PROXY_INSTALLER = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8765\b")
 _PROXY_8081 = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8081\b")
 _PROXY_CONTROL_ROOT = re.compile(
@@ -215,6 +216,15 @@ def _normalize_nginx_text(text: str) -> str:
     return text.replace("\r\n", "\n").strip() + "\n"
 
 
+def _path_aliases(path: Path) -> set[str]:
+    aliases = {str(path)}
+    try:
+        aliases.add(str(path.resolve()))
+    except OSError:
+        pass
+    return aliases
+
+
 def _split_effective_files(dump: str) -> dict[str, str]:
     files: dict[str, str] = {}
     matches = list(_CONFIG_FILE_HEADER.finditer(dump))
@@ -227,22 +237,63 @@ def _split_effective_files(dump: str) -> dict[str, str]:
 
 def _included_managed_snippet(dump: str, config_path: Path) -> str:
     files = _split_effective_files(dump)
-    wanted = {str(config_path)}
-    try:
-        wanted.add(str(config_path.resolve()))
-    except OSError:
-        pass
+    wanted = _path_aliases(config_path)
     for key, body in files.items():
-        candidates = {key}
-        try:
-            candidates.add(str(Path(key).resolve()))
-        except OSError:
-            pass
-        if candidates & wanted:
+        if _path_aliases(Path(key)) & wanted:
             return body
     raise NginxGatewayError(
         "managed nginx config is not in the effective nginx configuration"
     )
+
+
+def _foreign_effective_text(dump: str, config_path: Path) -> str:
+    files = _split_effective_files(dump)
+    wanted = _path_aliases(config_path)
+    parts: list[str] = []
+    for key, body in files.items():
+        if _path_aliases(Path(key)) & wanted:
+            continue
+        parts.append(body)
+    return "\n".join(parts)
+
+
+def _server_names(block: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for match in _SERVER_NAME_LIST.finditer(block):
+        names.extend(token for token in match.group(1).split() if token != "_")
+    return tuple(names)
+
+
+def _assert_no_forbidden_listeners(text: str, *, label: str) -> None:
+    if _LISTEN_8081.search(text) or _LISTEN_8765.search(text):
+        raise NginxGatewayError(f"{label} exposes a forbidden listener")
+    if _PROXY_INSTALLER.search(text):
+        raise NginxGatewayError(f"{label} proxies the installer")
+
+
+def _assert_effective_dump(
+    dump: str,
+    snippet: str,
+    config_path: Path,
+    extra_hostnames: frozenset[str] = frozenset(),
+) -> None:
+    """Fail closed on conflicts outside the managed snippet. Does not edit foreign files."""
+
+    _assert_no_forbidden_listeners(dump, label="effective nginx config")
+    foreign = _foreign_effective_text(dump, config_path)
+    if _PROXY_8081.search(foreign):
+        raise NginxGatewayError(
+            "effective nginx config still publishes Control Center"
+        )
+    reserved = {name for name in _marker_hostnames(snippet) if name}
+    reserved.update(extra_hostnames)
+    if not reserved:
+        return
+    for block in _server_blocks(foreign):
+        if reserved.intersection(_server_names(block)):
+            raise NginxGatewayError(
+                "effective nginx config has a conflicting server_name"
+            )
 
 
 def _assert_tls_server(block: str) -> None:
@@ -573,10 +624,14 @@ class NginxHttpsGatewayProvider:
         self.nginx = nginx or SubprocessNginxProcess()
         self._previous: str | None = None
         self._last_plan: GatewayPlan | None = None
+        self._reserved_hostnames: frozenset[str] = frozenset()
         if isinstance(self.nginx, MemoryNginxProcess) and self.nginx.managed_config is None:
             self.nginx.managed_config = self.config_path
 
     def _render(self, plan: GatewayPlan) -> str:
+        self._reserved_hostnames = frozenset(
+            {plan.intent.public_hostname, plan.intent.control_hostname}
+        )
         return render_nginx_gateway_config(
             plan,
             certificate_path=self.certificate_path,
@@ -617,16 +672,13 @@ class NginxHttpsGatewayProvider:
         if len(dump.encode("utf-8")) > MAX_DUMP_BYTES:
             raise NginxGatewayError("nginx effective config exceeds the size limit")
         snippet = _included_managed_snippet(dump, self.config_path)
-        self._assert_dump_matches_surface(dump, inspect_nginx_config(snippet))
+        _assert_effective_dump(
+            dump,
+            snippet,
+            self.config_path,
+            extra_hostnames=self._reserved_hostnames,
+        )
         return snippet
-
-    def _assert_dump_matches_surface(self, dump: str, surface: WanSurface) -> None:
-        if surface is WanSurface.CLOSED and (
-            _PROXY_8081.search(dump) or _LISTEN_8081.search(dump)
-        ):
-            raise NginxGatewayError(
-                "effective nginx config still publishes Control Center"
-            )
 
     def _assert_effective(self, expected: str, plan: GatewayPlan) -> None:
         snippet = self._effective_snippet()
