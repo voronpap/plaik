@@ -1,6 +1,7 @@
 """Runnable Platform v2 bootstrap API."""
 
 import hashlib
+import os
 import secrets
 import sqlite3
 from pathlib import Path

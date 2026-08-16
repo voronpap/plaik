@@ -36,6 +36,7 @@ class ServiceControlError(RuntimeError):
 WEB_SERVICE = "plaik-web.service"
 ADMIN_SERVICE = "plaik-admin.service"
 INSTALLER_SERVICE = "plaik-installer.service"
+PRIVILEGED_ACTIONS = frozenset({"finalize-services", "provision-database"})
 HANDOFF_NOT_STARTED = "not_started"
 HANDOFF_PENDING = "pending"
 HANDOFF_FAILED = "failed"
