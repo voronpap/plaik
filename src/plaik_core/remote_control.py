@@ -11,7 +11,9 @@ Runtime loopback invariants are part of the contract:
 - Installer: 127.0.0.1:8765
 
 ``remote_control_enabled`` is derived from observed status. ENABLED is
-impossible without an enrolled admin passkey. ERROR never opens port 8081.
+impossible without an admin passkey enrolled for the exact current
+``control_hostname`` RP ID. ERROR never opens port 8081. ``wan_surface`` is
+derived only from a validated ``RemoteControlRecord``.
 """
 
 from __future__ import annotations
@@ -82,22 +84,6 @@ class WanSurface(StrEnum):
     CONTROL_CENTER = "control_center"
 
 
-def wan_surface_for(status: RemoteControlStatus) -> WanSurface:
-    """Map observed status to the only WAN surface a gateway may expose."""
-
-    if status is RemoteControlStatus.ENABLED:
-        return WanSurface.CONTROL_CENTER
-    if status is RemoteControlStatus.ENROLLMENT_PENDING:
-        return WanSurface.ACTIVATE_ONLY
-    return WanSurface.CLOSED
-
-
-def remote_control_enabled(status: RemoteControlStatus) -> bool:
-    """Derived flag. Not an independent stored boolean."""
-
-    return status is RemoteControlStatus.ENABLED
-
-
 def is_forbidden_wan_bind(host: str) -> bool:
     return host.strip().casefold() in {item.casefold() for item in FORBIDDEN_WAN_BIND_ADDRESSES}
 
@@ -123,6 +109,12 @@ def validate_dns_hostname(value: str, *, label: str) -> str:
     if not _HOSTNAME.fullmatch(candidate):
         raise InvalidRemoteHostname(f"{label} must be a DNS hostname")
     return candidate
+
+
+def remote_control_enabled(status: RemoteControlStatus) -> bool:
+    """Derived flag. Not an independent stored boolean."""
+
+    return status is RemoteControlStatus.ENABLED
 
 
 class RemoteControlIntent(BaseModel):
@@ -159,12 +151,89 @@ class RemoteControlIntent(BaseModel):
         return self
 
 
-class GatewayPlan(BaseModel):
-    """Provider-agnostic publication plan. Contains no nginx syntax."""
+class RemoteControlRecord(BaseModel):
+    """Persisted observed Remote Control state plus the last accepted intent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    intent: RemoteControlIntent
+    intent: RemoteControlIntent | None = None
+    status: RemoteControlStatus = RemoteControlStatus.DISABLED
+    enrolled_admin_passkey_rp_id: str | None = None
+    error_code: str | None = None
+
+    @field_validator("enrolled_admin_passkey_rp_id")
+    @classmethod
+    def validate_enrolled_rp_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_dns_hostname(value, label="enrolled_admin_passkey_rp_id")
+
+    @field_validator("error_code")
+    @classmethod
+    def validate_error_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not _ERROR_CODE.fullmatch(value):
+            raise ValueError("invalid remote control error code")
+        return value
+
+    @model_validator(mode="after")
+    def validate_observed_invariants(self) -> "RemoteControlRecord":
+        if (
+            self.status
+            in {
+                RemoteControlStatus.PREFLIGHT,
+                RemoteControlStatus.ENROLLMENT_PENDING,
+                RemoteControlStatus.ENABLED,
+            }
+            and (self.intent is None or not self.intent.remote_access_requested)
+        ):
+            raise ValueError("active remote control requires requested intent")
+        if self.status is RemoteControlStatus.ENABLED:
+            if self.intent is None:
+                raise ValueError("ENABLED requires a remote control intent")
+            if self.enrolled_admin_passkey_rp_id != self.intent.control_hostname:
+                raise ValueError(
+                    "ENABLED requires an admin passkey enrolled for the exact "
+                    "control_hostname RP ID"
+                )
+        if self.status is not RemoteControlStatus.ERROR and self.error_code is not None:
+            raise ValueError("error_code is only valid while status is ERROR")
+        if self.status is RemoteControlStatus.ERROR and self.error_code is None:
+            raise ValueError("ERROR requires an error_code")
+        return self
+
+    @property
+    def enrolled_admin_passkey(self) -> bool:
+        """True only when the stored RP ID matches the current control hostname."""
+
+        return (
+            self.intent is not None
+            and self.enrolled_admin_passkey_rp_id == self.intent.control_hostname
+        )
+
+    @property
+    def remote_control_enabled(self) -> bool:
+        return remote_control_enabled(self.status)
+
+    @property
+    def wan_surface(self) -> WanSurface:
+        if (
+            self.status is RemoteControlStatus.ENABLED
+            and self.enrolled_admin_passkey
+        ):
+            return WanSurface.CONTROL_CENTER
+        if self.status is RemoteControlStatus.ENROLLMENT_PENDING:
+            return WanSurface.ACTIVATE_ONLY
+        return WanSurface.CLOSED
+
+
+class GatewayPlan(BaseModel):
+    """Provider-agnostic publication plan derived from a validated record."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    record: RemoteControlRecord
     wan_surface: WanSurface
     web_bind_host: str = Field(default=WEB_LOOPBACK[0])
     web_bind_port: int = Field(default=WEB_LOOPBACK[1], ge=1, le=65535)
@@ -172,21 +241,48 @@ class GatewayPlan(BaseModel):
     control_bind_port: int = Field(default=CONTROL_LOOPBACK[1], ge=1, le=65535)
 
     @model_validator(mode="after")
-    def validate_loopback_only_binds(self) -> "GatewayPlan":
-        for host, port, expected in (
+    def validate_plan_matches_record(self) -> "GatewayPlan":
+        record = RemoteControlRecord.model_validate(self.record.model_dump(mode="json"))
+        expected = record.wan_surface
+        if self.wan_surface is not expected:
+            raise ValueError(
+                "wan_surface must be derived from the validated remote control record"
+            )
+        if (
+            self.wan_surface is WanSurface.ACTIVATE_ONLY
+            and record.status is not RemoteControlStatus.ENROLLMENT_PENDING
+        ):
+            raise ValueError("ACTIVATE_ONLY is only valid for ENROLLMENT_PENDING")
+        if self.wan_surface is WanSurface.CONTROL_CENTER:
+            if record.status is not RemoteControlStatus.ENABLED:
+                raise ValueError("CONTROL_CENTER is only valid for ENABLED")
+            if not record.enrolled_admin_passkey:
+                raise ValueError(
+                    "CONTROL_CENTER requires a passkey for the current control hostname"
+                )
+        for host, port, expected_bind in (
             (self.web_bind_host, self.web_bind_port, WEB_LOOPBACK),
             (self.control_bind_host, self.control_bind_port, CONTROL_LOOPBACK),
         ):
             if is_forbidden_wan_bind(host):
                 raise ValueError("gateway plan cannot bind PLAIK to a WAN address")
-            if (host, port) != expected:
+            if (host, port) != expected_bind:
                 raise ValueError("gateway plan must target the loopback PLAIK endpoints")
-        if (
-            self.wan_surface is WanSurface.CONTROL_CENTER
-            and not self.intent.remote_access_requested
-        ):
-            raise ValueError("control center WAN surface requires remote access intent")
+        object.__setattr__(self, "record", record)
         return self
+
+    @classmethod
+    def from_record(cls, record: RemoteControlRecord) -> "GatewayPlan":
+        record = RemoteControlRecord.model_validate(record.model_dump(mode="json"))
+        if record.intent is None:
+            raise RemoteControlError("gateway plan requires a remote control intent")
+        return cls(record=record, wan_surface=record.wan_surface)
+
+    @property
+    def intent(self) -> RemoteControlIntent:
+        if self.record.intent is None:
+            raise RemoteControlError("gateway plan requires a remote control intent")
+        return self.record.intent
 
 
 class GatewayInspection(BaseModel):
@@ -205,8 +301,6 @@ class GatewayInspection(BaseModel):
             raise ValueError("Control Center port 8081 must not be public")
         if self.installer_open:
             raise ValueError("installer must stay closed after completed handoff")
-        if self.wan_surface is WanSurface.CLOSED and self.control_port_public:
-            raise ValueError("closed WAN surface cannot publish Control Center")
         return self
 
 
@@ -216,12 +310,7 @@ class HttpsGatewayProvider(Protocol):
 
     name: str
 
-    def plan(
-        self,
-        intent: RemoteControlIntent,
-        *,
-        wan_surface: WanSurface,
-    ) -> GatewayPlan: ...
+    def plan(self, record: RemoteControlRecord) -> GatewayPlan: ...
 
     def validate(self, plan: GatewayPlan) -> None: ...
 
@@ -234,64 +323,19 @@ class HttpsGatewayProvider(Protocol):
     def inspect(self) -> GatewayInspection: ...
 
 
-class RemoteControlRecord(BaseModel):
-    """Persisted observed Remote Control state plus the last accepted intent."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    intent: RemoteControlIntent | None = None
-    status: RemoteControlStatus = RemoteControlStatus.DISABLED
-    enrolled_admin_passkey: bool = False
-    error_code: str | None = None
-
-    @field_validator("error_code")
-    @classmethod
-    def validate_error_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not _ERROR_CODE.fullmatch(value):
-            raise ValueError("invalid remote control error code")
-        return value
-
-    @model_validator(mode="after")
-    def validate_observed_invariants(self) -> "RemoteControlRecord":
-        if (
-            self.status is RemoteControlStatus.ENABLED
-            and not self.enrolled_admin_passkey
-        ):
-            raise ValueError("ENABLED is impossible without an enrolled admin passkey")
-        if self.status is RemoteControlStatus.ENABLED and self.intent is None:
-            raise ValueError("ENABLED requires a remote control intent")
-        if (
-            self.status
-            in {
-                RemoteControlStatus.PREFLIGHT,
-                RemoteControlStatus.ENROLLMENT_PENDING,
-                RemoteControlStatus.ENABLED,
-            }
-            and (self.intent is None or not self.intent.remote_access_requested)
-        ):
-            raise ValueError("active remote control requires requested intent")
-        if self.status is not RemoteControlStatus.ERROR and self.error_code is not None:
-            raise ValueError("error_code is only valid while status is ERROR")
-        if self.status is RemoteControlStatus.ERROR and self.error_code is None:
-            raise ValueError("ERROR requires an error_code")
-        return self
-
-    @property
-    def remote_control_enabled(self) -> bool:
-        return remote_control_enabled(self.status)
-
-    @property
-    def wan_surface(self) -> WanSurface:
-        return wan_surface_for(self.status)
-
-
 def _require_completed(install_state: InstallState) -> None:
     if install_state is not InstallState.COMPLETED:
         raise InvalidRemoteControlTransition(
             "remote control starts only after installation is COMPLETED"
         )
+
+
+def _passkey_rp_id_for_intent(
+    current: RemoteControlRecord, intent: RemoteControlIntent
+) -> str | None:
+    if current.enrolled_admin_passkey_rp_id == intent.control_hostname:
+        return current.enrolled_admin_passkey_rp_id
+    return None
 
 
 class RemoteControlStore:
@@ -317,12 +361,10 @@ class RemoteControlStore:
             raise InvalidRemoteControlTransition("remote access was not requested")
         with exclusive_file_lock(self.path):
             current = self.read()
-            if current.status is RemoteControlStatus.ENABLED:
-                raise InvalidRemoteControlTransition("remote control is already ENABLED")
             record = RemoteControlRecord(
                 intent=intent,
                 status=RemoteControlStatus.PREFLIGHT,
-                enrolled_admin_passkey=current.enrolled_admin_passkey,
+                enrolled_admin_passkey_rp_id=_passkey_rp_id_for_intent(current, intent),
                 error_code=None,
             )
             return self._write_unlocked(record)
@@ -368,24 +410,32 @@ class RemoteControlStore:
             return self._write_unlocked(record)
 
     def record_admin_passkey_enrolled(
-        self, *, install_state: InstallState
+        self,
+        *,
+        rp_id: str,
+        install_state: InstallState,
     ) -> RemoteControlRecord:
-        """WebAuthn enrollment hook. PR1 only records the fact, not the ceremony."""
+        """WebAuthn enrollment hook. PR1 records RP ID binding, not the ceremony."""
 
         _require_completed(install_state)
+        rp_id = validate_dns_hostname(rp_id, label="rp_id")
         with exclusive_file_lock(self.path):
             current = self.read()
             if current.status is not RemoteControlStatus.ENROLLMENT_PENDING:
                 raise InvalidRemoteControlTransition(
                     "admin passkey enrollment is only valid during ENROLLMENT_PENDING"
                 )
-            if wan_surface_for(current.status) is not WanSurface.ACTIVATE_ONLY:
+            if current.wan_surface is not WanSurface.ACTIVATE_ONLY:
                 raise InvalidRemoteControlTransition(
                     "passkey enrollment requires the activate-only WAN surface"
                 )
+            if current.intent is None or rp_id != current.intent.control_hostname:
+                raise InvalidRemoteControlTransition(
+                    "passkey RP ID must match the current control_hostname"
+                )
             record = current.model_copy(
                 update={
-                    "enrolled_admin_passkey": True,
+                    "enrolled_admin_passkey_rp_id": rp_id,
                     "status": RemoteControlStatus.ENABLED,
                     "error_code": None,
                 }
@@ -425,7 +475,7 @@ class RemoteControlStore:
             record = RemoteControlRecord(
                 intent=current.intent,
                 status=RemoteControlStatus.DISABLED,
-                enrolled_admin_passkey=current.enrolled_admin_passkey,
+                enrolled_admin_passkey_rp_id=current.enrolled_admin_passkey_rp_id,
                 error_code=None,
             )
             return self._write_unlocked(record)
@@ -450,6 +500,4 @@ class RemoteControlStore:
 def plan_for(record: RemoteControlRecord) -> GatewayPlan:
     """Build the only gateway plan Core will hand to a provider."""
 
-    if record.intent is None:
-        raise RemoteControlError("gateway plan requires a remote control intent")
-    return GatewayPlan(intent=record.intent, wan_surface=record.wan_surface)
+    return GatewayPlan.from_record(record)
