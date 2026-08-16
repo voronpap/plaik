@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -37,6 +38,8 @@ WEB_PROXY = "http://127.0.0.1:8080"
 CONTROL_PROXY = "http://127.0.0.1:8081"
 MAX_CONFIG_BYTES = 256 * 1024
 MAX_DUMP_BYTES = 8 * 1024 * 1024
+RELOAD_CONVERGE_SECONDS = 5.0
+_PID_DIRECTIVE = re.compile(r"^pid\s+(\S+);", re.MULTILINE)
 _LISTEN_UNSAFE = re.compile(r"(8081|8765)")
 _INJECT = re.compile(r"[\n;{}]")
 _PATH_UNSAFE = re.compile(r'[\n;{}`"\'\\$]')
@@ -92,7 +95,9 @@ class SubprocessNginxProcess:
         self._run(("-t",), action="test")
 
     def reload(self) -> None:
+        master, old_workers = self._generation()
         self._run(("-s", "reload"), action="reload")
+        self._wait_reload_converged(master, old_workers)
 
     def effective_config(self) -> str:
         completed = self._completed(("-T",), action="dump")
@@ -107,6 +112,103 @@ class SubprocessNginxProcess:
         if len(dump.encode("utf-8")) > MAX_DUMP_BYTES:
             raise NginxGatewayError("nginx effective config exceeds the size limit")
         return dump
+
+    def _config_path(self) -> Path | None:
+        argv = list(self.argv)
+        try:
+            index = argv.index("-c")
+        except ValueError:
+            return None
+        if index + 1 >= len(argv):
+            return None
+        return Path(argv[index + 1])
+
+    def _pid_file(self) -> Path:
+        config = self._config_path()
+        if config is not None:
+            try:
+                text = config.read_text(encoding="utf-8")
+            except OSError as error:
+                raise NginxGatewayError("nginx pid file path cannot be read") from error
+            match = _PID_DIRECTIVE.search(text)
+            if match:
+                return Path(match.group(1))
+        return Path("/run/nginx.pid")
+
+    def _read_master_pid(self) -> int | None:
+        try:
+            text = self._pid_file().read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not text.isdigit():
+            return None
+        pid = int(text)
+        if not Path(f"/proc/{pid}").exists():
+            return None
+        return pid
+
+    def _worker_pids(self, master: int) -> frozenset[int]:
+        workers: set[int] = set()
+        try:
+            entries = Path("/proc").iterdir()
+        except OSError:
+            return frozenset()
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                status = (entry / "status").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            ppid = None
+            for line in status.splitlines():
+                if line.startswith("PPid:"):
+                    ppid = int(line.split()[1])
+                    break
+            if ppid != master:
+                continue
+            try:
+                command = (
+                    (entry / "cmdline")
+                    .read_bytes()
+                    .replace(b"\x00", b" ")
+                    .decode("utf-8", "replace")
+                )
+            except OSError:
+                continue
+            if "worker process" in command:
+                workers.add(int(entry.name))
+        return frozenset(workers)
+
+    def _generation(self) -> tuple[int | None, frozenset[int]]:
+        master = self._read_master_pid()
+        if master is None:
+            return None, frozenset()
+        return master, self._worker_pids(master)
+
+    def _wait_reload_converged(
+        self, master: int | None, old_workers: frozenset[int]
+    ) -> None:
+        if master is None:
+            raise NginxGatewayError("nginx reload cannot converge without a master process")
+        deadline = time.monotonic() + RELOAD_CONVERGE_SECONDS
+        while time.monotonic() < deadline:
+            current_master = self._read_master_pid()
+            if current_master != master:
+                time.sleep(0.02)
+                continue
+            current_workers = self._worker_pids(current_master)
+            old_still_running = old_workers & current_workers
+            new_workers = current_workers - old_workers
+            if old_workers:
+                if not old_still_running and new_workers:
+                    return
+            elif current_workers:
+                return
+            time.sleep(0.02)
+        raise NginxGatewayError(
+            "nginx reload did not converge onto a new worker generation"
+        )
 
     def _run(self, extra: tuple[str, ...], *, action: str) -> None:
         self._completed(extra, action=action)
