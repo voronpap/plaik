@@ -21,6 +21,9 @@ from .audit import AuditOutcome
 from .config import CoreSettings
 from .hooks import HookRegistry
 from .installer import InstallState
+from .installer_config import InstallerConfigurationStore
+from .pairing import PairingStore, mount_pairing_activate
+from .remote_control import RemoteControlStore
 from .observability import (
     CorrelationMiddleware,
     DiagnosticRegistry,
@@ -256,6 +259,13 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
     )
     _safe_validation(application)
     _copy_state(core, application)
+    mount_pairing_activate(
+        application,
+        remote_store=RemoteControlStore(runtime.remote_control_path),
+        pairing_store=PairingStore(runtime.remote_control_pairing_path),
+        installation_id_provider=lambda: _installation_id(runtime),
+        install_state_provider=lambda: application.state.install_store.read(),
+    )
 
     @application.get("/health")
     def admin_health(response: Response) -> dict:
@@ -1106,6 +1116,13 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
 
     _instrument(application)
     return application
+
+
+def _installation_id(runtime: CoreSettings) -> str | None:
+    configuration = InstallerConfigurationStore(runtime.installer_config_path).read()
+    if configuration is None:
+        return None
+    return configuration.installation_id
 
 
 def _installer_security_headers() -> dict[str, str]:

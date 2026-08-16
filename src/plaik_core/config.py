@@ -123,6 +123,14 @@ class CoreSettings:
         return self.data_dir / "install-state.json"
 
     @property
+    def remote_control_path(self) -> Path:
+        return self.data_dir / "remote-control.json"
+
+    @property
+    def remote_control_pairing_path(self) -> Path:
+        return self.data_dir / "remote-control.pairing.json"
+
+    @property
     def package_registry_path(self) -> Path:
         return self.data_dir / "packages.json"
 
