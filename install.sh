@@ -348,15 +348,27 @@ if expected_tag and expected_tag not in {"local", "dev"} and tag != runtime_vers
     raise SystemExit("release tag/version mismatch")
 if sdk.get("Name") not in {"plaik-sdk", "plaik_sdk"} or not sdk_version:
     raise SystemExit("SDK wheel METADATA version is invalid")
-requires = " ".join(runtime.get_all("Requires-Dist") or [])
-if "plaik-sdk" not in requires:
+sdk_requirement = None
+for item in runtime.get_all("Requires-Dist") or []:
+    requirement = item.split(";", 1)[0].strip()
+    name = re.split(r"[ \t(<>=!~\[]", requirement, maxsplit=1)[0]
+    if name.replace("_", "-").casefold() == "plaik-sdk":
+        sdk_requirement = requirement
+        break
+if sdk_requirement is None:
     raise SystemExit("runtime wheel does not declare plaik-sdk compatibility")
-spec = re.search(r"plaik[-_]sdk\s*\(([^)]+)\)", requires) or re.search(
-    r"plaik[-_]sdk\s*([^;]+)", requires
-)
-if spec is None:
+paren = re.search(r"\(([^)]+)\)", sdk_requirement)
+if paren is not None:
+    range_text = paren.group(1).strip()
+else:
+    range_text = re.sub(
+        r"^plaik[-_]sdk(?:\[[^\]]+\])?\s*",
+        "",
+        sdk_requirement,
+        flags=re.I,
+    ).strip()
+if not range_text:
     raise SystemExit("runtime SDK compatibility range is missing")
-range_text = spec.group(1).strip()
 if not matches(parse_version(sdk_version), parse_spec(range_text)):
     raise SystemExit("bundled SDK version is outside the runtime compatibility range")
 print(runtime_version)
