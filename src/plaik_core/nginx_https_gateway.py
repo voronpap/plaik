@@ -36,11 +36,14 @@ MANAGED_CONFIG_NAME = "plaik-remote-control.conf"
 WEB_PROXY = "http://127.0.0.1:8080"
 CONTROL_PROXY = "http://127.0.0.1:8081"
 MAX_CONFIG_BYTES = 256 * 1024
+MAX_DUMP_BYTES = 8 * 1024 * 1024
 _LISTEN_UNSAFE = re.compile(r"(8081|8765)")
 _INJECT = re.compile(r"[\n;{}]")
 _PATH_UNSAFE = re.compile(r'[\n;{}`"\'\\$]')
 _LISTEN_8081 = re.compile(r"listen\s+\S*8081\b")
 _LISTEN_8765 = re.compile(r"listen\s+\S*8765\b")
+_LISTEN_SPEC = re.compile(r"listen\s+([^;]+);")
+_CONFIG_FILE_HEADER = re.compile(r"^# configuration file (.+):\s*$", re.MULTILINE)
 _PROXY_INSTALLER = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8765\b")
 _PROXY_8081 = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:8081\b")
 _PROXY_CONTROL_ROOT = re.compile(
@@ -73,9 +76,11 @@ class NginxProcess(Protocol):
 
     def reload(self) -> None: ...
 
+    def effective_config(self) -> str: ...
+
 
 class SubprocessNginxProcess:
-    """Runs ``nginx -t`` / ``nginx -s reload`` with a fixed argv prefix."""
+    """Runs ``nginx -t`` / ``nginx -s reload`` / ``nginx -T`` with a fixed argv prefix."""
 
     def __init__(self, argv: tuple[str, ...] = ("nginx",)) -> None:
         if not argv:
@@ -88,7 +93,26 @@ class SubprocessNginxProcess:
     def reload(self) -> None:
         self._run(("-s", "reload"), action="reload")
 
+    def effective_config(self) -> str:
+        completed = self._completed(("-T",), action="dump")
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if _CONFIG_FILE_HEADER.search(stdout):
+            dump = stdout
+        elif _CONFIG_FILE_HEADER.search(stderr):
+            dump = stderr
+        else:
+            dump = f"{stdout}\n{stderr}"
+        if len(dump.encode("utf-8")) > MAX_DUMP_BYTES:
+            raise NginxGatewayError("nginx effective config exceeds the size limit")
+        return dump
+
     def _run(self, extra: tuple[str, ...], *, action: str) -> None:
+        self._completed(extra, action=action)
+
+    def _completed(
+        self, extra: tuple[str, ...], *, action: str
+    ) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(
             [*self.argv, *extra],
             check=False,
@@ -98,16 +122,21 @@ class SubprocessNginxProcess:
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or action).strip()
             raise NginxGatewayError(f"nginx {action} failed: {detail[:500]}")
+        return completed
 
 
 class MemoryNginxProcess:
     """In-process nginx stand-in. No host nginx, no sockets."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, include_managed: bool = True) -> None:
         self.tests = 0
         self.reloads = 0
         self.fail_tests_remaining = 0
         self.fail_reload = False
+        self.include_managed = include_managed
+        self.managed_config: Path | None = None
+        self.dumps = 0
+        self.extra_dump = ""
 
     def test(self) -> None:
         self.tests += 1
@@ -119,6 +148,18 @@ class MemoryNginxProcess:
         self.reloads += 1
         if self.fail_reload:
             raise NginxGatewayError("nginx reload failed")
+
+    def effective_config(self) -> str:
+        self.dumps += 1
+        path = self.managed_config if self.include_managed else None
+        if path is None or not path.is_file():
+            dump = (
+                "# configuration file /tmp/plaik-unrelated.conf:\n"
+                "events { worker_connections 1; }\n"
+            )
+        else:
+            dump = f"# configuration file {path}:\n{path.read_text(encoding='utf-8')}"
+        return dump + self.extra_dump
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -159,13 +200,58 @@ def _safe_token(value: str, *, label: str) -> str:
     return candidate
 
 
-def _safe_listen(listen: str) -> str:
+def _safe_listen(listen: str, *, require_tls: bool = True) -> str:
     candidate = _safe_token(listen, label="listen")
     if _LISTEN_UNSAFE.search(candidate):
         raise NginxGatewayError(
             "gateway listen cannot expose Control Center port 8081 or installer port 8765"
         )
+    if require_tls and "ssl" not in candidate.casefold().split():
+        raise NginxGatewayError("gateway listen must enable TLS")
     return candidate
+
+
+def _normalize_nginx_text(text: str) -> str:
+    return text.replace("\r\n", "\n").strip() + "\n"
+
+
+def _split_effective_files(dump: str) -> dict[str, str]:
+    files: dict[str, str] = {}
+    matches = list(_CONFIG_FILE_HEADER.finditer(dump))
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(dump)
+        files[match.group(1)] = dump[start:end].lstrip("\n")
+    return files
+
+
+def _included_managed_snippet(dump: str, config_path: Path) -> str:
+    files = _split_effective_files(dump)
+    wanted = {str(config_path)}
+    try:
+        wanted.add(str(config_path.resolve()))
+    except OSError:
+        pass
+    for key, body in files.items():
+        candidates = {key}
+        try:
+            candidates.add(str(Path(key).resolve()))
+        except OSError:
+            pass
+        if candidates & wanted:
+            return body
+    raise NginxGatewayError(
+        "managed nginx config is not in the effective nginx configuration"
+    )
+
+
+def _assert_tls_server(block: str) -> None:
+    specs = _LISTEN_SPEC.findall(block)
+    if not specs:
+        raise NginxGatewayError("managed nginx server must listen with TLS")
+    for spec in specs:
+        if "ssl" not in spec.casefold().split():
+            raise NginxGatewayError("managed nginx server must listen with TLS")
 
 
 def _safe_loopback_proxy(url: str, *, label: str) -> str:
@@ -272,7 +358,9 @@ def render_nginx_gateway_config(
     """Render the managed snippet for ``plan.wan_surface``."""
 
     intent = plan.intent
-    listen = _safe_listen(listen)
+    listen = _safe_listen(
+        listen, require_tls=plan.wan_surface is not WanSurface.CLOSED
+    )
     web_proxy = _safe_loopback_proxy(web_proxy, label="web_proxy")
     control_proxy = _safe_loopback_proxy(control_proxy, label="control_proxy")
     public_hostname = _safe_token(intent.public_hostname, label="public_hostname")
@@ -401,6 +489,8 @@ def inspect_nginx_config(text: str) -> WanSurface:
         if _PROXY_8081.search(text):
             raise NginxGatewayError("unknown managed nginx topology")
         return WanSurface.CLOSED
+    for block in blocks:
+        _assert_tls_server(block)
     public, control = _marker_hostnames(text)
     if public is None or control is None or public == control:
         raise NginxGatewayError("unknown managed nginx topology")
@@ -483,6 +573,8 @@ class NginxHttpsGatewayProvider:
         self.nginx = nginx or SubprocessNginxProcess()
         self._previous: str | None = None
         self._last_plan: GatewayPlan | None = None
+        if isinstance(self.nginx, MemoryNginxProcess) and self.nginx.managed_config is None:
+            self.nginx.managed_config = self.config_path
 
     def _render(self, plan: GatewayPlan) -> str:
         return render_nginx_gateway_config(
@@ -514,20 +606,56 @@ class NginxHttpsGatewayProvider:
         try:
             self.nginx.test()
             self.nginx.reload()
+            self._assert_effective(rendered, plan)
         except Exception:
             _write_text_atomic(self.config_path, previous)
             raise
         self._last_plan = plan
 
+    def _effective_snippet(self) -> str:
+        dump = self.nginx.effective_config()
+        if len(dump.encode("utf-8")) > MAX_DUMP_BYTES:
+            raise NginxGatewayError("nginx effective config exceeds the size limit")
+        snippet = _included_managed_snippet(dump, self.config_path)
+        self._assert_dump_matches_surface(dump, inspect_nginx_config(snippet))
+        return snippet
+
+    def _assert_dump_matches_surface(self, dump: str, surface: WanSurface) -> None:
+        if surface is WanSurface.CLOSED and (
+            _PROXY_8081.search(dump) or _LISTEN_8081.search(dump)
+        ):
+            raise NginxGatewayError(
+                "effective nginx config still publishes Control Center"
+            )
+
+    def _assert_effective(self, expected: str, plan: GatewayPlan) -> None:
+        snippet = self._effective_snippet()
+        if _normalize_nginx_text(snippet) != _normalize_nginx_text(expected):
+            raise NginxGatewayError(
+                "effective nginx config does not match the managed file"
+            )
+        if inspect_nginx_config(snippet) is not plan.wan_surface:
+            raise NginxGatewayError(
+                "effective nginx config does not match the planned WAN surface"
+            )
+
     def verify(self) -> None:
         if not self.config_path.is_file():
             raise NginxGatewayError("managed nginx config is missing")
         self.nginx.test()
-        text = self.config_path.read_text(encoding="utf-8")
-        current = inspect_nginx_config(text)
+        snippet = self._effective_snippet()
+        on_disk = self.config_path.read_text(encoding="utf-8")
+        if _normalize_nginx_text(snippet) != _normalize_nginx_text(on_disk):
+            raise NginxGatewayError(
+                "effective nginx config does not match the managed file"
+            )
+        current = inspect_nginx_config(snippet)
         if self._last_plan is not None:
             expected = self._render(self._last_plan)
-            if text != expected or current is not self._last_plan.wan_surface:
+            if (
+                _normalize_nginx_text(snippet) != _normalize_nginx_text(expected)
+                or current is not self._last_plan.wan_surface
+            ):
                 raise NginxGatewayError("nginx verify does not match the applied surface")
 
     def rollback(self) -> None:
@@ -537,20 +665,31 @@ class NginxHttpsGatewayProvider:
         _write_text_atomic(self.config_path, self._previous)
         self.nginx.test()
         self.nginx.reload()
+        snippet = self._effective_snippet()
+        if _normalize_nginx_text(snippet) != _normalize_nginx_text(self._previous):
+            raise NginxGatewayError(
+                "effective nginx config does not match the rolled-back file"
+            )
         self._last_plan = None
 
     def inspect(self) -> GatewayInspection:
-        if not self.config_path.is_file():
-            return GatewayInspection(
-                provider=GatewayProviderName.NGINX,
-                wan_surface=WanSurface.CLOSED,
-            )
-        text = self.config_path.read_text(encoding="utf-8")
-        surface = inspect_nginx_config(text)
+        snippet = self._effective_snippet()
+        surface = inspect_nginx_config(snippet)
+        if self.config_path.is_file():
+            on_disk = self.config_path.read_text(encoding="utf-8")
+            if _normalize_nginx_text(snippet) != _normalize_nginx_text(on_disk):
+                raise NginxGatewayError(
+                    "effective nginx config does not match the managed file"
+                )
         if self._last_plan is not None:
             expected = self._render(self._last_plan)
-            if text != expected or surface is not self._last_plan.wan_surface:
-                raise NginxGatewayError("managed nginx config drifted from the applied plan")
+            if (
+                _normalize_nginx_text(snippet) != _normalize_nginx_text(expected)
+                or surface is not self._last_plan.wan_surface
+            ):
+                raise NginxGatewayError(
+                    "managed nginx config drifted from the applied plan"
+                )
         return GatewayInspection(
             provider=GatewayProviderName.NGINX,
             wan_surface=surface,
