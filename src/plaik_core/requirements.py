@@ -26,6 +26,7 @@ class RequirementCheck:
 @dataclass(frozen=True, slots=True)
 class RequirementReport:
     checks: tuple[RequirementCheck, ...]
+    observations: tuple[RequirementCheck, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -57,13 +58,16 @@ class SystemRequirements:
         self.python_version = python_version or sys.version_info[:2]
 
     def inspect(self) -> RequirementReport:
+        from .host_inventory import discover_host_inventory
+
         return RequirementReport(
             checks=(
                 self._python_check(),
                 self._data_directory_check(),
                 self._free_space_check(),
                 self._default_theme_check(),
-            )
+            ),
+            observations=discover_host_inventory(self.settings).observations(),
         )
 
     def _python_check(self) -> RequirementCheck:

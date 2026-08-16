@@ -1494,7 +1494,46 @@ class PostgreSQLAdapter:
         migrations = self.migrate_core()
         self.initialize_context()
         self.verify_context()
+        self.grant_restricted_identities()
         return PostgreSQLBootstrapResult(preflight=preflight, migrations=migrations)
+
+    def grant_restricted_identities(self) -> None:
+        """Grant runtime Core DML and keep plaik_meta off runtime/checkpoint."""
+
+        database = self.configuration.database
+        if not isinstance(database, PostgreSQLDatabase):
+            return
+        if database.runtime_username is None or database.checkpoint_username is None:
+            return
+        from .postgresql_provision import (
+            PostgreSQLProvisionError,
+            restricted_identity_grants,
+        )
+
+        try:
+            statements = restricted_identity_grants(
+                database.username,
+                database.runtime_username,
+                database.checkpoint_username,
+            )
+        except PostgreSQLProvisionError as error:
+            raise PostgreSQLAdapterError(str(error)) from None
+        connection = self.connect()
+        try:
+            for statement in statements:
+                _execute(connection, statement)
+            connection.commit()
+        except PostgreSQLAdapterError:
+            connection.rollback()
+            raise
+        except Exception as error:
+            connection.rollback()
+            raise PostgreSQLAdapterError(
+                "PostgreSQL restricted identity grants failed "
+                f"({_safe_error_class(error)})"
+            ) from None
+        finally:
+            _safe_close(connection)
 
 
 def initialize_postgresql_context(

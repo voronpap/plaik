@@ -24,9 +24,14 @@ from typing import Any
 
 from . import __version__
 from .config import CoreSettings
+from .host_inventory import HostInventory, discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import DeploymentMode, InstallerConfigurationStore
-from .requirements import SystemRequirements
+from .postgresql_provision import (
+    PostgreSQLProvisionError,
+    provision_local_postgresql,
+)
+from .requirements import RequirementCheck, SystemRequirements
 from .secret_store import LocalFileSecretProvider
 
 
@@ -264,6 +269,39 @@ def _prompt(label: str, *, default: str | None = None, secret: bool = False) -> 
         print("Value is required.", file=sys.stderr)
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes"}
+    return False
+
+
+def _print_host_state(items: list[dict[str, object]] | tuple[RequirementCheck, ...]) -> None:
+    print("Host state:")
+    for item in items:
+        if isinstance(item, RequirementCheck):
+            print(f"  - {item.id}: {item.detail}")
+            continue
+        print(f"  - {item.get('id')}: {item.get('detail')}")
+
+
+def _prompt_port(database: dict[str, Any], default: int, *, non_interactive: bool) -> int:
+    if "port" in database:
+        port_raw = database.get("port")
+    elif non_interactive:
+        port_raw = default
+    else:
+        port_raw = _prompt("PostgreSQL port", default=str(default))
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        raise PlaikCLIError("PostgreSQL port must be an integer") from None
+    if port < 1 or port > 65535:
+        raise PlaikCLIError("PostgreSQL port must be an integer")
+    return port
+
+
 def _yes_no(label: str, *, default: bool = True) -> bool:
     suffix = " [Y/n]" if default else " [y/N]"
     while True:
@@ -389,6 +427,232 @@ def _write_secret_as_runtime_user(
     LocalFileSecretProvider(settings.secrets_dir).write(key, value, version=version)
 
 
+def _postgresql_source(
+    database: dict[str, Any],
+    inventory: HostInventory,
+    *,
+    non_interactive: bool,
+) -> str:
+    configured = database.get("source")
+    if isinstance(configured, str) and configured.strip():
+        choice = configured.strip().casefold()
+    elif _truthy(database.get("provision")):
+        choice = "create"
+    elif non_interactive:
+        choice = "manual"
+    else:
+        if inventory.suggested_database:
+            default = "use-detected"
+        elif any(item.process == "postgres" for item in inventory.listeners):
+            default = "create"
+        else:
+            default = "manual"
+        choice = _prompt(
+            "PostgreSQL source (use-detected/create/manual/restore)",
+            default=default,
+        ).casefold()
+    if choice not in {"use-detected", "create", "manual", "restore"}:
+        raise PlaikCLIError(
+            "PostgreSQL source must be use-detected, create, manual or restore"
+        )
+    if choice == "restore":
+        raise PlaikCLIError(
+            "this installer does not restore PostgreSQL dumps; "
+            "choose create for an empty database or use-detected for a found empty database"
+        )
+    return choice
+
+
+def _postgresql_payload(
+    settings: CoreSettings,
+    database: dict[str, Any],
+    *,
+    mode: str,
+    non_interactive: bool,
+) -> dict[str, Any]:
+    inventory = discover_host_inventory(settings)
+    if not non_interactive:
+        _print_host_state(inventory.observations())
+    source = _postgresql_source(
+        database, inventory, non_interactive=non_interactive
+    )
+    suggested = inventory.suggested_listener
+    default_port = suggested.port if suggested is not None else 5432
+    host = "127.0.0.1"
+    port = default_port
+    name = inventory.suggested_database or "plaik"
+    if source == "use-detected":
+        if inventory.suggested_database is None or suggested is None:
+            raise PlaikCLIError(
+                "no empty local PLAIK database was detected; choose create or manual"
+            )
+        host = suggested.host
+        port = suggested.port
+        name = inventory.suggested_database
+        print(f"Using detected empty database {name} on {host}:{port}")
+    elif source == "create":
+        host = _value(
+            database,
+            "host",
+            non_interactive=non_interactive,
+            label="PostgreSQL host",
+            default="127.0.0.1",
+        )
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise PlaikCLIError(
+                "database creation is limited to loopback PostgreSQL clusters"
+            )
+        port = _prompt_port(database, default_port, non_interactive=non_interactive)
+        name = _value(
+            database,
+            "database",
+            non_interactive=non_interactive,
+            label="PostgreSQL database",
+            default="plaik",
+        )
+    else:
+        host = _value(
+            database,
+            "host",
+            non_interactive=non_interactive,
+            label="PostgreSQL host",
+            default="127.0.0.1",
+        )
+        port = _prompt_port(database, default_port, non_interactive=non_interactive)
+        name = _value(
+            database,
+            "database",
+            non_interactive=non_interactive,
+            label="PostgreSQL database",
+            default="plaik",
+        )
+
+    migrator = _value(
+        database,
+        "username",
+        non_interactive=non_interactive,
+        label="PostgreSQL migration user",
+        default="plaik_migrator",
+    )
+    migrator_secret = _secret_from_environment_or_prompt(
+        database,
+        "password_env",
+        default_env="PLAIK_DB_MIGRATOR_PASSWORD",
+        non_interactive=non_interactive,
+        label="PostgreSQL migration password",
+    )
+    runtime_username = None
+    checkpoint_username = None
+    runtime_secret = None
+    checkpoint_secret = None
+    if mode == DeploymentMode.PRODUCTION.value:
+        runtime_username = _value(
+            database,
+            "runtime_username",
+            non_interactive=non_interactive,
+            label="PostgreSQL runtime user",
+            default="plaik_runtime",
+        )
+        checkpoint_username = _value(
+            database,
+            "checkpoint_username",
+            non_interactive=non_interactive,
+            label="PostgreSQL checkpoint user",
+            default="plaik_checkpoint",
+        )
+        runtime_secret = _secret_from_environment_or_prompt(
+            database,
+            "runtime_password_env",
+            default_env="PLAIK_DB_RUNTIME_PASSWORD",
+            non_interactive=non_interactive,
+            label="PostgreSQL runtime password",
+        )
+        checkpoint_secret = _secret_from_environment_or_prompt(
+            database,
+            "checkpoint_password_env",
+            default_env="PLAIK_DB_CHECKPOINT_PASSWORD",
+            non_interactive=non_interactive,
+            label="PostgreSQL checkpoint password",
+        )
+
+    if source == "create":
+        if mode != DeploymentMode.PRODUCTION.value:
+            raise PlaikCLIError(
+                "installer database creation requires production PostgreSQL identities"
+            )
+        try:
+            provision_local_postgresql(
+                port=port,
+                database=name,
+                migrator_role=migrator,
+                runtime_role=runtime_username or "",
+                checkpoint_role=checkpoint_username or "",
+                migrator_password=migrator_secret,
+                runtime_password=runtime_secret or "",
+                checkpoint_password=checkpoint_secret or "",
+                inventory=inventory,
+            )
+        except PostgreSQLProvisionError as error:
+            raise PlaikCLIError(str(error)) from None
+        print(f"Created empty PostgreSQL database {name} on {host}:{port}")
+
+    _write_secret_as_runtime_user(
+        settings,
+        key="database/migrator",
+        version="v1",
+        value=migrator_secret,
+    )
+    payload: dict[str, Any] = {
+        "backend": "postgresql",
+        "host": host,
+        "port": port,
+        "database": name,
+        "username": migrator,
+        "credential": {
+            "provider": "local",
+            "key": "database/migrator",
+            "version": "v1",
+        },
+        "ssl_mode": _value(
+            database,
+            "ssl_mode",
+            non_interactive=non_interactive,
+            label="PostgreSQL SSL mode",
+            default="require" if mode == DeploymentMode.PRODUCTION.value else "prefer",
+        ),
+    }
+    if mode == DeploymentMode.PRODUCTION.value:
+        _write_secret_as_runtime_user(
+            settings,
+            key="database/runtime",
+            version="v1",
+            value=runtime_secret or "",
+        )
+        _write_secret_as_runtime_user(
+            settings,
+            key="database/checkpoint",
+            version="v1",
+            value=checkpoint_secret or "",
+        )
+        payload.update(
+            {
+                "runtime_username": runtime_username,
+                "runtime_credential": {
+                    "provider": "local",
+                    "key": "database/runtime",
+                    "version": "v1",
+                },
+                "checkpoint_username": checkpoint_username,
+                "checkpoint_credential": {
+                    "provider": "local",
+                    "key": "database/checkpoint",
+                    "version": "v1",
+                },
+            }
+        )
+    return payload
+
+
 def _build_configuration(
     settings: CoreSettings,
     document: dict[str, Any],
@@ -468,121 +732,12 @@ def _build_configuration(
             ),
         }
     elif backend == "postgresql":
-        host = _value(
-            database,
-            "host",
-            non_interactive=non_interactive,
-            label="PostgreSQL host",
-            default="127.0.0.1",
-        )
-        port_raw = database.get("port", 5432)
-        try:
-            port = int(port_raw)
-        except (TypeError, ValueError):
-            raise PlaikCLIError("PostgreSQL port must be an integer") from None
-        name = _value(
-            database,
-            "database",
-            non_interactive=non_interactive,
-            label="PostgreSQL database",
-            default="plaik",
-        )
-        migrator = _value(
-            database,
-            "username",
-            non_interactive=non_interactive,
-            label="PostgreSQL migration user",
-            default="plaik_migrator",
-        )
-        migrator_secret = _secret_from_environment_or_prompt(
-            database,
-            "password_env",
-            default_env="PLAIK_DB_MIGRATOR_PASSWORD",
-            non_interactive=non_interactive,
-            label="PostgreSQL migration password",
-        )
-        _write_secret_as_runtime_user(
+        database_payload = _postgresql_payload(
             settings,
-            key="database/migrator",
-            version="v1",
-            value=migrator_secret,
+            database,
+            mode=mode,
+            non_interactive=non_interactive,
         )
-        database_payload = {
-            "backend": "postgresql",
-            "host": host,
-            "port": port,
-            "database": name,
-            "username": migrator,
-            "credential": {
-                "provider": "local",
-                "key": "database/migrator",
-                "version": "v1",
-            },
-            "ssl_mode": _value(
-                database,
-                "ssl_mode",
-                non_interactive=non_interactive,
-                label="PostgreSQL SSL mode",
-                default="require" if mode == DeploymentMode.PRODUCTION.value else "prefer",
-            ),
-        }
-        if mode == DeploymentMode.PRODUCTION.value:
-            runtime_username = _value(
-                database,
-                "runtime_username",
-                non_interactive=non_interactive,
-                label="PostgreSQL runtime user",
-                default="plaik_runtime",
-            )
-            checkpoint_username = _value(
-                database,
-                "checkpoint_username",
-                non_interactive=non_interactive,
-                label="PostgreSQL checkpoint user",
-                default="plaik_checkpoint",
-            )
-            runtime_secret = _secret_from_environment_or_prompt(
-                database,
-                "runtime_password_env",
-                default_env="PLAIK_DB_RUNTIME_PASSWORD",
-                non_interactive=non_interactive,
-                label="PostgreSQL runtime password",
-            )
-            checkpoint_secret = _secret_from_environment_or_prompt(
-                database,
-                "checkpoint_password_env",
-                default_env="PLAIK_DB_CHECKPOINT_PASSWORD",
-                non_interactive=non_interactive,
-                label="PostgreSQL checkpoint password",
-            )
-            _write_secret_as_runtime_user(
-                settings,
-                key="database/runtime",
-                version="v1",
-                value=runtime_secret,
-            )
-            _write_secret_as_runtime_user(
-                settings,
-                key="database/checkpoint",
-                version="v1",
-                value=checkpoint_secret,
-            )
-            database_payload.update(
-                {
-                    "runtime_username": runtime_username,
-                    "runtime_credential": {
-                        "provider": "local",
-                        "key": "database/runtime",
-                        "version": "v1",
-                    },
-                    "checkpoint_username": checkpoint_username,
-                    "checkpoint_credential": {
-                        "provider": "local",
-                        "key": "database/checkpoint",
-                        "version": "v1",
-                    },
-                }
-            )
     else:
         raise PlaikCLIError("database backend must be postgresql or sqlite")
 
@@ -635,6 +790,9 @@ def _print_requirements(client: _InstallerClient) -> None:
     for check in checks:
         marker = "✓" if check.get("passed") else "✗"
         print(f"  {marker} {check.get('id')}: {check.get('detail')}")
+    observations = report.get("observations") or []
+    if observations:
+        _print_host_state(observations)
     if report.get("passed") is not True:
         raise PlaikCLIError("system requirements are not satisfied")
 
@@ -738,6 +896,8 @@ def _doctor(_args: argparse.Namespace) -> int:
         marker = "✓" if check.passed else "✗"
         print(f"{marker} {check.id}: {check.detail}")
         failed = failed or not check.passed
+    if report.observations:
+        _print_host_state(report.observations)
     state = InstallStateStore(settings.install_state_path).read()
     if state == InstallState.COMPLETED and _is_real_system_root():
         for service in ("plaik-web.service", "plaik-admin.service"):

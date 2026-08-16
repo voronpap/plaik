@@ -787,6 +787,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 {"id": check.id, "passed": check.passed, "detail": check.detail}
                 for check in report.checks
             ],
+            "observations": [
+                {"id": item.id, "passed": item.passed, "detail": item.detail}
+                for item in report.observations
+            ],
         }
 
     @application.get(
