@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import CoreSettings
+from .config import REMOTE_CONTROL_PAIRING_HOME, CoreSettings
 from .host_inventory import discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import InstallerConfigurationStore, PostgreSQLDatabase
@@ -383,6 +383,17 @@ def apply_identity_isolation(settings: CoreSettings) -> None:
     os.chmod(public, 0o750)
 
     for child in data.iterdir():
+        if child.name == REMOTE_CONTROL_PAIRING_HOME:
+            if child.is_symlink() or not child.is_dir():
+                continue
+            os.chown(child, 0, admin.pw_gid, follow_symlinks=False)
+            os.chmod(child, 0o2770, follow_symlinks=False)
+            for pairing_child in child.iterdir():
+                if pairing_child.is_symlink() or not pairing_child.is_file():
+                    continue
+                os.chown(pairing_child, 0, admin.pw_gid, follow_symlinks=False)
+                os.chmod(pairing_child, 0o660, follow_symlinks=False)
+            continue
         if child.name in _SKIP_HANDOFF:
             continue
         if child.name in _PRIVATE_NAMES:
