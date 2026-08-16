@@ -29,7 +29,7 @@ from .config import CoreSettings
 from .host_inventory import HostInventory, discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import DeploymentMode, InstallerConfigurationStore
-from .pairing import PairingIssueUnavailable, PairingStore
+from .pairing import PairingIssueUnavailable, PairingStore, PairingStoreUnavailable
 from .postgresql_provision import (
     PostgreSQLProvisionError,
     generate_role_secret,
@@ -1264,6 +1264,8 @@ def _print_remote_pairing(_args: argparse.Namespace) -> int:
         )
     except PairingIssueUnavailable as error:
         raise PlaikCLIError(str(error)) from None
+    except PairingStoreUnavailable:
+        raise PlaikCLIError("pairing store is unavailable") from None
     print(f"Activate: {issued.activate_url}")
     print(f"Code: {issued.code}")
     print(f"Expires: {issued.expires_at.isoformat()}")

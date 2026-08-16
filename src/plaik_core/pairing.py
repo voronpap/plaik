@@ -9,25 +9,33 @@ The pairing code is hashed at rest with scrypt. The plaintext is returned once
 from ``issue()`` and is never written to disk. After a successful consume the
 code verifier is destroyed. The enrollment session token is stored only as
 SHA-256.
+
+Pairing state is shared privileged state between the local root operator and
+``plaik-admin``. It lives in a dedicated setgid directory, mode ``0660``
+``root:plaik-admin``. Public and installer identities must not be able to read
+the verifier or enrollment session. Generic JSON storage is unchanged.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .config import REMOTE_CONTROL_PAIRING_HOME
 from .installer import InstallState
 from .remote_control import (
     RemoteControlRecord,
@@ -35,7 +43,7 @@ from .remote_control import (
     RemoteControlStore,
     validate_dns_hostname,
 )
-from .storage import exclusive_file_lock, read_json, write_json_atomic
+from .storage import _lock_descriptor, _thread_lock_for, read_json
 
 
 PAIRING_TTL = timedelta(minutes=10)
@@ -46,6 +54,8 @@ PAIRING_CODE_LENGTH = 8
 PAIRING_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 PAIRING_SESSION_COOKIE = "__Host-plaik_pairing_session"
 ACTIVATE_PATH = "/activate"
+PAIRING_HOME_MODE = 0o2770
+PAIRING_FILE_MODE = 0o660
 
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -69,6 +79,10 @@ class PairingRejected(PairingError):
 
 class PairingIssueUnavailable(PairingError):
     """A pairing code cannot be issued in the current observed state."""
+
+
+class PairingStoreUnavailable(PairingError):
+    """Pairing state could not be opened without exposing storage details."""
 
 
 class IssuedPairing(BaseModel):
@@ -224,9 +238,206 @@ def _replace_pairing(record: StoredPairing, **updates: object) -> StoredPairing:
     return StoredPairing.model_validate(payload)
 
 
-def _chmod_private(path: Path) -> None:
-    if path.is_file():
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+def _admin_gid() -> int | None:
+    try:
+        import pwd
+    except ImportError:
+        return None
+    name = os.environ.get("PLAIK_ADMIN_USER", "plaik-admin")
+    try:
+        return pwd.getpwnam(name).pw_gid
+    except KeyError:
+        return None
+
+
+def _require_root_admin_gid() -> int:
+    gid = _admin_gid()
+    if gid is None:
+        raise PairingStoreUnavailable("pairing store is unavailable")
+    return gid
+
+
+def pairing_lock_path(path: Path) -> Path:
+    return Path(path).with_name(f".{Path(path).name}.lock")
+
+
+def _dir_flags() -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    return flags | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _file_flags(extra: int = 0) -> int:
+    flags = os.O_RDWR | extra | getattr(os, "O_CLOEXEC", 0)
+    return flags | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _set_mode(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode, follow_symlinks=False)
+        return
+    except PermissionError:
+        current = os.lstat(path)
+        if current.st_mode & 0o7777 == mode:
+            return
+        raise PairingStoreUnavailable("pairing store is unavailable") from None
+
+
+def _fset_mode(descriptor: int, mode: int) -> None:
+    try:
+        os.fchmod(descriptor, mode)
+        return
+    except PermissionError:
+        current = os.fstat(descriptor)
+        if current.st_mode & 0o7777 == mode:
+            return
+        raise PairingStoreUnavailable("pairing store is unavailable") from None
+
+
+def _apply_fd_file_policy(descriptor: int) -> None:
+    _fset_mode(descriptor, PAIRING_FILE_MODE)
+    if os.geteuid() == 0:
+        os.fchown(descriptor, 0, _require_root_admin_gid())
+
+
+def _apply_fd_home_policy(descriptor: int) -> None:
+    _fset_mode(descriptor, PAIRING_HOME_MODE)
+    if os.geteuid() == 0:
+        os.fchown(descriptor, 0, _require_root_admin_gid())
+
+
+def _pairing_home(path: Path) -> Path:
+    home = Path(path).parent
+    if home.name != REMOTE_CONTROL_PAIRING_HOME:
+        raise PairingStoreUnavailable("pairing store is unavailable")
+    return home
+
+
+@contextmanager
+def _pairing_home_fd(path: Path, *, create: bool) -> Iterator[int]:
+    home = _pairing_home(path)
+    try:
+        parent_fd = os.open(str(home.parent), _dir_flags())
+    except OSError as error:
+        raise PairingStoreUnavailable("pairing store is unavailable") from error
+    try:
+        if create:
+            try:
+                os.mkdir(home.name, PAIRING_HOME_MODE, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+        home_fd = os.open(home.name, _dir_flags(), dir_fd=parent_fd)
+    except OSError as error:
+        raise PairingStoreUnavailable("pairing store is unavailable") from error
+    finally:
+        os.close(parent_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(home_fd).st_mode):
+            raise PairingStoreUnavailable("pairing store is unavailable")
+        _apply_fd_home_policy(home_fd)
+        yield home_fd
+    finally:
+        os.close(home_fd)
+
+
+def write_pairing_json_atomic(
+    path: Path,
+    value: Any,
+    *,
+    create_home: bool = False,
+) -> None:
+    """Atomically publish pairing JSON without following swapped pathnames.
+
+    ``os.replace`` creates a new inode, so mode/group must be applied to that
+    inode through the pairing home directory fd. This helper is pairing-specific
+    and does not change platform JSON storage. Consume must pass
+    ``create_home=False`` so a missing home is fail-closed.
+    """
+
+    target = Path(path)
+    temporary_name = f".{target.name}-{secrets.token_hex(8)}"
+    replaced = False
+    try:
+        with _pairing_home_fd(target, create=create_home) as home_fd:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                PAIRING_FILE_MODE,
+                dir_fd=home_fd,
+            )
+            try:
+                with os.fdopen(temporary_fd, "w", encoding="utf-8", closefd=False) as stream:
+                    json.dump(
+                        value, stream, ensure_ascii=False, indent=2, sort_keys=True
+                    )
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _apply_fd_file_policy(temporary_fd)
+                os.replace(
+                    temporary_name,
+                    target.name,
+                    src_dir_fd=home_fd,
+                    dst_dir_fd=home_fd,
+                )
+                replaced = True
+                published = os.open(target.name, _file_flags(), dir_fd=home_fd)
+                try:
+                    if not stat.S_ISREG(os.fstat(published).st_mode):
+                        raise PairingStoreUnavailable("pairing store is unavailable")
+                    _apply_fd_file_policy(published)
+                finally:
+                    os.close(published)
+                os.fsync(home_fd)
+            finally:
+                os.close(temporary_fd)
+                if not replaced:
+                    try:
+                        os.unlink(temporary_name, dir_fd=home_fd)
+                    except OSError:
+                        pass
+    except PairingStoreUnavailable:
+        raise
+    except OSError as error:
+        raise PairingStoreUnavailable("pairing store is unavailable") from error
+
+
+@contextmanager
+def pairing_file_lock(path: Path, *, create_home: bool) -> Iterator[None]:
+    """Exclusive lock whose inode stays group-readable by plaik-admin."""
+
+    target = Path(path)
+    lock_path = pairing_lock_path(target)
+    thread_lock = _thread_lock_for(lock_path)
+    try:
+        with thread_lock:
+            with _pairing_home_fd(target, create=create_home) as home_fd:
+                descriptor = os.open(
+                    lock_path.name,
+                    _file_flags(os.O_CREAT),
+                    PAIRING_FILE_MODE,
+                    dir_fd=home_fd,
+                )
+                release = None
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise PairingStoreUnavailable("pairing store is unavailable")
+                    _apply_fd_file_policy(descriptor)
+                    release = _lock_descriptor(descriptor)
+                    yield
+                finally:
+                    try:
+                        if release is not None:
+                            release()
+                    finally:
+                        os.close(descriptor)
+    except PairingStoreUnavailable:
+        raise
+    except OSError as error:
+        raise PairingStoreUnavailable("pairing store is unavailable") from error
 
 
 def _effective_in_flight(record: StoredPairing, now: datetime) -> int:
@@ -280,12 +491,17 @@ class PairingStore:
         self.path = path
 
     def read(self) -> StoredPairing | None:
-        if not self.path.is_file():
-            return None
-        payload = read_json(self.path, None)
-        if not payload:
-            return None
-        return StoredPairing.model_validate(payload)
+        try:
+            if not self.path.is_file():
+                return None
+            payload = read_json(self.path, None)
+            if not payload:
+                return None
+            return StoredPairing.model_validate(payload)
+        except PairingStoreUnavailable:
+            raise
+        except (OSError, ValueError) as error:
+            raise PairingStoreUnavailable("pairing store is unavailable") from error
 
     def issue(
         self,
@@ -326,7 +542,7 @@ class PairingStore:
             issued_at=issued_at,
             expires_at=issued_at + PAIRING_TTL,
         )
-        with exclusive_file_lock(self.path):
+        with pairing_file_lock(self.path, create_home=True):
             self._write_unlocked(record)
         return IssuedPairing(
             code=code,
@@ -349,123 +565,135 @@ class PairingStore:
         _require_completed(install_state)
         presented_host = host_from_header(host)
         moment = now or utc_now()
-        with exclusive_file_lock(self.path):
-            remote = remote_store.read()
-            control_hostname = _enrollment_control_hostname(
-                remote,
-                unavailable=PairingDenied,
-            )
-            if presented_host != control_hostname:
-                raise PairingDenied("activate is unavailable")
-            origin_from_header(origin, control_hostname, required=True)
-            if not installation_id:
-                raise PairingRejected("invalid pairing")
-            record = self.read()
-            if record is not None and _effective_in_flight(record, moment) == 0 and record.in_flight:
-                record = _replace_pairing(record, in_flight=0, in_flight_until=None)
-                self._write_unlocked(record)
-            if not _live_code_verifier(
-                record,
-                installation_id=installation_id,
-                control_hostname=control_hostname,
-                now=moment,
-            ):
-                raise PairingRejected("invalid pairing")
-            assert record is not None
-            if record.failed_attempts + _effective_in_flight(record, moment) >= MAX_FAILED_ATTEMPTS:
-                raise PairingRejected("invalid pairing")
-            salt_hex = record.code_salt_hex
-            hash_hex = record.code_hash_hex
-            assert salt_hex is not None and hash_hex is not None
-            self._write_unlocked(
-                _replace_pairing(
-                    record,
-                    in_flight=record.in_flight + 1,
-                    in_flight_until=moment + IN_FLIGHT_LEASE,
-                )
-            )
-        settled = False
         try:
-            try:
-                normalized = normalize_pairing_code(code)
-            except PairingRejected:
-                self._fail_if_same_verifier(
-                    salt_hex=salt_hex,
-                    hash_hex=hash_hex,
+            with pairing_file_lock(self.path, create_home=False):
+                remote = remote_store.read()
+                control_hostname = _enrollment_control_hostname(
+                    remote,
+                    unavailable=PairingDenied,
+                )
+                if presented_host != control_hostname:
+                    raise PairingDenied("activate is unavailable")
+                origin_from_header(origin, control_hostname, required=True)
+                if not installation_id:
+                    raise PairingRejected("invalid pairing")
+                record = self.read()
+                if (
+                    record is not None
+                    and _effective_in_flight(record, moment) == 0
+                    and record.in_flight
+                ):
+                    record = _replace_pairing(record, in_flight=0, in_flight_until=None)
+                    self._write_unlocked(record)
+                if not _live_code_verifier(
+                    record,
                     installation_id=installation_id,
                     control_hostname=control_hostname,
                     now=moment,
+                ):
+                    raise PairingRejected("invalid pairing")
+                assert record is not None
+                if (
+                    record.failed_attempts + _effective_in_flight(record, moment)
+                    >= MAX_FAILED_ATTEMPTS
+                ):
+                    raise PairingRejected("invalid pairing")
+                salt_hex = record.code_salt_hex
+                hash_hex = record.code_hash_hex
+                assert salt_hex is not None and hash_hex is not None
+                self._write_unlocked(
+                    _replace_pairing(
+                        record,
+                        in_flight=record.in_flight + 1,
+                        in_flight_until=moment + IN_FLIGHT_LEASE,
+                    )
                 )
+            settled = False
+            try:
+                try:
+                    normalized = normalize_pairing_code(code)
+                except PairingRejected:
+                    self._fail_if_same_verifier(
+                        salt_hex=salt_hex,
+                        hash_hex=hash_hex,
+                        installation_id=installation_id,
+                        control_hostname=control_hostname,
+                        now=moment,
+                    )
+                    settled = True
+                    raise
+                digest = _scrypt(
+                    _code_password(installation_id, control_hostname, normalized),
+                    bytes.fromhex(salt_hex),
+                )
+                commit_now = now if now is not None else utc_now()
+                with pairing_file_lock(self.path, create_home=False):
+                    current = self.read()
+                    try:
+                        commit_control = _enrollment_control_hostname(
+                            remote_store.read(),
+                            unavailable=PairingDenied,
+                        )
+                        if presented_host != commit_control:
+                            raise PairingDenied("activate is unavailable")
+                    except PairingDenied:
+                        self._release_inflight_unlocked(
+                            current,
+                            salt_hex=salt_hex,
+                            hash_hex=hash_hex,
+                        )
+                        raise
+                    if not _same_live_code_verifier(
+                        current,
+                        salt_hex=salt_hex,
+                        hash_hex=hash_hex,
+                        installation_id=installation_id,
+                        control_hostname=commit_control,
+                        now=commit_now,
+                    ):
+                        self._release_inflight_unlocked(
+                            current,
+                            salt_hex=salt_hex,
+                            hash_hex=hash_hex,
+                        )
+                        raise PairingRejected("invalid pairing")
+                    if not hmac.compare_digest(digest.hex(), hash_hex):
+                        self._register_failure_unlocked(current)
+                        raise PairingRejected("invalid pairing")
+                    session_token = secrets.token_urlsafe(32)
+                    consumed = StoredPairing(
+                        installation_id=current.installation_id,
+                        control_hostname=current.control_hostname,
+                        issued_at=current.issued_at,
+                        expires_at=current.expires_at,
+                        consumed_at=commit_now,
+                        failed_attempts=current.failed_attempts,
+                        locked=False,
+                        enrollment_session_hash_hex=_hash_session(session_token),
+                        enrollment_expires_at=commit_now + ENROLLMENT_SESSION_TTL,
+                    )
+                    self._write_unlocked(consumed)
+                    settled = True
+                    return ConsumedPairing(
+                        enrollment_session_token=session_token,
+                        enrollment_expires_at=consumed.enrollment_expires_at,
+                        control_hostname=commit_control,
+                    )
+            except (PairingDenied, PairingRejected):
                 settled = True
                 raise
-            digest = _scrypt(
-                _code_password(installation_id, control_hostname, normalized),
-                bytes.fromhex(salt_hex),
-            )
-            commit_now = now if now is not None else utc_now()
-            with exclusive_file_lock(self.path):
-                current = self.read()
-                try:
-                    commit_control = _enrollment_control_hostname(
-                        remote_store.read(),
-                        unavailable=PairingDenied,
-                    )
-                    if presented_host != commit_control:
-                        raise PairingDenied("activate is unavailable")
-                except PairingDenied:
-                    self._release_inflight_unlocked(
-                        current,
-                        salt_hex=salt_hex,
-                        hash_hex=hash_hex,
-                    )
-                    raise
-                if not _same_live_code_verifier(
-                    current,
-                    salt_hex=salt_hex,
-                    hash_hex=hash_hex,
-                    installation_id=installation_id,
-                    control_hostname=commit_control,
-                    now=commit_now,
-                ):
-                    self._release_inflight_unlocked(
-                        current,
-                        salt_hex=salt_hex,
-                        hash_hex=hash_hex,
-                    )
-                    raise PairingRejected("invalid pairing")
-                if not hmac.compare_digest(digest.hex(), hash_hex):
-                    self._register_failure_unlocked(current)
-                    raise PairingRejected("invalid pairing")
-                session_token = secrets.token_urlsafe(32)
-                consumed = StoredPairing(
-                    installation_id=current.installation_id,
-                    control_hostname=current.control_hostname,
-                    issued_at=current.issued_at,
-                    expires_at=current.expires_at,
-                    consumed_at=commit_now,
-                    failed_attempts=current.failed_attempts,
-                    locked=False,
-                    enrollment_session_hash_hex=_hash_session(session_token),
-                    enrollment_expires_at=commit_now + ENROLLMENT_SESSION_TTL,
-                )
-                self._write_unlocked(consumed)
-                settled = True
-                return ConsumedPairing(
-                    enrollment_session_token=session_token,
-                    enrollment_expires_at=consumed.enrollment_expires_at,
-                    control_hostname=commit_control,
-                )
-        except (PairingDenied, PairingRejected):
-            settled = True
+            finally:
+                if not settled:
+                    with pairing_file_lock(self.path, create_home=False):
+                        self._release_inflight_unlocked(
+                            self.read(),
+                            salt_hex=salt_hex,
+                            hash_hex=hash_hex,
+                        )
+        except PairingStoreUnavailable:
             raise
-        finally:
-            if not settled:
-                with exclusive_file_lock(self.path):
-                    self._release_inflight_unlocked(
-                        self.read(),
-                        salt_hex=salt_hex,
-                        hash_hex=hash_hex,
-                    )
+        except (OSError, ValueError) as error:
+            raise PairingStoreUnavailable("pairing store is unavailable") from error
 
     def enrollment_session_valid(
         self,
@@ -506,7 +734,7 @@ class PairingStore:
         enrollment_session_token: str,
     ) -> None:
         token_hash = _hash_session(enrollment_session_token)
-        with exclusive_file_lock(self.path):
+        with pairing_file_lock(self.path, create_home=False):
             record = self.read()
             if record is None or record.enrollment_session_hash_hex is None:
                 return
@@ -531,7 +759,7 @@ class PairingStore:
         control_hostname: str,
         now: datetime,
     ) -> None:
-        with exclusive_file_lock(self.path):
+        with pairing_file_lock(self.path, create_home=False):
             current = self.read()
             if _same_live_code_verifier(
                 current,
@@ -588,8 +816,7 @@ class PairingStore:
         self._write_unlocked(updated)
 
     def _write_unlocked(self, record: StoredPairing) -> None:
-        write_json_atomic(self.path, record.model_dump(mode="json"))
-        _chmod_private(self.path)
+        write_pairing_json_atomic(self.path, record.model_dump(mode="json"))
 
 
 def mount_pairing_activate(
@@ -662,6 +889,12 @@ def mount_pairing_activate(
             raise _denied() from None
         except PairingRejected:
             raise _rejected() from None
+        except (PairingStoreUnavailable, OSError, ValueError):
+            raise HTTPException(
+                status_code=503,
+                detail="unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from None
         wants_json = _wants_json(request)
         if wants_json:
             response: Response = JSONResponse(

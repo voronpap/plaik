@@ -11,6 +11,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 _ADMIN_PATH = re.compile(r"^/[a-z][a-z0-9-]{2,63}$")
 _RESERVED_ADMIN_PATHS = {"/admin", "/api", "/install", "/panel", "/vrnpap"}
 _INSTALLER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
+REMOTE_CONTROL_PAIRING_HOME = "remote-control-pairing"
+REMOTE_CONTROL_PAIRING_STATE = "state.json"
 
 
 def _source_repository_root() -> Path | None:
@@ -127,8 +129,12 @@ class CoreSettings:
         return self.data_dir / "remote-control.json"
 
     @property
+    def remote_control_pairing_home(self) -> Path:
+        return self.data_dir / REMOTE_CONTROL_PAIRING_HOME
+
+    @property
     def remote_control_pairing_path(self) -> Path:
-        return self.data_dir / "remote-control.pairing.json"
+        return self.remote_control_pairing_home / REMOTE_CONTROL_PAIRING_STATE
 
     @property
     def package_registry_path(self) -> Path:
