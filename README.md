@@ -1,8 +1,10 @@
 # PLAIK
 
-**PLAIK** is a modular application platform built around a small domain-neutral core and explicit extension contracts.
+**PLAIK — Platform for Local Automation, Integration & Knowledge**
 
-The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
+PLAIK is a modular application platform built around a small domain-neutral core and explicit extension contracts, with local automation, integration and knowledge as its product focus.
+
+The name also echoes the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
 > Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
