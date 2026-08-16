@@ -208,14 +208,15 @@ def create_installer_app(settings: CoreSettings | None = None) -> FastAPI:
 
     @application.get("/", response_class=HTMLResponse, include_in_schema=False)
     def installer_shell() -> HTMLResponse:
+        from .service_control import handoff_is_ready, request_service_finalization
+
         if application.state.install_store.read() == InstallState.COMPLETED:
             try:
-                from .service_control import request_service_finalization
-
                 request_service_finalization(runtime)
             except Exception:
                 pass
-            raise HTTPException(status_code=410, detail="installer is closed")
+            if handoff_is_ready(runtime):
+                raise HTTPException(status_code=410, detail="installer is closed")
         return HTMLResponse(
             _installer_asset("wizard.html"),
             headers=_installer_security_headers(),

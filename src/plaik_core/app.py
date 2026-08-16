@@ -66,6 +66,8 @@ from .secret_store import (
 )
 from .service_control import (
     ServiceControlError,
+    handoff_is_ready,
+    handoff_snapshot,
     request_database_provision,
     request_service_finalization,
 )
@@ -266,6 +268,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             return cached_session, cached_audit, cached_operations
 
         local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
+        if os.environ.get("PLAIK_PUBLIC_SECRETS") == "1":
+            from .public_secrets import PublishedRuntimeSecretProvider
+
+            local_secrets = PublishedRuntimeSecretProvider(runtime.secrets_dir)
         providers = SecretProviderRegistry(
             (EnvironmentSecretProvider(), local_secrets)
         )
@@ -501,8 +507,16 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             raise TypeError("PostgreSQL adapter requires PostgreSQL configuration")
         providers = application.state.secret_providers
         if providers is None:
-            security_services(create_missing=False)
-            providers = application.state.secret_providers
+            if os.environ.get("PLAIK_PUBLIC_SECRETS") == "1":
+                from .public_secrets import PublishedRuntimeSecretProvider
+
+                local_secrets = PublishedRuntimeSecretProvider(runtime.secrets_dir)
+            else:
+                local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
+            providers = SecretProviderRegistry(
+                (EnvironmentSecretProvider(), local_secrets)
+            )
+            application.state.secret_providers = providers
         if providers is None:
             raise RuntimeError("secret providers are unavailable")
         return PostgreSQLAdapter(configured, providers)
@@ -536,9 +550,16 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         installer_rate_limiter.record_failure(client_key)
         raise HTTPException(status_code=403, detail="installer access denied")
 
+    def install_payload(state: InstallState | None = None) -> dict:
+        current = state if state is not None else install_store.read()
+        return {"state": current, "handoff": handoff_snapshot(runtime)}
+
     def require_installer_open(request: Request) -> None:
         require_installer_access(request)
-        if install_store.read() == InstallState.COMPLETED:
+        if (
+            install_store.read() == InstallState.COMPLETED
+            and handoff_is_ready(runtime)
+        ):
             raise HTTPException(status_code=410, detail="installer is closed")
 
     def operation_id(action: str, target: str, payload: str = "") -> str:
@@ -808,7 +829,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
 
     @application.get("/api/install/state", dependencies=[Depends(require_installer_access)])
     def install_state() -> dict:
-        return {"state": install_store.read()}
+        return install_payload()
 
     @application.get(
         "/api/install/requirements", dependencies=[Depends(require_installer_open)]
@@ -977,7 +998,13 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             request_service_finalization(runtime)
         except ServiceControlError as error:
             raise HTTPException(status_code=503, detail=str(error)) from None
-        return {"finalized": True}
+        snapshot = handoff_snapshot(runtime)
+        if snapshot["status"] != "ready":
+            raise HTTPException(
+                status_code=503,
+                detail=snapshot["detail"] or "service finalization did not complete",
+            )
+        return {"finalized": True, "handoff": snapshot}
 
     @application.post(
         "/api/install/admin", dependencies=[Depends(require_installer_access)]
@@ -1127,7 +1154,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     request_service_finalization(runtime)
                 except ServiceControlError:
                     pass
-                return {"state": InstallState.COMPLETED}
+                return install_payload(InstallState.COMPLETED)
 
             try:
                 install_store.validate_transition(request.target)
@@ -1138,7 +1165,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 current == InstallState.NOT_STARTED
                 and request.target == InstallState.NOT_STARTED
             ):
-                return {"state": current}
+                return install_payload(current)
 
             if request.target == InstallState.REQUIREMENTS_CHECKED:
                 try:
@@ -1166,7 +1193,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 anchor_committed_installer_mutation(
                     installation_id=installation_id
                 )
-                return {"state": current}
+                return install_payload(current)
             if operation.status == OperationStatus.SUCCEEDED:
                 raise HTTPException(
                     status_code=500,
@@ -1330,7 +1357,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     else installation_id
                 )
             )
-            return {"state": state}
+            return install_payload(state)
 
     @application.get("/api/core/themes/active")
     def active_theme(store_id: str | None = None) -> dict:

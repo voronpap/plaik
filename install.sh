@@ -160,9 +160,100 @@ ensure_system_user() {
     fi
 }
 
+verify_wheel_bundle() {
+    "${BOOTSTRAP_PYTHON:-python3}" - "$1" "$2" "$3" "$4" <<'PY'
+import re
+import sys
+import zipfile
+from email.parser import Parser
+
+runtime_path, sdk_path, expected_tag, expected_runtime_name = sys.argv[1:]
+
+def metadata(path):
+    with zipfile.ZipFile(path) as archive:
+        names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(names) != 1:
+            raise SystemExit(f"wheel METADATA is missing: {path}")
+        return Parser().parsestr(archive.read(names[0]).decode("utf-8"))
+
+def parse_version(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value)
+    if match is None:
+        raise SystemExit("SDK version is not a release version")
+    return tuple(int(part) for part in match.groups())
+
+def parse_spec(value):
+    clauses = []
+    for raw in value.split(","):
+        item = raw.strip()
+        for operator in (">=", "<=", "!=", "==", "~=", ">", "<"):
+            if item.startswith(operator):
+                clauses.append((operator, parse_version(item[len(operator):].strip())))
+                break
+        else:
+            raise SystemExit("unsupported SDK compatibility specifier")
+    return clauses
+
+def matches(version, clauses):
+    for operator, target in clauses:
+        if operator == ">=" and version < target:
+            return False
+        if operator == "<=" and version > target:
+            return False
+        if operator == ">" and version <= target:
+            return False
+        if operator == "<" and version >= target:
+            return False
+        if operator == "==" and version != target:
+            return False
+        if operator == "!=" and version == target:
+            return False
+        if operator == "~=":
+            if version < target or version >= (target[0], target[1] + 1, 0):
+                return False
+    return True
+
+runtime = metadata(runtime_path)
+sdk = metadata(sdk_path)
+runtime_version = runtime.get("Version", "")
+sdk_version = sdk.get("Version", "")
+runtime_name = f"plaik-{runtime_version}-py3-none-any.whl"
+if runtime.get("Name") != "plaik" or not runtime_version:
+    raise SystemExit("runtime wheel METADATA version is invalid")
+if expected_runtime_name and expected_runtime_name != runtime_name:
+    raise SystemExit("wheel filename version does not match METADATA")
+tag = expected_tag.lstrip("v")
+if expected_tag and tag != runtime_version:
+    raise SystemExit("release tag/version mismatch")
+if sdk.get("Name") not in {"plaik-sdk", "plaik_sdk"} or not sdk_version:
+    raise SystemExit("SDK wheel METADATA version is invalid")
+requires = " ".join(runtime.get_all("Requires-Dist") or [])
+if "plaik-sdk" not in requires:
+    raise SystemExit("runtime wheel does not declare plaik-sdk compatibility")
+spec = re.search(r"plaik[-_]sdk\s*\(([^)]+)\)", requires) or re.search(
+    r"plaik[-_]sdk\s*([^;]+)", requires
+)
+if spec is None:
+    raise SystemExit("runtime SDK compatibility range is missing")
+range_text = spec.group(1).strip()
+if not matches(parse_version(sdk_version), parse_spec(range_text)):
+    raise SystemExit("bundled SDK version is outside the runtime compatibility range")
+print(runtime_version)
+PY
+}
+
 if [ "${PLAIK_INSTALL_ACTION:-}" = "validate-paths" ]; then
     validate_configured_paths
     echo "paths ok"
+    exit 0
+fi
+
+if [ "${PLAIK_INSTALL_ACTION:-}" = "verify-wheels" ]; then
+    [ -n "${PLAIK_WHEEL_FILE:-}" ] && [ -n "${PLAIK_SDK_WHEEL_FILE:-}" ] || {
+        echo "install.sh: verify-wheels requires PLAIK_WHEEL_FILE and PLAIK_SDK_WHEEL_FILE" >&2
+        exit 2
+    }
+    verify_wheel_bundle "$PLAIK_WHEEL_FILE" "$PLAIK_SDK_WHEEL_FILE" "${PLAIK_RELEASE_TAG:-}" "$(basename "$PLAIK_WHEEL_FILE")"
     exit 0
 fi
 
@@ -231,7 +322,7 @@ install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/releases"
 install -d -m 0771 -o root -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR"
 install -d -m 0770 -o root -g "$PLAIK_INSTALLER_USER" "$PLAIK_DATA_DIR/run"
 install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_DATA_DIR/public"
-install -d -m 0750 -o root -g "$PLAIK_ADMIN_USER" "$PLAIK_CONFIG_DIR"
+install -d -m 0751 -o root -g "$PLAIK_ADMIN_USER" "$PLAIK_CONFIG_DIR"
 install -d -m 0751 -o root -g root "$PLAIK_LOG_DIR"
 install -d -m 0750 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_LOG_DIR/installer"
 install -d -m 0750 -o "$PLAIK_ADMIN_USER" -g "$PLAIK_ADMIN_USER" "$PLAIK_LOG_DIR/admin"
@@ -391,46 +482,6 @@ download_verified_wheel() {
     fi
 }
 
-verify_wheel_bundle() {
-    "$BOOTSTRAP_PYTHON" - "$1" "$2" "$3" "$4" <<'PY'
-import re
-import sys
-import zipfile
-from email.parser import Parser
-
-runtime_path, sdk_path, expected_tag, expected_runtime_name = sys.argv[1:]
-
-def metadata(path):
-    with zipfile.ZipFile(path) as archive:
-        names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
-        if len(names) != 1:
-            raise SystemExit(f"wheel METADATA is missing: {path}")
-        return Parser().parsestr(archive.read(names[0]).decode("utf-8"))
-
-runtime = metadata(runtime_path)
-sdk = metadata(sdk_path)
-runtime_version = runtime.get("Version", "")
-sdk_version = sdk.get("Version", "")
-runtime_name = f"plaik-{runtime_version}-py3-none-any.whl"
-if runtime.get("Name") != "plaik" or not runtime_version:
-    raise SystemExit("runtime wheel METADATA version is invalid")
-if expected_runtime_name and expected_runtime_name != runtime_name:
-    raise SystemExit("wheel filename version does not match METADATA")
-tag = expected_tag.lstrip("v")
-if expected_tag and tag != runtime_version:
-    raise SystemExit("release tag/version mismatch")
-if sdk.get("Name") not in {"plaik-sdk", "plaik_sdk"} or not sdk_version:
-    raise SystemExit("SDK wheel METADATA version is invalid")
-requires = " ".join(runtime.get_all("Requires-Dist") or [])
-if "plaik-sdk" not in requires:
-    raise SystemExit("runtime wheel does not declare plaik-sdk compatibility")
-spec = re.search(r"plaik-sdk\s*\(([^)]+)\)", requires) or re.search(r"plaik-sdk([^;]+)", requires)
-if spec is None:
-    raise SystemExit("runtime SDK compatibility range is missing")
-print(runtime_version)
-PY
-}
-
 if [ -n "$PLAIK_WHEEL_FILE" ] || [ -n "$PLAIK_SDK_WHEEL_FILE" ]; then
     if [ -z "$PLAIK_WHEEL_FILE" ] || [ -z "$PLAIK_SDK_WHEEL_FILE" ]; then
         echo "install.sh: local development mode requires both --wheel and --sdk-wheel" >&2
@@ -504,6 +555,7 @@ if [ ! -f "$WEB_ENV" ]; then
 PLAIK_DATA_DIR=$PLAIK_DATA_DIR
 PLAIK_ADMIN_PATH=/control-center
 PLAIK_SECRETS_DIR=$PLAIK_CONFIG_DIR/web-secrets
+PLAIK_PUBLIC_SECRETS=1
 EOF
 fi
 if [ ! -f "$ADMIN_ENV" ]; then
@@ -521,7 +573,12 @@ chown root:"$PLAIK_PUBLIC_USER" "$WEB_ENV"
 chmod 0640 "$WEB_ENV"
 chown root:"$PLAIK_ADMIN_USER" "$ADMIN_ENV"
 chmod 0640 "$ADMIN_ENV"
-install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_CONFIG_DIR/web-secrets"
+install -d -m 0750 -o root -g "$PLAIK_PUBLIC_USER" "$PLAIK_CONFIG_DIR/web-secrets"
+if ! grep -q '^PLAIK_PUBLIC_SECRETS=' "$WEB_ENV" 2>/dev/null; then
+    printf 'PLAIK_PUBLIC_SECRETS=1\n' >> "$WEB_ENV"
+    chown root:"$PLAIK_PUBLIC_USER" "$WEB_ENV"
+    chmod 0640 "$WEB_ENV"
+fi
 
 COMMON_HARDENING=$(cat <<'EOF'
 Restart=on-failure

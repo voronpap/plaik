@@ -39,6 +39,9 @@ const I18N = {
     installLead: "Застосовуємо перевірку, конфігурацію, базу, адміністратора і фіналізацію сервісів.",
     doneTitle: "PLAIK встановлено",
     doneLead: "Інсталятор буде вимкнено. Далі відкрийте публічний сайт і control-center.",
+    handoffTitle: "Фіналізація не завершилась",
+    handoffLead: "Core вже COMPLETED, але Web/Admin ще не підтверджені, або інсталятор ще активний. Повторіть фіналізацію або виконайте sudo plaik setup.",
+    retryFinalize: "Повторити фіналізацію",
     fail: "Крок не виконано"
   },
   en: {
@@ -81,6 +84,9 @@ const I18N = {
     installLead: "Applying checks, configuration, database, administrator and service finalization.",
     doneTitle: "PLAIK is installed",
     doneLead: "The installer will be disabled. Continue to the public site and control-center.",
+    handoffTitle: "Service finalization did not finish",
+    handoffLead: "Core is COMPLETED, but Web/Admin are not confirmed or the installer is still active. Retry finalization or run sudo plaik setup.",
+    retryFinalize: "Retry finalization",
     fail: "This step failed"
   }
 };
@@ -100,6 +106,7 @@ const state = {
   step: 0,
   token: sessionStorage.getItem("plaik-installer-token") || "",
   installState: "not_started",
+  handoff: {status: "not_started", detail: ""},
   requirements: null,
   inventory: null,
   form: {
@@ -310,10 +317,25 @@ function done() {
     <p class="lead">${escapeHtml(t().doneLead)}</p>
   </div>`;
 }
+function handoffFailed() {
+  const detail = state.handoff && state.handoff.detail ? `<p>${escapeHtml(state.handoff.detail)}</p>` : "";
+  return `<div class="done-box">
+    <h1>${escapeHtml(t().handoffTitle)}</h1>
+    <p class="lead">${escapeHtml(t().handoffLead)}</p>
+    ${detail}
+    <form id="step-form"><button type="submit" class="primary">${escapeHtml(t().retryFinalize)}</button></form>
+  </div>`;
+}
 function render(error) {
   renderSteps();
   const views = [welcome, checks, site, database, admin, install];
-  $("panel").innerHTML = flash(error, "bad") + (state.step >= 6 ? done() : views[state.step]());
+  $("panel").innerHTML = flash(error, "bad") + (
+    state.step >= 6 && state.handoff && state.handoff.status === "ready"
+      ? done()
+      : (state.installState === "completed" && (!state.handoff || state.handoff.status !== "ready")
+        ? handoffFailed()
+        : views[Math.min(state.step, 5)]())
+  );
   $("top-title").textContent = t().steps[Math.min(state.step, 5)];
   const form = $("step-form");
   if (form) {
@@ -328,6 +350,10 @@ async function onNext(event) {
   event.preventDefault();
   readForm();
   try {
+    if (state.installState === "completed" && (!state.handoff || state.handoff.status !== "ready")) {
+      await continueInstall();
+      return;
+    }
     if (state.step === 0) {
       await resumeFromServer();
       return;
@@ -389,6 +415,7 @@ function configurationPayload() {
 async function currentInstallState() {
   const payload = await api("GET", "/api/install/state");
   state.installState = payload.state;
+  state.handoff = payload.handoff || {status: "not_started", detail: ""};
   return payload.state;
 }
 async function continueInstall() {
@@ -448,7 +475,16 @@ async function continueInstall() {
       await api("POST", "/api/install/transition", {target: "completed"});
     } else if (current === "completed") {
       setBar(100); logLine("finalize");
-      try { await api("POST", "/api/install/finalize"); } catch (_error) { /* finish-forward retries */ }
+      if (state.handoff && state.handoff.status === "ready") {
+        state.step = 6;
+        render();
+        return;
+      }
+      const result = await api("POST", "/api/install/finalize");
+      state.handoff = result.handoff || state.handoff;
+      if (!state.handoff || state.handoff.status !== "ready") {
+        throw new Error((state.handoff && state.handoff.detail) || t().handoffTitle);
+      }
       state.step = 6;
       render();
       return;
@@ -460,13 +496,21 @@ async function continueInstall() {
 }
 async function resumeFromServer() {
   const current = await currentInstallState();
-  const req = await api("GET", "/api/install/requirements");
-  state.requirements = req;
-  applyInventory(req.inventory);
-  const cfg = await api("GET", "/api/install/configuration");
-  applyConfiguration(cfg.configuration);
+  if (current === "completed" && state.handoff.status === "ready") {
+    state.step = 6;
+    render();
+    return;
+  }
+  if (current !== "completed") {
+    const req = await api("GET", "/api/install/requirements");
+    state.requirements = req;
+    applyInventory(req.inventory);
+    const cfg = await api("GET", "/api/install/configuration");
+    applyConfiguration(cfg.configuration);
+  }
   state.step = STEP[current] ?? 0;
   if (current === "not_started") state.step = 1;
+  if (current === "completed") state.step = 5;
   render();
   if (current === "configured" || current === "admin_ready" || current === "theme_ready" || current === "completed") {
     await continueInstall();

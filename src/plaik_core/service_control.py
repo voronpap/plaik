@@ -21,6 +21,10 @@ from .host_inventory import discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import InstallerConfigurationStore, PostgreSQLDatabase
 from .postgresql_provision import PostgreSQLProvisionError, provision_local_postgresql
+from .public_secrets import (
+    publish_runtime_secret,
+    read_private_secret_for_publication,
+)
 from .secret_store import LocalFileSecretProvider, SecretNotFoundError, SecretStoreError
 from .storage import write_json_atomic
 
@@ -32,7 +36,10 @@ class ServiceControlError(RuntimeError):
 WEB_SERVICE = "plaik-web.service"
 ADMIN_SERVICE = "plaik-admin.service"
 INSTALLER_SERVICE = "plaik-installer.service"
-PRIVILEGED_ACTIONS = frozenset({"finalize-services", "provision-database"})
+HANDOFF_NOT_STARTED = "not_started"
+HANDOFF_PENDING = "pending"
+HANDOFF_FAILED = "failed"
+HANDOFF_READY = "ready"
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _PROVISION_FIELDS = (
     "host",
@@ -116,6 +123,68 @@ def provision_error_path(settings: CoreSettings) -> Path:
     return request_dir(settings) / "provision.error"
 
 
+def handoff_state_path(settings: CoreSettings) -> Path:
+    return settings.data_dir / "service-handoff.json"
+
+
+def handoff_snapshot(settings: CoreSettings) -> dict[str, str]:
+    if not handoff_state_path(settings).is_file():
+        status = (
+            HANDOFF_NOT_STARTED
+            if InstallStateStore(settings.install_state_path).read() != InstallState.COMPLETED
+            else HANDOFF_PENDING
+        )
+        return {"status": status, "detail": ""}
+    payload = json.loads(handoff_state_path(settings).read_text(encoding="utf-8"))
+    status = str(payload.get("status") or HANDOFF_PENDING)
+    detail = str(payload.get("detail") or "")
+    if status not in {HANDOFF_NOT_STARTED, HANDOFF_PENDING, HANDOFF_FAILED, HANDOFF_READY}:
+        status = HANDOFF_FAILED
+        detail = "service handoff state is invalid"
+    return {"status": status, "detail": detail}
+
+
+def handoff_is_ready(settings: CoreSettings) -> bool:
+    return handoff_snapshot(settings)["status"] == HANDOFF_READY
+
+
+def mark_handoff(settings: CoreSettings, status: str, detail: str = "") -> dict[str, str]:
+    if status not in {HANDOFF_PENDING, HANDOFF_FAILED, HANDOFF_READY}:
+        raise ServiceControlError("service handoff status is invalid")
+    payload = {"status": status, "detail": detail}
+    write_json_atomic(handoff_state_path(settings), payload)
+    os.chmod(handoff_state_path(settings), 0o640)
+    return payload
+
+
+def confirm_service_handoff(settings: CoreSettings) -> None:
+    """Require web/admin on, installer off, and installer token revoked."""
+
+    if installer_env_file().is_file():
+        raise ServiceControlError("installer token has not been revoked")
+    shared = env_file()
+    if shared.is_file() and any(
+        line.strip().startswith("PLAIK_INSTALLER_TOKEN=")
+        for line in shared.read_text(encoding="utf-8").splitlines()
+    ):
+        raise ServiceControlError("installer token has not been revoked")
+    if not _is_real_system_root():
+        return
+    for unit, must_run in (
+        (WEB_SERVICE, True),
+        (ADMIN_SERVICE, True),
+        (INSTALLER_SERVICE, False),
+    ):
+        if not _service_exists(unit):
+            continue
+        active = _systemctl("is-active", "--quiet", unit, check=False)
+        running = active is not None and active.returncode == 0
+        if must_run and not running:
+            raise ServiceControlError("web and admin services are not running")
+        if not must_run and running:
+            raise ServiceControlError("installer service is still running")
+
+
 def _service_exists(name: str) -> bool:
     return systemd_dir().joinpath(name).is_file()
 
@@ -171,16 +240,22 @@ def revoke_installer_token() -> None:
 
 
 def publish_public_runtime_secret(settings: CoreSettings) -> None:
-    """Copy the runtime DB secret to the public-only secret directory."""
+    """Copy the runtime DB secret into the public-only publication directory."""
 
     try:
-        secret = LocalFileSecretProvider(settings.data_dir / "secrets").read(
-            "database/runtime", version="v1"
+        secret = read_private_secret_for_publication(
+            settings.data_dir / "secrets",
+            "database/runtime",
+            version="v1",
         )
-    except (SecretNotFoundError, SecretStoreError):
+    except SecretNotFoundError:
         return
-    destination = LocalFileSecretProvider(web_secrets_dir(settings))
-    destination.write("database/runtime", secret, version="v1")
+    except SecretStoreError as error:
+        raise ServiceControlError("runtime secret could not be published") from error
+    try:
+        publish_runtime_secret(web_secrets_dir(settings), secret)
+    except SecretStoreError as error:
+        raise ServiceControlError("runtime secret could not be published") from error
 
 
 _PUBLIC_READ_FILES = (
@@ -334,16 +409,28 @@ def finalize_installed_services(settings: CoreSettings | None = None) -> None:
     state = InstallStateStore(runtime.install_state_path).read()
     if state != InstallState.COMPLETED:
         raise ServiceControlError("service finalization requires a completed installation")
-    apply_identity_isolation(runtime)
-    publish_public_runtime_secret(runtime)
-    if _is_real_system_root():
-        for name in (WEB_SERVICE, ADMIN_SERVICE):
-            if _service_exists(name):
-                _systemctl("enable", "--now", name)
-        if _service_exists(INSTALLER_SERVICE):
-            _systemctl("disable", "--now", INSTALLER_SERVICE, check=False)
-    revoke_installer_token()
-    finalize_request_path(runtime).unlink(missing_ok=True)
+    mark_handoff(runtime, HANDOFF_PENDING)
+    try:
+        apply_identity_isolation(runtime)
+        publish_public_runtime_secret(runtime)
+        if _is_real_system_root():
+            for name in (WEB_SERVICE, ADMIN_SERVICE):
+                if _service_exists(name):
+                    _systemctl("enable", "--now", name)
+            if _service_exists(INSTALLER_SERVICE):
+                _systemctl("disable", "--now", INSTALLER_SERVICE, check=False)
+        revoke_installer_token()
+        confirm_service_handoff(runtime)
+        mark_handoff(runtime, HANDOFF_READY)
+        finalize_request_path(runtime).unlink(missing_ok=True)
+    except Exception as error:
+        detail = (
+            str(error)
+            if isinstance(error, ServiceControlError)
+            else "service finalization failed"
+        )
+        mark_handoff(runtime, HANDOFF_FAILED, detail)
+        raise ServiceControlError(detail) from None
 
 
 def _validated_provision_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -439,11 +526,22 @@ def request_service_finalization(
     if state != InstallState.COMPLETED:
         raise ServiceControlError("service finalization requires a completed installation")
     marker = finalize_request_path(settings)
+    mark_handoff(settings, HANDOFF_PENDING)
     _write_request(marker, "requested\n")
     helper = _path_helper_available("finalize-services")
-    _dispatch_or_run("finalize-services", settings)
-    if marker.exists() and helper:
-        _wait_until(lambda: not marker.exists(), wait_seconds, "service finalization")
+    try:
+        _dispatch_or_run("finalize-services", settings)
+        if marker.exists() and helper:
+            _wait_until(lambda: not marker.exists(), wait_seconds, "service finalization")
+        if not handoff_is_ready(settings):
+            snapshot = handoff_snapshot(settings)
+            raise ServiceControlError(
+                snapshot["detail"] or "service finalization did not complete"
+            )
+    except ServiceControlError as error:
+        if handoff_snapshot(settings)["status"] != HANDOFF_FAILED:
+            mark_handoff(settings, HANDOFF_FAILED, str(error))
+        raise
 
 
 def request_database_provision(
