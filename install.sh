@@ -669,6 +669,13 @@ install -d -m 0751 -o root -g root "$PLAIK_LOG_DIR"
 install -d -m 0750 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_LOG_DIR/installer"
 install -d -m 0750 -o "$PLAIK_ADMIN_USER" -g "$PLAIK_ADMIN_USER" "$PLAIK_LOG_DIR/admin"
 install -d -m 0750 -o "$PLAIK_PUBLIC_USER" -g "$PLAIK_PUBLIC_USER" "$PLAIK_LOG_DIR/public"
+# Trusted journal heads live beside the data directory, not inside it.
+PLAIK_INTEGRITY_DIR="$(dirname "$PLAIK_DATA_DIR")/.$(basename "$PLAIK_DATA_DIR")-integrity"
+if [ -L "$PLAIK_INTEGRITY_DIR" ]; then
+    echo "install.sh: refusing symlink integrity directory: $PLAIK_INTEGRITY_DIR" >&2
+    exit 1
+fi
+install -d -m 0700 -o "$PLAIK_INSTALLER_USER" -g "$PLAIK_INSTALLER_USER" "$PLAIK_INTEGRITY_DIR"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/bin"
 install -d -m 0755 -o root -g root "$PLAIK_RUNTIME_DIR/bootstrap/python"
 
@@ -988,7 +995,7 @@ EOF
 }
 
 WORKDIR=$PLAIK_DATA_DIR
-RWPATHS="$PLAIK_DATA_DIR $PLAIK_LOG_DIR/installer $PLAIK_DATA_DIR/run"
+RWPATHS="$PLAIK_DATA_DIR $PLAIK_LOG_DIR/installer $PLAIK_DATA_DIR/run $PLAIK_INTEGRITY_DIR"
 write_app_unit /etc/systemd/system/plaik-installer.service \
     "$PLAIK_INSTALLER_USER" "$PLAIK_INSTALLER_USER" \
     "EnvironmentFile=$SHARED_ENV
