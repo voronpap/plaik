@@ -222,6 +222,191 @@ commit_staged_release() {
     fi
 }
 
+install_plaik_command() {
+    command_path="${PLAIK_COMMAND_PATH:-/usr/local/bin/plaik}"
+    mkdir -p "$(dirname "$command_path")"
+    ln -sfn "$CURRENT_LINK/venv/bin/plaik" "$command_path"
+}
+
+service_main_pid() {
+    systemctl show -p MainPID --value "$1" 2>/dev/null || printf '%s\n' "0"
+}
+
+service_runs_from_release() {
+    unit=$1
+    release=$2
+    pid=$(service_main_pid "$unit")
+    case "$pid" in
+        ''|0|1|*[!0-9]*) return 1 ;;
+    esac
+    cmdline_file="${PLAIK_PROC_DIR:-/proc}/$pid/cmdline"
+    [ -r "$cmdline_file" ] || return 1
+    cmdline=$(tr '\0' ' ' < "$cmdline_file")
+    case "$cmdline" in
+        *"$release"*) ;;
+        *) return 1 ;;
+    esac
+    case "$cmdline" in
+        *.new/*) return 1 ;;
+    esac
+    return 0
+}
+
+installer_port_closed() {
+    port=${1:-8765}
+    python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+        raise SystemExit(1)
+except ConnectionRefusedError:
+    raise SystemExit(0)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+completed_endpoint_ok() {
+    url=$1
+    kind=$2
+    expected_version=$3
+    python3 - "$url" "$kind" "$expected_version" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+url, kind, expected = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with urllib.request.urlopen(url, timeout=3) as response:
+        status = response.getcode()
+        body = response.read().decode("utf-8", "replace")
+except urllib.error.HTTPError as error:
+    status = error.code
+    body = error.read().decode("utf-8", "replace")
+except Exception:
+    raise SystemExit(1)
+if status != 200:
+    raise SystemExit(1)
+try:
+    payload = json.loads(body)
+except Exception:
+    raise SystemExit(1)
+if payload.get("status") != "ok":
+    raise SystemExit(1)
+core_version = str(payload.get("core_version") or "")
+if expected and core_version != expected:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+completed_runtime_ready() {
+    new_release=$1
+    expected_version=$2
+    web_url="${PLAIK_WEB_READY_URL:-http://127.0.0.1:8080/health}"
+    admin_url="${PLAIK_ADMIN_HEALTH_URL:-http://127.0.0.1:8081/health}"
+    installer_port="${PLAIK_INSTALLER_PORT:-8765}"
+    systemctl is-active --quiet plaik-web.service || return 1
+    systemctl is-active --quiet plaik-admin.service || return 1
+    if systemctl is-active --quiet plaik-installer.service; then
+        return 1
+    fi
+    if [ -e "$PLAIK_CONFIG_DIR/installer.env" ]; then
+        return 1
+    fi
+    service_runs_from_release plaik-web.service "$new_release" || return 1
+    service_runs_from_release plaik-admin.service "$new_release" || return 1
+    installer_port_closed "$installer_port" || return 1
+    completed_endpoint_ok "$web_url" web "$expected_version" || return 1
+    completed_endpoint_ok "$admin_url" admin "$expected_version" || return 1
+    return 0
+}
+
+wait_for_completed_readiness() {
+    new_release=$1
+    expected_version=$2
+    attempts=${PLAIK_READINESS_ATTEMPTS:-30}
+    sleep_s=${PLAIK_READINESS_SLEEP:-1}
+    i=0
+    while [ "$i" -lt "$attempts" ]; do
+        if completed_runtime_ready "$new_release" "$expected_version"; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep "$sleep_s"
+    done
+    return 1
+}
+
+restart_completed_services() {
+    if systemctl restart plaik-web.service plaik-admin.service; then
+        return 0
+    fi
+    echo "install.sh: failed to restart plaik-web.service plaik-admin.service" >&2
+    return 1
+}
+
+restore_previous_completed_release() {
+    previous_release=$1
+    attempted_release=$2
+    echo "install.sh: restoring previous release $previous_release" >&2
+    atomic_switch_release "$previous_release" "$CURRENT_LINK"
+    install_plaik_command
+    systemctl daemon-reload
+    systemctl disable --now plaik-installer.service >/dev/null 2>&1 || true
+    if ! restart_completed_services; then
+        echo "install.sh: rollback restart of previous release failed" >&2
+        exit 1
+    fi
+    previous_version=$3
+    if [ -z "$previous_version" ] && [ -x "$previous_release/venv/bin/python" ]; then
+        previous_version=$("$previous_release/venv/bin/python" -c 'from plaik_core import __version__; print(__version__)' 2>/dev/null || true)
+    fi
+    if wait_for_completed_readiness "$previous_release" "$previous_version"; then
+        echo "install.sh: previous release restored after failed upgrade of $attempted_release" >&2
+        exit 1
+    fi
+    echo "install.sh: rollback to previous release also failed readiness" >&2
+    exit 1
+}
+
+promote_completed_release() {
+    new_release=$1
+    previous_release=$2
+    expected_version=$3
+    systemctl disable --now plaik-installer.service >/dev/null 2>&1 || true
+    if [ -e "$PLAIK_CONFIG_DIR/installer.env" ]; then
+        echo "install.sh: installer token must remain revoked after completed upgrade" >&2
+        if [ -n "$previous_release" ] && [ "$previous_release" != "$new_release" ] && [ -d "$previous_release" ]; then
+            restore_previous_completed_release "$previous_release" "$new_release" ""
+        fi
+        echo "install.sh: completed upgrade failed closed" >&2
+        exit 1
+    fi
+    if ! restart_completed_services; then
+        echo "install.sh: new release failed to restart" >&2
+        if [ -n "$previous_release" ] && [ "$previous_release" != "$new_release" ] && [ -d "$previous_release" ]; then
+            restore_previous_completed_release "$previous_release" "$new_release" ""
+        fi
+        echo "install.sh: completed upgrade failed closed; current points at $new_release but services are unhealthy" >&2
+        exit 1
+    fi
+    if wait_for_completed_readiness "$new_release" "$expected_version"; then
+        echo "install.sh: web and admin are running from $new_release"
+        return 0
+    fi
+    echo "install.sh: new release failed readiness" >&2
+    if [ -n "$previous_release" ] && [ "$previous_release" != "$new_release" ] && [ -d "$previous_release" ]; then
+        restore_previous_completed_release "$previous_release" "$new_release" ""
+    fi
+    echo "install.sh: completed upgrade failed closed; current points at $new_release but services are unhealthy" >&2
+    exit 1
+}
+
 ensure_system_user() {
     account=$1
     home=$2
@@ -605,6 +790,17 @@ if [ "${PLAIK_INSTALL_ACTION:-}" = "commit-staged-release" ]; then
     exit 0
 fi
 
+if [ "${PLAIK_INSTALL_ACTION:-}" = "promote-completed-release" ]; then
+    CURRENT_LINK="${PLAIK_INSTALL_CURRENT_LINK:?}"
+    PLAIK_CONFIG_DIR="${PLAIK_CONFIG_DIR:-/etc/plaik}"
+    promote_completed_release \
+        "${PLAIK_INSTALL_NEW_RELEASE:?}" \
+        "${PLAIK_INSTALL_PREVIOUS_RELEASE:-}" \
+        "${PLAIK_INSTALL_EXPECTED_VERSION:-}"
+    echo "completed release promoted"
+    exit 0
+fi
+
 validate_configured_paths
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -871,6 +1067,10 @@ PYTHON_BIN="$NEW_RELEASE/venv/bin/python"
 "$UV_BIN" pip install --python "$PYTHON_BIN" "$SDK_WHEEL_PATH" "$WHEEL_PATH" >/dev/null
 "$PYTHON_BIN" -c 'import plaik_core, plaik_installer, plaik_web, plaik_admin' >/dev/null
 READY_RELEASE="$PLAIK_RUNTIME_DIR/releases/$RELEASE_ID"
+PREVIOUS_RELEASE=""
+if [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
+    PREVIOUS_RELEASE=$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)
+fi
 commit_staged_release "$NEW_RELEASE" "$READY_RELEASE"
 atomic_switch_release "$READY_RELEASE" "$CURRENT_LINK"
 PYTHON_BIN="$CURRENT_LINK/venv/bin/python"
@@ -1087,7 +1287,7 @@ WantedBy=multi-user.target
 EOF
 chmod 0644 /etc/systemd/system/plaik-finalize.path /etc/systemd/system/plaik-provision.path
 
-ln -sfn "$CURRENT_LINK/venv/bin/plaik" /usr/local/bin/plaik
+install_plaik_command
 systemctl daemon-reload
 systemctl enable --now plaik-finalize.path plaik-provision.path >/dev/null
 
@@ -1097,8 +1297,12 @@ if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
     export PLAIK_INSTALLER_USER PLAIK_ADMIN_USER PLAIK_PUBLIC_USER
     if ! "$CURRENT_LINK/venv/bin/plaik" privileged finalize-services; then
         echo "install.sh: completed installation could not be finalized" >&2
+        if [ -n "$PREVIOUS_RELEASE" ] && [ "$PREVIOUS_RELEASE" != "$READY_RELEASE" ] && [ -d "$PREVIOUS_RELEASE" ]; then
+            restore_previous_completed_release "$PREVIOUS_RELEASE" "$READY_RELEASE" ""
+        fi
         exit 1
     fi
+    promote_completed_release "$READY_RELEASE" "$PREVIOUS_RELEASE" "$RELEASE_VERSION"
     echo "PLAIK runtime reinstalled; existing completed installation was preserved."
 else
     systemctl disable --now plaik-web.service plaik-admin.service >/dev/null 2>&1 || true
