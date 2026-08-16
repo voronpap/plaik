@@ -228,6 +228,16 @@ class RemoteControlRecord(BaseModel):
         return WanSurface.CLOSED
 
 
+def canonical_record(record: RemoteControlRecord) -> dict[str, object]:
+    """Stable JSON snapshot used for exact record binding and CAS."""
+
+    return record.model_dump(mode="json")
+
+
+def records_match(left: RemoteControlRecord, right: RemoteControlRecord) -> bool:
+    return canonical_record(left) == canonical_record(right)
+
+
 class GatewayPlan(BaseModel):
     """Provider-agnostic publication plan derived from a validated record."""
 
@@ -453,6 +463,24 @@ class RemoteControlStore:
             current = self.read()
             if current.status is RemoteControlStatus.DISABLED:
                 raise InvalidRemoteControlTransition("DISABLED has no WAN failure mode")
+            return self._fail_unlocked(current, error_code)
+
+    def fail_if_current(
+        self,
+        expected: RemoteControlRecord,
+        error_code: str,
+        *,
+        install_state: InstallState,
+    ) -> RemoteControlRecord:
+        """Mark ERROR only when the persisted record still matches ``expected``."""
+
+        _require_completed(install_state)
+        with exclusive_file_lock(self.path):
+            current = self.read()
+            if not records_match(current, expected):
+                return current
+            if current.status is RemoteControlStatus.DISABLED:
+                return current
             return self._fail_unlocked(current, error_code)
 
     def retry_preflight(self, *, install_state: InstallState) -> RemoteControlRecord:
