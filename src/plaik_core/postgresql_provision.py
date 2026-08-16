@@ -8,6 +8,7 @@ dumps, never drops occupied databases and never logs passwords.
 from __future__ import annotations
 
 import re
+import secrets
 import subprocess
 from collections.abc import Callable
 
@@ -26,6 +27,15 @@ class PostgreSQLProvisionError(RuntimeError):
 
 def literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def generate_role_secret() -> str:
+    """Return a provision-grade secret that never needs an operator-chosen password."""
+
+    value = secrets.token_urlsafe(32)
+    if PASSWORD.fullmatch(value) is None:
+        raise PostgreSQLProvisionError("generated PostgreSQL secret is invalid")
+    return value
 
 
 def _default_runner(command: list[str], input_text: str | None = None) -> tuple[int, str]:
