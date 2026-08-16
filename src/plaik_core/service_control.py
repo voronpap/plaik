@@ -501,8 +501,8 @@ def finalize_installed_services(settings: CoreSettings | None = None) -> None:
         raise ServiceControlError("service finalization requires a completed installation")
     mark_handoff(runtime, HANDOFF_PENDING)
     try:
-        apply_identity_isolation(runtime)
         publish_public_runtime_secret(runtime)
+        apply_identity_isolation(runtime)
         _handoff_systemd_units()
         revoke_installer_token()
         confirm_service_handoff(runtime)

@@ -188,12 +188,16 @@ def read_private_secret_for_publication(
             raise SecretStoreError(f"secret is not a regular file ({reference})")
         if file_stat.st_uid == 0:
             raise SecretStoreError(f"secret must not be owned by root ({reference})")
-        installer_name = os.environ.get("PLAIK_INSTALLER_USER", "plaik-installer")
-        try:
-            expected = pwd.getpwnam(installer_name)
-        except KeyError:
-            raise SecretStoreError("installer identity is missing") from None
-        if file_stat.st_uid != expected.pw_uid:
+        allowed_uids: set[int] = set()
+        for env_name, default_name, missing in (
+            ("PLAIK_INSTALLER_USER", "plaik-installer", "installer identity is missing"),
+            ("PLAIK_ADMIN_USER", "plaik-admin", "admin identity is missing"),
+        ):
+            try:
+                allowed_uids.add(pwd.getpwnam(os.environ.get(env_name, default_name)).pw_uid)
+            except KeyError:
+                raise SecretStoreError(missing) from None
+        if file_stat.st_uid not in allowed_uids:
             raise SecretStoreError(f"secret has an unexpected owner ({reference})")
         if stat.S_IMODE(file_stat.st_mode) & 0o077:
             raise SecretStoreError(f"secret has unsafe file permissions ({reference})")
