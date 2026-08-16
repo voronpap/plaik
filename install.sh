@@ -1102,6 +1102,7 @@ if [ -f "$PLAIK_DATA_DIR/install-state.json" ] \
     echo "PLAIK runtime reinstalled; existing completed installation was preserved."
 else
     systemctl disable --now plaik-web.service plaik-admin.service >/dev/null 2>&1 || true
-    systemctl enable --now plaik-installer.service >/dev/null
+    systemctl enable plaik-installer.service >/dev/null
+    systemctl restart plaik-installer.service >/dev/null
     print_stage2_access
 fi
