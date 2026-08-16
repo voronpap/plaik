@@ -342,6 +342,14 @@ wait_for_completed_readiness() {
     return 1
 }
 
+restart_completed_services() {
+    if systemctl restart plaik-web.service plaik-admin.service; then
+        return 0
+    fi
+    echo "install.sh: failed to restart plaik-web.service plaik-admin.service" >&2
+    return 1
+}
+
 restore_previous_completed_release() {
     previous_release=$1
     attempted_release=$2
@@ -350,7 +358,10 @@ restore_previous_completed_release() {
     install_plaik_command
     systemctl daemon-reload
     systemctl disable --now plaik-installer.service >/dev/null 2>&1 || true
-    systemctl restart plaik-web.service plaik-admin.service
+    if ! restart_completed_services; then
+        echo "install.sh: rollback restart of previous release failed" >&2
+        exit 1
+    fi
     previous_version=$3
     if [ -z "$previous_version" ] && [ -x "$previous_release/venv/bin/python" ]; then
         previous_version=$("$previous_release/venv/bin/python" -c 'from plaik_core import __version__; print(__version__)' 2>/dev/null || true)
@@ -376,7 +387,14 @@ promote_completed_release() {
         echo "install.sh: completed upgrade failed closed" >&2
         exit 1
     fi
-    systemctl restart plaik-web.service plaik-admin.service
+    if ! restart_completed_services; then
+        echo "install.sh: new release failed to restart" >&2
+        if [ -n "$previous_release" ] && [ "$previous_release" != "$new_release" ] && [ -d "$previous_release" ]; then
+            restore_previous_completed_release "$previous_release" "$new_release" ""
+        fi
+        echo "install.sh: completed upgrade failed closed; current points at $new_release but services are unhealthy" >&2
+        exit 1
+    fi
     if wait_for_completed_readiness "$new_release" "$expected_version"; then
         echo "install.sh: web and admin are running from $new_release"
         return 0
