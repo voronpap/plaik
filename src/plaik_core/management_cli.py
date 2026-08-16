@@ -29,6 +29,7 @@ from .installer import InstallState, InstallStateStore
 from .installer_config import DeploymentMode, InstallerConfigurationStore
 from .postgresql_provision import (
     PostgreSQLProvisionError,
+    generate_role_secret,
     provision_local_postgresql,
 )
 from .requirements import RequirementCheck, SystemRequirements
@@ -552,17 +553,22 @@ def _postgresql_payload(
         label="PostgreSQL migration user",
         default="plaik_migrator",
     )
-    migrator_secret = _secret_from_environment_or_prompt(
-        database,
-        "password_env",
-        default_env="PLAIK_DB_MIGRATOR_PASSWORD",
-        non_interactive=non_interactive,
-        label="PostgreSQL migration password",
-    )
     runtime_username = None
     checkpoint_username = None
-    runtime_secret = None
-    checkpoint_secret = None
+    if source == "create":
+        migrator_secret = generate_role_secret()
+        runtime_secret = generate_role_secret()
+        checkpoint_secret = generate_role_secret()
+    else:
+        migrator_secret = _secret_from_environment_or_prompt(
+            database,
+            "password_env",
+            default_env="PLAIK_DB_MIGRATOR_PASSWORD",
+            non_interactive=non_interactive,
+            label="PostgreSQL migration password",
+        )
+        runtime_secret = None
+        checkpoint_secret = None
     if mode == DeploymentMode.PRODUCTION.value:
         runtime_username = _value(
             database,
@@ -578,20 +584,21 @@ def _postgresql_payload(
             label="PostgreSQL checkpoint user",
             default="plaik_checkpoint",
         )
-        runtime_secret = _secret_from_environment_or_prompt(
-            database,
-            "runtime_password_env",
-            default_env="PLAIK_DB_RUNTIME_PASSWORD",
-            non_interactive=non_interactive,
-            label="PostgreSQL runtime password",
-        )
-        checkpoint_secret = _secret_from_environment_or_prompt(
-            database,
-            "checkpoint_password_env",
-            default_env="PLAIK_DB_CHECKPOINT_PASSWORD",
-            non_interactive=non_interactive,
-            label="PostgreSQL checkpoint password",
-        )
+        if source != "create":
+            runtime_secret = _secret_from_environment_or_prompt(
+                database,
+                "runtime_password_env",
+                default_env="PLAIK_DB_RUNTIME_PASSWORD",
+                non_interactive=non_interactive,
+                label="PostgreSQL runtime password",
+            )
+            checkpoint_secret = _secret_from_environment_or_prompt(
+                database,
+                "checkpoint_password_env",
+                default_env="PLAIK_DB_CHECKPOINT_PASSWORD",
+                non_interactive=non_interactive,
+                label="PostgreSQL checkpoint password",
+            )
 
     if source == "create":
         if mode != DeploymentMode.PRODUCTION.value:
@@ -1070,6 +1077,25 @@ def _privileged(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_installer_token(args: argparse.Namespace) -> int:
+    _apply_install_environment()
+    _require_root()
+    path = _installer_env_file()
+    if not path.is_file():
+        raise PlaikCLIError(
+            "installer token is not available; Stage 2 may already be complete"
+        )
+    token = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("PLAIK_INSTALLER_TOKEN="):
+            token = line.split("=", 1)[1].strip()
+            break
+    if not token:
+        raise PlaikCLIError("installer token is not available")
+    print(token)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plaik")
     parser.add_argument("--version", action="version", version=f"PLAIK {__version__}")
@@ -1111,6 +1137,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=("finalize-services", "provision-database"),
     )
     privileged.set_defaults(handler=_privileged)
+
+    token = commands.add_parser(
+        "installer-token",
+        help="print the one-time Stage 2 installer token (root only)",
+    )
+    token.set_defaults(handler=_print_installer_token)
     return parser
 
 

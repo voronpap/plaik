@@ -4,7 +4,7 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: 0.2.0 is the first production runtime release. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
+> Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
@@ -31,6 +31,7 @@ The first command bootstraps the Linux runtime, private Python environment and s
 Operational lifecycle commands include:
 
 ```bash
+sudo plaik installer-token
 plaik status
 plaik doctor
 sudo plaik reset

@@ -75,13 +75,55 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-is_dangerous_root() {
+is_plaik_prefix() {
     case "$1" in
-        /|/etc|/usr|/var|/home|/boot|/root|/proc|/sys|/dev|/run|/opt|/tmp|/mnt|/media|/usr/bin|/usr/lib|/var/lib|/var/log)
+        /opt/plaik|/opt/plaik/*|/var/lib/plaik|/var/lib/plaik/*|/etc/plaik|/etc/plaik/*|/var/log/plaik|/var/log/plaik/*)
             return 0
             ;;
     esac
     return 1
+}
+
+is_forbidden_path() {
+    if is_plaik_prefix "$1"; then
+        return 1
+    fi
+    return 0
+}
+
+paths_overlap() {
+    left=$1
+    right=$2
+    case "$left" in
+        "$right"|"$right"/*) return 0 ;;
+    esac
+    case "$right" in
+        "$left"|"$left"/*) return 0 ;;
+    esac
+    return 1
+}
+
+reject_foreign_existing_path() {
+    path=$1
+    label=$2
+    if [ ! -e "$path" ]; then
+        return 0
+    fi
+    if [ -L "$path" ]; then
+        echo "install.sh: refusing symlink $label: $path" >&2
+        exit 1
+    fi
+    owner=$(stat -c %u "$path" 2>/dev/null || true)
+    case "$owner" in
+        ''|*[!0-9]*)
+            echo "install.sh: cannot inspect $label owner: $path" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$owner" -ne 0 ]; then
+        echo "install.sh: refusing foreign-owned $label: $path" >&2
+        exit 1
+    fi
 }
 
 reject_symlink_components() {
@@ -122,10 +164,11 @@ canonicalize_path() {
     if command -v realpath >/dev/null 2>&1; then
         path=$(realpath -m "$path")
     fi
-    if is_dangerous_root "$path"; then
+    if is_forbidden_path "$path"; then
         echo "install.sh: refusing dangerous $label: $path" >&2
         exit 1
     fi
+    reject_foreign_existing_path "$path" "$label"
     printf '%s\n' "$path"
 }
 
@@ -139,7 +182,13 @@ validate_configured_paths() {
         || [ "$PLAIK_RUNTIME_DIR" = "$PLAIK_LOG_DIR" ] \
         || [ "$PLAIK_DATA_DIR" = "$PLAIK_CONFIG_DIR" ] \
         || [ "$PLAIK_DATA_DIR" = "$PLAIK_LOG_DIR" ] \
-        || [ "$PLAIK_CONFIG_DIR" = "$PLAIK_LOG_DIR" ]; then
+        || [ "$PLAIK_CONFIG_DIR" = "$PLAIK_LOG_DIR" ] \
+        || paths_overlap "$PLAIK_RUNTIME_DIR" "$PLAIK_DATA_DIR" \
+        || paths_overlap "$PLAIK_RUNTIME_DIR" "$PLAIK_CONFIG_DIR" \
+        || paths_overlap "$PLAIK_RUNTIME_DIR" "$PLAIK_LOG_DIR" \
+        || paths_overlap "$PLAIK_DATA_DIR" "$PLAIK_CONFIG_DIR" \
+        || paths_overlap "$PLAIK_DATA_DIR" "$PLAIK_LOG_DIR" \
+        || paths_overlap "$PLAIK_CONFIG_DIR" "$PLAIK_LOG_DIR"; then
         echo "install.sh: runtime, data, config and log paths must be distinct" >&2
         exit 1
     fi
@@ -295,7 +344,7 @@ if runtime.get("Name") != "plaik" or not runtime_version:
 if expected_runtime_name and expected_runtime_name != runtime_name:
     raise SystemExit("wheel filename version does not match METADATA")
 tag = expected_tag.lstrip("v")
-if expected_tag and tag != runtime_version:
+if expected_tag and expected_tag not in {"local", "dev"} and tag != runtime_version:
     raise SystemExit("release tag/version mismatch")
 if sdk.get("Name") not in {"plaik-sdk", "plaik_sdk"} or not sdk_version:
     raise SystemExit("SDK wheel METADATA version is invalid")
@@ -453,6 +502,11 @@ If you installed PLAIK over SSH:
 Keep the SSH tunnel open while completing installation.
 After Stage 2 finishes (installer off, Web/Admin on), you can close the tunnel.
 
+Installer token:
+  On THIS server run:
+    sudo plaik installer-token
+  Paste that value into the Web Installer. Do not put the token in the SSH command.
+
 CLI fallback:
   sudo plaik setup
 EOF
@@ -466,6 +520,29 @@ fi
 
 if [ "${PLAIK_INSTALL_ACTION:-}" = "print-stage2-access" ]; then
     print_stage2_access
+    exit 0
+fi
+
+migrate_shared_installer_token() {
+    shared=$1
+    installer=$2
+    [ -f "$shared" ] || return 0
+    if ! grep -q '^PLAIK_INSTALLER_TOKEN=' "$shared" 2>/dev/null; then
+        return 0
+    fi
+    if [ ! -f "$installer" ]; then
+        (umask 027; grep '^PLAIK_INSTALLER_TOKEN=' "$shared" > "$installer")
+    fi
+    tmp_env="${shared}.tmp"
+    grep -v '^PLAIK_INSTALLER_TOKEN=' "$shared" > "$tmp_env"
+    mv -f "$tmp_env" "$shared"
+}
+
+if [ "${PLAIK_INSTALL_ACTION:-}" = "migrate-installer-token" ]; then
+    shared="${PLAIK_SHARED_ENV:-$PLAIK_CONFIG_DIR/plaik.env}"
+    installer="${PLAIK_INSTALLER_ENV:-$PLAIK_CONFIG_DIR/installer.env}"
+    migrate_shared_installer_token "$shared" "$installer"
+    echo "token migrated"
     exit 0
 fi
 
@@ -766,13 +843,7 @@ PLAIK_DATA_DIR=$PLAIK_DATA_DIR
 PLAIK_ADMIN_PATH=/control-center
 EOF
 fi
-if grep -q '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" 2>/dev/null && [ ! -f "$INSTALLER_ENV" ]; then
-    umask 027
-    grep '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" > "$INSTALLER_ENV"
-    tmp_env="$SHARED_ENV.tmp"
-    grep -v '^PLAIK_INSTALLER_TOKEN=' "$SHARED_ENV" > "$tmp_env"
-    mv "$tmp_env" "$SHARED_ENV"
-fi
+migrate_shared_installer_token "$SHARED_ENV" "$INSTALLER_ENV"
 if [ ! -f "$INSTALLER_ENV" ]; then
     INSTALLER_TOKEN=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(48))')
     umask 027

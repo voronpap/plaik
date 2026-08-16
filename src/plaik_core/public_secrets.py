@@ -186,12 +186,23 @@ def read_private_secret_for_publication(
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise SecretStoreError(f"secret is not a regular file ({reference})")
+        if file_stat.st_uid == 0:
+            raise SecretStoreError(f"secret must not be owned by root ({reference})")
+        installer_name = os.environ.get("PLAIK_INSTALLER_USER", "plaik-installer")
+        try:
+            expected = pwd.getpwnam(installer_name)
+        except KeyError:
+            raise SecretStoreError("installer identity is missing") from None
+        if file_stat.st_uid != expected.pw_uid:
+            raise SecretStoreError(f"secret has an unexpected owner ({reference})")
         if stat.S_IMODE(file_stat.st_mode) & 0o077:
             raise SecretStoreError(f"secret has unsafe file permissions ({reference})")
         if file_stat.st_nlink != 1:
             raise SecretStoreError(
                 f"secret has an unsafe hard-link count ({reference})"
             )
+        if file_stat.st_size > LocalFileSecretProvider.MAX_SECRET_BYTES:
+            raise SecretStoreError(f"secret exceeds the maximum size ({reference})")
         with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
             value = stream.read(LocalFileSecretProvider.MAX_SECRET_BYTES + 1)
     except UnicodeDecodeError:

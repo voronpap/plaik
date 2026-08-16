@@ -5,7 +5,7 @@ const I18N = {
     welcomeTitle: "Ласкаво просимо до PLAIK",
     welcomeLead: "Майстер проведе вас кроками класичного веб-інсталятора. CLI sudo plaik setup лишається для автоматизації та відновлення.",
     tokenLabel: "Токен інсталятора",
-    tokenHelp: "Токен лише в /etc/plaik/installer.env. Після завершення він буде відкликаний.",
+    tokenHelp: "На цьому сервері виконайте sudo plaik installer-token і вставте значення сюди. Після завершення токен буде відкликаний.",
     next: "Далі",
     back: "Назад",
     start: "Почати встановлення",
@@ -24,6 +24,7 @@ const I18N = {
     manual: "Вказати вручну",
     restore: "Відновлення (окрема процедура)",
     restoreHelp: "Restore вимкнено. Dump restore — окрема operational recovery, не Stage 2.",
+    generatedSecrets: "PLAIK згенерує внутрішні паролі ролей PostgreSQL. Їх не потрібно вводити.",
     host: "Хост",
     port: "Порт",
     database: "База даних",
@@ -50,7 +51,7 @@ const I18N = {
     welcomeTitle: "Welcome to PLAIK",
     welcomeLead: "This wizard is the normal Stage 2 path. sudo plaik setup remains for automation and recovery.",
     tokenLabel: "Installer token",
-    tokenHelp: "The token lives only in /etc/plaik/installer.env and is revoked after completion.",
+    tokenHelp: "On this server run sudo plaik installer-token and paste the value here. The token is revoked after completion.",
     next: "Next",
     back: "Back",
     start: "Start installation",
@@ -69,6 +70,7 @@ const I18N = {
     manual: "Enter manually",
     restore: "Restore (separate procedure)",
     restoreHelp: "Restore is disabled. Dump restore is operational recovery, not Stage 2.",
+    generatedSecrets: "PLAIK generates the internal PostgreSQL role passwords. You do not need to enter them.",
     host: "Host",
     port: "Port",
     database: "Database",
@@ -284,9 +286,11 @@ function database() {
       ${field("username", t().migrator, "text", state.form.username)}
       ${field("runtime_username", t().runtime, "text", state.form.runtime_username)}
       ${field("checkpoint_username", t().checkpoint, "text", state.form.checkpoint_username)}
-      ${field("migrator_password", t().password + " (migrator)", "password", "", "required")}
+      ${state.form.source === "create"
+        ? `<p class="lead" style="grid-column:1/-1">${escapeHtml(t().generatedSecrets)}</p>`
+        : `${field("migrator_password", t().password + " (migrator)", "password", "", "required")}
       ${field("runtime_password", t().password + " (runtime)", "password", "", "required")}
-      ${field("checkpoint_password", t().password + " (checkpoint)", "password", "", "required")}
+      ${field("checkpoint_password", t().password + " (checkpoint)", "password", "", "required")}`}
       <div class="field"><label for="ssl_mode">${escapeHtml(t().ssl)}</label>
         <select id="ssl_mode" name="ssl_mode">
           ${["require","verify-ca","verify-full","prefer"].map((mode) =>
@@ -435,11 +439,15 @@ async function continueInstall() {
         applyConfiguration(existing.configuration);
       } else {
         setBar(25); logLine("credentials");
-        await api("POST", "/api/install/credentials", {
-          migrator_password: state.form.migrator_password,
-          runtime_password: state.form.runtime_password,
-          checkpoint_password: state.form.checkpoint_password
-        });
+        if (state.form.source === "create") {
+          await api("POST", "/api/install/credentials/generate");
+        } else {
+          await api("POST", "/api/install/credentials", {
+            migrator_password: state.form.migrator_password,
+            runtime_password: state.form.runtime_password,
+            checkpoint_password: state.form.checkpoint_password
+          });
+        }
         if (state.form.source === "use-detected") applyInventory(state.inventory);
         if (state.form.source === "create") {
           setBar(32); logLine("create-database");

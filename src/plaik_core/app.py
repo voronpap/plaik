@@ -959,6 +959,28 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         return {"stored": True}
 
     @application.post(
+        "/api/install/credentials/generate",
+        dependencies=[Depends(require_installer_open)],
+    )
+    def generate_install_credentials() -> dict:
+        from .postgresql_provision import generate_role_secret
+
+        secrets_dir = LocalFileSecretProvider(runtime.secrets_dir)
+        try:
+            secrets_dir.write_group(
+                [
+                    ("database/migrator", generate_role_secret(), "v1"),
+                    ("database/runtime", generate_role_secret(), "v1"),
+                    ("database/checkpoint", generate_role_secret(), "v1"),
+                ]
+            )
+        except SecretStoreError:
+            raise HTTPException(
+                status_code=422, detail="credentials could not be stored"
+            ) from None
+        return {"stored": True, "generated": True}
+
+    @application.post(
         "/api/install/provision", dependencies=[Depends(require_installer_open)]
     )
     def provision_install_database(request: InstallerProvisionRequest) -> dict:
@@ -1271,10 +1293,6 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                         application.state.session_store = None
                 if state == InstallState.COMPLETED:
                     configuration_store.seal(install_store)
-                    try:
-                        request_service_finalization(runtime)
-                    except ServiceControlError:
-                        pass
                 append_audit_once(
                     audit,
                     operation_identifier=identifier,

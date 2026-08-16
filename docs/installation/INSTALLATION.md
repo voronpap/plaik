@@ -90,6 +90,9 @@ If the browser runs on the same machine as PLAIK, open:
 http://127.0.0.1:8765/
 ```
 
+On that same machine retrieve the one-time installer token with
+`sudo plaik installer-token` and paste it into the Web Installer.
+
 ### Remote installation over SSH
 
 If Stage 1 was installed over SSH, keep that session on the server and run
@@ -118,6 +121,16 @@ Then open:
 http://127.0.0.1:8765/
 ```
 
+The Web Installer asks for a one-time token. On the **server** — the Stage 1
+session, not the tunnel terminal — run:
+
+```bash
+sudo plaik installer-token
+```
+
+Paste that value into the browser. Stage 1 never prints the token, and the
+token must not be placed in the SSH command.
+
 The browser runs on your local computer. The SSH tunnel forwards local port
 `8765` to the server's loopback port `8765`. Keep the tunnel open until Stage
 2 finishes. After confirmed handoff (`installer` off, Web/Admin on, installer
@@ -141,8 +154,10 @@ inspectable local databases and PLAIK backup artifacts). It then asks for:
 - PostgreSQL source: `use-detected`, `create`, `manual` or `restore`;
 - PostgreSQL endpoint/database, including the port;
 - distinct migration, runtime and checkpoint PostgreSQL identities;
-- database passwords, written to the PLAIK local secret provider without being
-  stored in installer configuration;
+- for `create`, PLAIK generates the internal PostgreSQL role secrets;
+  `use-detected` and `manual` still accept operator-supplied passwords.
+  Secrets are written to the PLAIK local secret provider and are never stored
+  in installer configuration;
 - first administrator email and password;
 - default theme activation.
 
@@ -248,8 +263,9 @@ explicit operator action.
 - Installer API binds to loopback only (`127.0.0.1:8765`). Remote Stage 2
   access is an SSH local forward, not a LAN/public listener or firewall
   opening.
-- The installer token is generated during system bootstrap and stored under
-  `/etc/plaik` with restricted permissions.
+- The installer token is generated during system bootstrap and stored only in
+  `/etc/plaik/installer.env`. Retrieve it on the server with
+  `sudo plaik installer-token`; do not put it in the SSH command.
 - PLAIK services run as three dedicated identities: `plaik-installer`,
   `plaik-admin` and `plaik-public`.
 - Stage 2 PostgreSQL in this release is loopback-only (`127.0.0.1` /

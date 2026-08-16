@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from .public_secrets import (
     publish_runtime_secret,
     read_private_secret_for_publication,
 )
-from .secret_store import LocalFileSecretProvider, SecretNotFoundError, SecretStoreError
+from .secret_store import SecretNotFoundError, SecretStoreError
 from .storage import write_json_atomic
 
 
@@ -199,11 +200,16 @@ def confirm_service_handoff(settings: CoreSettings) -> None:
         return
     for unit in (WEB_SERVICE, ADMIN_SERVICE):
         if not _service_exists(unit):
-            continue
+            raise ServiceControlError("web and admin units are missing")
         active = _systemctl("is-active", "--quiet", unit, check=False)
         running = active is not None and active.returncode == 0
         if not running:
             raise ServiceControlError("web and admin services are not running")
+    if not _service_exists(INSTALLER_SERVICE):
+        raise ServiceControlError("installer unit is missing")
+    enabled = _systemctl("is-enabled", "--quiet", INSTALLER_SERVICE, check=False)
+    if enabled is not None and enabled.returncode == 0:
+        raise ServiceControlError("installer is still enabled")
 
 
 def _service_exists(name: str) -> bool:
@@ -233,9 +239,10 @@ def _write_request(path: Path, payload: str) -> None:
 def _strip_env_key(path: Path, key: str) -> None:
     if not path.is_file():
         return
+    original = path.read_text(encoding="utf-8")
     kept: list[str] = []
     changed = False
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in original.splitlines():
         stripped = line.strip()
         if stripped.startswith(f"{key}="):
             changed = True
@@ -243,7 +250,25 @@ def _strip_env_key(path: Path, key: str) -> None:
         kept.append(line)
     if not changed:
         return
-    path.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
+    payload = "\n".join(kept) + ("\n" if kept else "")
+    directory = path.parent
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}-",
+        dir=directory,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, path.stat().st_mode & 0o777)
+        os.replace(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
 
 
 def revoke_installer_token() -> None:
@@ -269,7 +294,14 @@ def publish_public_runtime_secret(settings: CoreSettings) -> None:
             "database/runtime",
             version="v1",
         )
-    except SecretNotFoundError:
+    except SecretNotFoundError as error:
+        configuration = InstallerConfigurationStore(settings.installer_config_path).read()
+        if (
+            configuration is not None
+            and configuration.mode.value == "production"
+            and isinstance(configuration.database, PostgreSQLDatabase)
+        ):
+            raise ServiceControlError("runtime secret is missing") from error
         return
     except SecretStoreError as error:
         raise ServiceControlError("runtime secret could not be published") from error
@@ -374,17 +406,18 @@ def _handoff_systemd_units() -> None:
     if not _is_real_system_root():
         return
     for name in (WEB_SERVICE, ADMIN_SERVICE):
-        if _service_exists(name):
-            _systemctl("enable", "--now", name)
+        if not _service_exists(name):
+            raise ServiceControlError("web and admin units are missing")
+        _systemctl("enable", "--now", name)
     if not _service_exists(INSTALLER_SERVICE):
-        return
-    _systemctl("disable", INSTALLER_SERVICE, check=False)
+        raise ServiceControlError("installer unit is missing")
+    _systemctl("disable", INSTALLER_SERVICE)
     if _service_exists(INSTALLER_STOP_TIMER):
-        _systemctl("start", INSTALLER_STOP_TIMER, check=False)
+        _systemctl("start", INSTALLER_STOP_TIMER)
         return
     if shutil.which("systemd-run") is None:
-        return
-    subprocess.run(
+        raise ServiceControlError("delayed installer stop cannot be scheduled")
+    completed = subprocess.run(
         [
             "systemd-run",
             "--quiet",
@@ -400,6 +433,8 @@ def _handoff_systemd_units() -> None:
         capture_output=True,
         text=True,
     )
+    if completed.returncode != 0:
+        raise ServiceControlError("delayed installer stop could not be scheduled")
 
 
 def _chown_tree(path: Path, uid: int, gid: int) -> None:
@@ -511,10 +546,15 @@ def provision_database_from_request(settings: CoreSettings | None = None) -> Non
     error_path.unlink(missing_ok=True)
     try:
         payload = _validated_provision_payload(json.loads(path.read_text(encoding="utf-8")))
-        secrets = LocalFileSecretProvider(runtime.secrets_dir)
-        migrator = secrets.read("database/migrator", version="v1").get_secret_value()
-        runtime_secret = secrets.read("database/runtime", version="v1").get_secret_value()
-        checkpoint = secrets.read("database/checkpoint", version="v1").get_secret_value()
+        migrator = read_private_secret_for_publication(
+            runtime.secrets_dir, "database/migrator", version="v1"
+        ).get_secret_value()
+        runtime_secret = read_private_secret_for_publication(
+            runtime.secrets_dir, "database/runtime", version="v1"
+        ).get_secret_value()
+        checkpoint = read_private_secret_for_publication(
+            runtime.secrets_dir, "database/checkpoint", version="v1"
+        ).get_secret_value()
         provision_local_postgresql(
             port=payload["port"],
             database=payload["database"],
@@ -534,7 +574,17 @@ def provision_database_from_request(settings: CoreSettings | None = None) -> Non
             else "database provisioning failed"
         )
         error_path.write_text(detail, encoding="utf-8")
-        os.chmod(error_path, 0o600)
+        os.chmod(error_path, 0o640)
+        geteuid = getattr(os, "geteuid", lambda: None)
+        if geteuid() == 0:
+            import pwd
+
+            installer_name = os.environ.get("PLAIK_INSTALLER_USER", "plaik-installer")
+            try:
+                installer = pwd.getpwnam(installer_name)
+            except KeyError:
+                raise ServiceControlError("required PLAIK service identities are missing") from None
+            os.chown(error_path, 0, installer.pw_gid)
         raise ServiceControlError(detail) from None
 
 
