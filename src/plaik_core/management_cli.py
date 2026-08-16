@@ -265,6 +265,29 @@ def _doctor_mark(passed: bool, check_id: str, detail: str) -> bool:
     return not passed
 
 
+def _completed_health_ok(status: int, payload: dict[str, str]) -> bool:
+    return (
+        status == 200
+        and payload.get("status") == "ok"
+        and payload.get("core_version") == __version__
+    )
+
+
+def _completed_health_detail(
+    status: int,
+    payload: dict[str, str],
+    *,
+    ok: bool,
+) -> str:
+    if status == 0:
+        return "unreachable"
+    if ok:
+        return payload.get("core_version") or "ok"
+    if payload.get("status") == "ok":
+        return payload.get("core_version") or "missing-core-version"
+    return payload.get("reason") or payload.get("status") or str(status)
+
+
 def _doctor_completed_runtime() -> bool:
     failed = False
     installer_active = _service_active("plaik-installer.service")
@@ -294,31 +317,19 @@ def _doctor_completed_runtime() -> bool:
             "active" if active else "inactive",
         ) or failed
     web_status, web_payload = _http_get_json(_web_health_url())
-    web_ok = web_status == 200 and web_payload.get("status") == "ok"
-    if web_ok and web_payload.get("core_version") not in {None, __version__}:
-        web_ok = False
-    if web_status == 0:
-        web_detail = "unreachable"
-    elif web_ok:
-        web_detail = web_payload.get("core_version") or "ok"
-    else:
-        reason = web_payload.get("reason") or web_payload.get("status") or str(web_status)
-        web_detail = reason
-    failed = _doctor_mark(web_ok, "web-health", web_detail) or failed
+    web_ok = _completed_health_ok(web_status, web_payload)
+    failed = _doctor_mark(
+        web_ok,
+        "web-health",
+        _completed_health_detail(web_status, web_payload, ok=web_ok),
+    ) or failed
     admin_status, admin_payload = _http_get_json(_admin_health_url())
-    admin_ok = (
-        admin_status == 200
-        and admin_payload.get("status") == "ok"
-        and admin_payload.get("core_version") == __version__
-    )
-    if admin_status == 0:
-        admin_detail = "unreachable"
-    elif admin_ok:
-        admin_detail = admin_payload.get("core_version") or "ok"
-    else:
-        reason = admin_payload.get("reason") or admin_payload.get("status") or str(admin_status)
-        admin_detail = reason
-    failed = _doctor_mark(admin_ok, "admin-health", admin_detail) or failed
+    admin_ok = _completed_health_ok(admin_status, admin_payload)
+    failed = _doctor_mark(
+        admin_ok,
+        "admin-health",
+        _completed_health_detail(admin_status, admin_payload, ok=admin_ok),
+    ) or failed
     return failed
 
 
