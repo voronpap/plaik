@@ -204,7 +204,13 @@ class CoreSettings:
 
     @property
     def secrets_dir(self) -> Path:
-        return self.data_dir / "secrets"
+        value = os.environ.get("PLAIK_SECRETS_DIR")
+        if not value:
+            return self.data_dir / "secrets"
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError("PLAIK_SECRETS_DIR must be an absolute path")
+        return candidate
 
     @property
     def integrity_checkpoint_path(self) -> Path:

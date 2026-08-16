@@ -27,6 +27,7 @@ class RequirementCheck:
 class RequirementReport:
     checks: tuple[RequirementCheck, ...]
     observations: tuple[RequirementCheck, ...] = ()
+    inventory: dict[str, object] | None = None
 
     @property
     def passed(self) -> bool:
@@ -60,6 +61,7 @@ class SystemRequirements:
     def inspect(self) -> RequirementReport:
         from .host_inventory import discover_host_inventory
 
+        inventory = discover_host_inventory(self.settings)
         return RequirementReport(
             checks=(
                 self._python_check(),
@@ -67,7 +69,8 @@ class SystemRequirements:
                 self._free_space_check(),
                 self._default_theme_check(),
             ),
-            observations=discover_host_inventory(self.settings).observations(),
+            observations=inventory.observations(),
+            inventory=inventory.public_inventory(),
         )
 
     def _python_check(self) -> RequirementCheck:

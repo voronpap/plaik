@@ -1,0 +1,89 @@
+:root {
+  --ink: #1b2430;
+  --muted: #5b6573;
+  --line: #d9dee7;
+  --paper: #f4f6f9;
+  --card: #ffffff;
+  --brand: #1457d9;
+  --brand-dark: #0d3ea3;
+  --ok: #218358;
+  --bad: #c0353a;
+  --sidebar: #151c28;
+  --sidebar-text: #d7deea;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
+body { display: flex; min-height: 100vh; }
+.rail {
+  width: 280px; flex: 0 0 280px; background: var(--sidebar); color: var(--sidebar-text);
+  padding: 2rem 1.25rem; display: flex; flex-direction: column; gap: 2rem;
+}
+.brand { display: flex; align-items: center; gap: .75rem; color: #fff; }
+.brand svg { width: 40px; height: 40px; }
+.brand strong { font-size: 1.35rem; letter-spacing: .04em; }
+.brand span { display: block; font-size: .75rem; color: #9aa7bc; font-weight: 400; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+.steps button {
+  width: 100%; display: flex; gap: .75rem; align-items: center; text-align: left;
+  border: 0; background: transparent; color: inherit; padding: .65rem .5rem; border-radius: .5rem;
+  cursor: default;
+}
+.steps .num {
+  width: 1.7rem; height: 1.7rem; border-radius: 999px; display: grid; place-items: center;
+  border: 1px solid #3a465a; font-size: .75rem; font-weight: 700;
+}
+.steps li.done .num { background: var(--ok); border-color: var(--ok); color: #fff; }
+.steps li.current { background: #243044; color: #fff; }
+.steps li.current .num { background: var(--brand); border-color: var(--brand); color: #fff; }
+.stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.top {
+  padding: 1.25rem 2rem; border-bottom: 1px solid var(--line); background: var(--card);
+  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+}
+.top select, .field input, .field select {
+  border: 1px solid var(--line); border-radius: .4rem; padding: .55rem .7rem; font: inherit; background: #fff;
+}
+.sheet { flex: 1; padding: 2rem; overflow: auto; }
+.panel {
+  max-width: 52rem; background: var(--card); border: 1px solid var(--line); border-radius: .75rem;
+  padding: 1.75rem 1.75rem 1.25rem; min-height: 28rem;
+}
+h1 { margin: 0 0 .5rem; font-size: 1.7rem; }
+.lead { color: var(--muted); margin: 0 0 1.5rem; line-height: 1.5; }
+.grid { display: grid; gap: 1rem; }
+.grid.two { grid-template-columns: 1fr 1fr; }
+.field { display: grid; gap: .35rem; }
+.field label { font-size: .85rem; font-weight: 650; }
+.checks { display: grid; gap: .5rem; margin: 0; padding: 0; list-style: none; }
+.checks li {
+  display: flex; gap: .75rem; align-items: flex-start; padding: .75rem .85rem;
+  border: 1px solid var(--line); border-radius: .5rem; background: #fbfcfe;
+}
+.dot { width: .85rem; height: .85rem; border-radius: 999px; margin-top: .2rem; flex: 0 0 auto; }
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--bad); }
+.actions {
+  display: flex; justify-content: space-between; gap: 1rem; margin-top: 1.5rem; padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+button.primary, button.ghost {
+  border: 0; border-radius: .4rem; padding: .7rem 1.2rem; font: inherit; font-weight: 700; cursor: pointer;
+}
+button.primary { background: var(--brand); color: #fff; }
+button.primary:hover { background: var(--brand-dark); }
+button.primary:disabled { opacity: .5; cursor: not-allowed; }
+button.ghost { background: #eef1f6; color: var(--ink); }
+.flash { padding: .75rem .9rem; border-radius: .5rem; margin-bottom: 1rem; }
+.flash.bad { background: #fdecec; color: #8a1f24; }
+.progress { height: .55rem; background: #e6ebf3; border-radius: 999px; overflow: hidden; }
+.progress > span { display: block; height: 100%; background: var(--brand); width: 0; transition: width .3s; }
+.log { font-family: ui-monospace, monospace; font-size: .85rem; color: var(--muted); display: grid; gap: .35rem; }
+.done-box { text-align: center; padding: 2rem 1rem; }
+.done-box h1 { color: var(--ok); }
+@media (max-width: 860px) {
+  body { flex-direction: column; }
+  .rail { width: auto; flex: none; flex-direction: row; align-items: center; overflow: auto; }
+  .steps { display: flex; }
+  .grid.two { grid-template-columns: 1fr; }
+}

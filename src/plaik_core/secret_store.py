@@ -254,6 +254,43 @@ class LocalFileSecretProvider:
         self._write_atomic(path, raw_value, reference=reference)
         return SecretStr(raw_value)
 
+    def write_group(
+        self,
+        items: list[tuple[str, str | SecretStr, str]],
+    ) -> None:
+        """Write several secrets and roll back this batch on partial failure."""
+
+        if not items:
+            raise SecretStoreError("secret group is empty")
+        snapshots: list[tuple[Path, str | None]] = []
+        prepared: list[tuple[Path, str, str]] = []
+        for key, value, version in items:
+            path = self._path(key, version)
+            reference = _reference_label(self.name, key, version)
+            raw_value = self._raw_value(value, reference=reference)
+            previous: str | None = None
+            if path.is_file():
+                previous = path.read_text(encoding="utf-8")
+            snapshots.append((path, previous))
+            prepared.append((path, raw_value, reference))
+        published = 0
+        try:
+            for path, raw_value, reference in prepared:
+                self._secure_directory(path.parent)
+                self._write_atomic(path, raw_value, reference=reference)
+                published += 1
+        except Exception:
+            for path, previous in snapshots[:published]:
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    self._write_atomic(
+                        path,
+                        previous,
+                        reference=_reference_label(self.name, path.name, None),
+                    )
+            raise
+
     def generate_if_missing(
         self,
         key: str,

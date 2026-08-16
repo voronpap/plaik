@@ -4,7 +4,7 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: 0.2.0 is the first production runtime release. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
+> Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
@@ -26,11 +26,12 @@ sudo sh install.sh
 sudo plaik setup
 ```
 
-The first command bootstraps the Linux runtime, private Python environment and systemd services. Domain, database, administrator and theme configuration belongs to the second `plaik setup` stage. The setup command is resumable and uses the same Core installer state machine as the Installer application.
+The first command bootstraps the Linux runtime, private Python environment and systemd services. Domain, database, administrator and theme configuration belongs to the local web wizard at `http://127.0.0.1:8765/` while the installer service is open. The wizard binds loopback only; from another computer use an SSH tunnel as documented in [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md). `sudo plaik setup` remains as the headless automation and recovery fallback.
 
 Operational lifecycle commands include:
 
 ```bash
+sudo plaik installer-token
 plaik status
 plaik doctor
 sudo plaik reset

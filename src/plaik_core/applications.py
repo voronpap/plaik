@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import stat
 import threading
 from collections import Counter
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -205,11 +207,36 @@ def create_installer_app(settings: CoreSettings | None = None) -> FastAPI:
     _copy_routes(core, application, ("/health", "/api/install"))
 
     @application.get("/", response_class=HTMLResponse, include_in_schema=False)
-    def installer_shell(request: Request) -> HTMLResponse:
-        application.state.require_installer_access(request)
+    def installer_shell() -> HTMLResponse:
+        from .service_control import handoff_is_ready, request_service_finalization
+
         if application.state.install_store.read() == InstallState.COMPLETED:
-            raise HTTPException(status_code=410, detail="installer is closed")
-        return HTMLResponse(_INSTALLER_HTML, headers={"Cache-Control": "no-store"})
+            try:
+                request_service_finalization(runtime)
+            except Exception:
+                pass
+            if handoff_is_ready(runtime):
+                raise HTTPException(status_code=410, detail="installer is closed")
+        return HTMLResponse(
+            _installer_asset("wizard.html"),
+            headers=_installer_security_headers(),
+        )
+
+    @application.get("/wizard.css", include_in_schema=False)
+    def installer_wizard_css() -> Response:
+        return Response(
+            _installer_asset("wizard.css"),
+            media_type="text/css",
+            headers=_installer_security_headers(),
+        )
+
+    @application.get("/wizard.js", include_in_schema=False)
+    def installer_wizard_js() -> Response:
+        return Response(
+            _installer_asset("wizard.js"),
+            media_type="text/javascript",
+            headers=_installer_security_headers(),
+        )
 
     _instrument(application)
     return application
@@ -1079,6 +1106,35 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
 
     _instrument(application)
     return application
+
+
+def _installer_security_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "default-src 'none'; style-src 'self'; script-src 'self'; "
+            "img-src 'self' data:; connect-src 'self'; form-action 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        ),
+    }
+
+
+def _installer_asset(name: str) -> str:
+    if name not in {"wizard.html", "wizard.css", "wizard.js"}:
+        return _INSTALLER_HTML if name.endswith(".html") else ""
+    path = Path(__file__).resolve().parent.parent / "plaik_installer" / name
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return _INSTALLER_HTML if name.endswith(".html") else ""
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return _INSTALLER_HTML if name.endswith(".html") else ""
+    return path.read_text(encoding="utf-8")
+
+
+def _installer_wizard_html() -> str:
+    return _installer_asset("wizard.html")
 
 
 _INSTALLER_HTML = """<!doctype html>

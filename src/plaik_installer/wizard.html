@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
+<title>PLAIK — встановлення</title>
+<link rel="stylesheet" href="/wizard.css">
+</head>
+<body>
+<aside class="rail">
+  <div class="brand">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <rect width="64" height="64" rx="14" fill="#1457d9"/>
+      <path d="M17 43V21h8l7 11 7-11h8v22h-8V33l-7 10-7-10v10z" fill="#fff"/>
+    </svg>
+    <div><strong>PLAIK</strong><span id="brand-sub">Встановлення</span></div>
+  </div>
+  <ol class="steps" id="steps">
+    <li>Вітання</li>
+  </ol>
+</aside>
+<section class="stage">
+  <header class="top">
+    <div id="top-title"></div>
+    <label>Мова
+      <select id="lang">
+        <option value="uk">Українська</option>
+        <option value="en">English</option>
+      </select>
+    </label>
+  </header>
+  <div class="sheet">
+    <div class="panel" id="panel"></div>
+  </div>
+</section>
+<script src="/wizard.js"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 # PLAIK installation
 
-PLAIK uses a two-stage, terminal-first installation model.
+PLAIK uses a two-stage installation model. Stage 2 for a normal operator is
+the local web installer. `sudo plaik setup` remains as headless automation
+and recovery fallback.
 
 ## Stage 1 — system bootstrap
 
@@ -29,18 +31,19 @@ sudo sh install.sh
 The bootstrap creates:
 
 ```text
-/opt/plaik/        runtime, bootstrap tooling and virtual environment
-/etc/plaik/        host configuration and installer token
-/var/lib/plaik/    persistent PLAIK data
-/var/log/plaik/    service logs/runtime log target
+/opt/plaik/current     atomic runtime symlink
+/opt/plaik/releases    verified runtime versions
+/etc/plaik/            host configuration; installer token only in installer.env
+/var/lib/plaik/        persistent PLAIK data
+/var/log/plaik/        service logs/runtime log target
 ```
 
-and installs three loopback-only systemd services:
+and installs loopback-only systemd services with separate Unix identities:
 
 ```text
-plaik-installer.service  127.0.0.1:8765
-plaik-web.service        127.0.0.1:8080
-plaik-admin.service      127.0.0.1:8081
+plaik-installer.service  127.0.0.1:8765  User=plaik-installer
+plaik-web.service        127.0.0.1:8080  User=plaik-public
+plaik-admin.service      127.0.0.1:8081  User=plaik-admin
 ```
 
 Before setup is complete only the installer service is enabled. After setup is
@@ -54,17 +57,16 @@ asset for each. For development only, local wheels can be supplied together with
 
 ## Stage 2 — PLAIK setup
 
-Run:
-
-```bash
-sudo plaik setup
-```
-
 This is the product configuration stage. The domain belongs here, not in the
-system bootstrap.
+system bootstrap. The Web Installer listens only on `127.0.0.1:8765`. It does
+not bind a LAN or public address, does not add a firewall exception, and does
+not sit behind a reverse proxy. Remote access is an SSH local forward from a
+computer that already has SSH access to the server.
 
 The CLI is an adapter over the existing installer API and Core state machine;
 it does not implement a second set of database/theme/admin lifecycle rules.
+The web wizard uses the same API. Both remain resumable from persisted Core
+state. After COMPLETED they request the same privileged service finalization.
 The canonical sequence remains:
 
 ```text
@@ -80,6 +82,68 @@ NOT_STARTED
 The setup is resumable. Re-running `sudo plaik setup` continues from the
 persisted installer state.
 
+### Local installation
+
+If the browser runs on the same machine as PLAIK, open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+On that same machine retrieve the one-time installer token with
+`sudo plaik installer-token` and paste it into the Web Installer.
+
+### Remote installation over SSH
+
+If Stage 1 was installed over SSH, keep that session on the server and run
+the tunnel command **on your local computer**, in a second terminal. Do not
+run it inside the SSH session on the server.
+
+Linux, macOS, and Windows PowerShell use the same OpenSSH command:
+
+```powershell
+ssh -N -L 8765:127.0.0.1:8765 user@server
+```
+
+For a non-standard SSH port:
+
+```powershell
+ssh -p 2222 -N -L 8765:127.0.0.1:8765 user@server
+```
+
+The command is the same for SSH key and SSH password logins. If this server
+asks for a password, OpenSSH prompts for it in that local terminal. Do not
+put the password on the command line.
+
+Then open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+The Web Installer asks for a one-time token. On the **server** — the Stage 1
+session, not the tunnel terminal — run:
+
+```bash
+sudo plaik installer-token
+```
+
+Paste that value into the browser. Stage 1 never prints the token, and the
+token must not be placed in the SSH command.
+
+The browser runs on your local computer. The SSH tunnel forwards local port
+`8765` to the server's loopback port `8765`. Keep the tunnel open until Stage
+2 finishes. After confirmed handoff (`installer` off, Web/Admin on, installer
+token revoked) port `8765` is no longer needed and the tunnel can be closed.
+
+### CLI fallback
+
+Headless automation and recovery remain:
+
+```bash
+sudo plaik setup
+```
+
 ### Interactive setup
 
 Production setup first shows detected host state (PostgreSQL listeners,
@@ -90,8 +154,10 @@ inspectable local databases and PLAIK backup artifacts). It then asks for:
 - PostgreSQL source: `use-detected`, `create`, `manual` or `restore`;
 - PostgreSQL endpoint/database, including the port;
 - distinct migration, runtime and checkpoint PostgreSQL identities;
-- database passwords, written to the PLAIK local secret provider without being
-  stored in installer configuration;
+- for `create`, PLAIK generates the internal PostgreSQL role secrets;
+  `use-detected` and `manual` still accept operator-supplied passwords.
+  Secrets are written to the PLAIK local secret provider and are never stored
+  in installer configuration;
 - first administrator email and password;
 - default theme activation.
 
@@ -100,7 +166,8 @@ inspectable local databases and PLAIK backup artifacts). It then asks for:
 roles through the host `postgres` peer identity. It refuses occupied databases,
 Docker listeners without local peer access, and foreign SQL dumps. `restore` is
 rejected: dump restore is a separate operational procedure, not Stage 2 setup.
-`manual` lets you enter host, port and database yourself.
+`manual` lets you enter host, port and database yourself. The host must still
+be loopback in this release.
 
 SQLite is accepted only in development/reference modes, matching the Core
 installer configuration contract.
@@ -193,16 +260,24 @@ explicit operator action.
 
 ## Security boundaries
 
-- Installer API binds to loopback by default.
-- The installer token is generated during system bootstrap and stored under
-  `/etc/plaik` with restricted permissions.
-- PLAIK services run as the dedicated `plaik` system user.
+- Installer API binds to loopback only (`127.0.0.1:8765`). Remote Stage 2
+  access is an SSH local forward, not a LAN/public listener or firewall
+  opening.
+- The installer token is generated during system bootstrap and stored only in
+  `/etc/plaik/installer.env`. Retrieve it on the server with
+  `sudo plaik installer-token`; do not put it in the SSH command.
+- PLAIK services run as three dedicated identities: `plaik-installer`,
+  `plaik-admin` and `plaik-public`.
+- Stage 2 PostgreSQL in this release is loopback-only (`127.0.0.1` /
+  `localhost` / `::1`), matching the public Web unit which may reach
+  localhost only.
 - Runtime files are read-only to the service account; persistent writes are
   restricted to PLAIK data/log paths.
 - Database passwords are persisted through the existing local secret provider,
   not inside `installer-config.json`.
-- Completing setup seals the installer configuration and disables the installer
-  systemd service.
+- Completing setup seals the installer configuration, disables the installer
+  systemd service, and revokes the installer token. The SSH tunnel to port
+  `8765` can be closed after that confirmed handoff.
 
 ## Not part of Stage 1
 

@@ -1,6 +1,7 @@
 """Runnable Platform v2 bootstrap API."""
 
 import hashlib
+import os
 import secrets
 import sqlite3
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from plaik_contracts import PackageManifest
 
@@ -64,6 +65,13 @@ from .secret_store import (
     SecretProviderRegistry,
     SecretStoreError,
 )
+from .service_control import (
+    ServiceControlError,
+    handoff_is_ready,
+    handoff_snapshot,
+    request_database_provision,
+    request_service_finalization,
+)
 from .settings_store import SecretReference
 from .storage import exclusive_file_lock, read_json
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
@@ -76,6 +84,35 @@ class TransitionRequest(BaseModel):
 class AdminBootstrapRequest(BaseModel):
     email: str
     password: SecretStr
+
+
+class InstallerProvisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(pattern=r"^(127\.0\.0\.1|localhost|::1)$")
+    port: int = Field(ge=1, le=65535)
+    database: str = Field(pattern=r"^[a-z][a-z0-9_]{2,62}$")
+    username: str = Field(pattern=r"^[a-z][a-z0-9_]{2,62}$")
+    runtime_username: str = Field(pattern=r"^[a-z][a-z0-9_]{2,62}$")
+    checkpoint_username: str = Field(pattern=r"^[a-z][a-z0-9_]{2,62}$")
+
+
+class InstallerCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    migrator_password: SecretStr
+    runtime_password: SecretStr
+    checkpoint_password: SecretStr
+
+    @field_validator(
+        "migrator_password", "runtime_password", "checkpoint_password"
+    )
+    @classmethod
+    def validate_secret_length(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        if len(raw) < 12 or len(raw.encode("utf-8")) > 256:
+            raise ValueError("password length is invalid")
+        return value
 
 
 def create_app(settings: CoreSettings | None = None) -> FastAPI:
@@ -232,6 +269,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             return cached_session, cached_audit, cached_operations
 
         local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
+        if os.environ.get("PLAIK_PUBLIC_SECRETS") == "1":
+            from .public_secrets import PublishedRuntimeSecretProvider
+
+            local_secrets = PublishedRuntimeSecretProvider(runtime.secrets_dir)
         providers = SecretProviderRegistry(
             (EnvironmentSecretProvider(), local_secrets)
         )
@@ -467,8 +508,16 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             raise TypeError("PostgreSQL adapter requires PostgreSQL configuration")
         providers = application.state.secret_providers
         if providers is None:
-            security_services(create_missing=False)
-            providers = application.state.secret_providers
+            if os.environ.get("PLAIK_PUBLIC_SECRETS") == "1":
+                from .public_secrets import PublishedRuntimeSecretProvider
+
+                local_secrets = PublishedRuntimeSecretProvider(runtime.secrets_dir)
+            else:
+                local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
+            providers = SecretProviderRegistry(
+                (EnvironmentSecretProvider(), local_secrets)
+            )
+            application.state.secret_providers = providers
         if providers is None:
             raise RuntimeError("secret providers are unavailable")
         return PostgreSQLAdapter(configured, providers)
@@ -502,9 +551,16 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         installer_rate_limiter.record_failure(client_key)
         raise HTTPException(status_code=403, detail="installer access denied")
 
+    def install_payload(state: InstallState | None = None) -> dict:
+        current = state if state is not None else install_store.read()
+        return {"state": current, "handoff": handoff_snapshot(runtime)}
+
     def require_installer_open(request: Request) -> None:
         require_installer_access(request)
-        if install_store.read() == InstallState.COMPLETED:
+        if (
+            install_store.read() == InstallState.COMPLETED
+            and handoff_is_ready(runtime)
+        ):
             raise HTTPException(status_code=410, detail="installer is closed")
 
     def operation_id(action: str, target: str, payload: str = "") -> str:
@@ -774,7 +830,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
 
     @application.get("/api/install/state", dependencies=[Depends(require_installer_access)])
     def install_state() -> dict:
-        return {"state": install_store.read()}
+        return install_payload()
 
     @application.get(
         "/api/install/requirements", dependencies=[Depends(require_installer_open)]
@@ -791,6 +847,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 {"id": item.id, "passed": item.passed, "detail": item.detail}
                 for item in report.observations
             ],
+            "inventory": report.inventory,
         }
 
     @application.get(
@@ -881,6 +938,96 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 installation_id=configuration.installation_id
             )
             return {"configuration": stored.redacted()}
+
+    @application.post(
+        "/api/install/credentials", dependencies=[Depends(require_installer_open)]
+    )
+    def write_install_credentials(request: InstallerCredentialRequest) -> dict:
+        secrets_dir = LocalFileSecretProvider(runtime.secrets_dir)
+        try:
+            secrets_dir.write_group(
+                [
+                    ("database/migrator", request.migrator_password, "v1"),
+                    ("database/runtime", request.runtime_password, "v1"),
+                    ("database/checkpoint", request.checkpoint_password, "v1"),
+                ]
+            )
+        except SecretStoreError:
+            raise HTTPException(
+                status_code=422, detail="credentials could not be stored"
+            ) from None
+        return {"stored": True}
+
+    @application.post(
+        "/api/install/credentials/generate",
+        dependencies=[Depends(require_installer_open)],
+    )
+    def generate_install_credentials() -> dict:
+        from .postgresql_provision import generate_role_secret
+
+        secrets_dir = LocalFileSecretProvider(runtime.secrets_dir)
+        try:
+            secrets_dir.write_group(
+                [
+                    ("database/migrator", generate_role_secret(), "v1"),
+                    ("database/runtime", generate_role_secret(), "v1"),
+                    ("database/checkpoint", generate_role_secret(), "v1"),
+                ]
+            )
+        except SecretStoreError:
+            raise HTTPException(
+                status_code=422, detail="credentials could not be stored"
+            ) from None
+        return {"stored": True, "generated": True}
+
+    @application.post(
+        "/api/install/provision", dependencies=[Depends(require_installer_open)]
+    )
+    def provision_install_database(request: InstallerProvisionRequest) -> dict:
+        if install_store.read() not in {
+            InstallState.REQUIREMENTS_CHECKED,
+            InstallState.CONFIGURED,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail="database creation is available only after requirements checks and before database setup",
+            )
+        try:
+            request_database_provision(
+                runtime,
+                {
+                    "host": request.host,
+                    "port": request.port,
+                    "database": request.database,
+                    "username": request.username,
+                    "runtime_username": request.runtime_username,
+                    "checkpoint_username": request.checkpoint_username,
+                },
+            )
+        except ServiceControlError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return {"provisioned": True}
+
+    @application.post(
+        "/api/install/finalize", dependencies=[Depends(require_installer_access)]
+    )
+    def finalize_install_services() -> dict:
+        if install_store.read() != InstallState.COMPLETED:
+            raise HTTPException(
+                status_code=409,
+                detail="service finalization requires a completed installation",
+            )
+        try:
+            request_service_finalization(runtime)
+        except ServiceControlError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        snapshot = handoff_snapshot(runtime)
+        if snapshot["status"] != "ready":
+            raise HTTPException(
+                status_code=503,
+                detail=snapshot["detail"] or "service finalization did not complete",
+            )
+        return {"finalized": True, "handoff": snapshot}
 
     @application.post(
         "/api/install/admin", dependencies=[Depends(require_installer_access)]
@@ -1026,7 +1173,11 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 anchor_committed_installer_mutation(
                     installation_id=configuration.installation_id
                 )
-                return {"state": InstallState.COMPLETED}
+                try:
+                    request_service_finalization(runtime)
+                except ServiceControlError:
+                    pass
+                return install_payload(InstallState.COMPLETED)
 
             try:
                 install_store.validate_transition(request.target)
@@ -1037,7 +1188,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 current == InstallState.NOT_STARTED
                 and request.target == InstallState.NOT_STARTED
             ):
-                return {"state": current}
+                return install_payload(current)
 
             if request.target == InstallState.REQUIREMENTS_CHECKED:
                 try:
@@ -1065,7 +1216,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 anchor_committed_installer_mutation(
                     installation_id=installation_id
                 )
-                return {"state": current}
+                return install_payload(current)
             if operation.status == OperationStatus.SUCCEEDED:
                 raise HTTPException(
                     status_code=500,
@@ -1225,7 +1376,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     else installation_id
                 )
             )
-            return {"state": state}
+            return install_payload(state)
 
     @application.get("/api/core/themes/active")
     def active_theme(store_id: str | None = None) -> dict:
