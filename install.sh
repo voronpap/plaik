@@ -204,6 +204,24 @@ atomic_switch_release() {
     mv -Tf "$tmp_link" "$current_link"
 }
 
+commit_staged_release() {
+    new_release=$1
+    ready_release=$2
+    [ -d "$new_release" ] || { echo "install.sh: staged release is missing" >&2; exit 1; }
+    [ ! -e "$ready_release" ] || { echo "install.sh: ready release already exists" >&2; exit 1; }
+    mv "$new_release" "$ready_release"
+    if [ -d "$ready_release/venv/bin" ]; then
+        find "$ready_release/venv/bin" -type f | while IFS= read -r file; do
+            if grep -Fq "$new_release" "$file" 2>/dev/null; then
+                sed -i "s|$new_release|$ready_release|g" "$file"
+            fi
+        done
+    fi
+    if [ -f "$ready_release/venv/pyvenv.cfg" ] && grep -Fq "$new_release" "$ready_release/venv/pyvenv.cfg" 2>/dev/null; then
+        sed -i "s|$new_release|$ready_release|g" "$ready_release/venv/pyvenv.cfg"
+    fi
+}
+
 ensure_system_user() {
     account=$1
     home=$2
@@ -581,6 +599,12 @@ if [ "${PLAIK_INSTALL_ACTION:-}" = "switch-release" ]; then
     exit 0
 fi
 
+if [ "${PLAIK_INSTALL_ACTION:-}" = "commit-staged-release" ]; then
+    commit_staged_release "$PLAIK_INSTALL_NEW_RELEASE" "$PLAIK_INSTALL_READY_RELEASE"
+    echo "release committed"
+    exit 0
+fi
+
 validate_configured_paths
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -835,12 +859,12 @@ RELEASE_VERSION=$(verify_wheel_bundle "$WHEEL_PATH" "$SDK_WHEEL_PATH" "$RELEASE_
 RELEASE_ID="${RELEASE_VERSION}-$(date -u +%Y%m%d%H%M%S)"
 NEW_RELEASE="$PLAIK_RUNTIME_DIR/releases/${RELEASE_ID}.new"
 rm -rf "$NEW_RELEASE"
-"$UV_BIN" venv --python 3.12 "$NEW_RELEASE/venv" >/dev/null
+"$UV_BIN" venv --python 3.12 --relocatable "$NEW_RELEASE/venv" >/dev/null
 PYTHON_BIN="$NEW_RELEASE/venv/bin/python"
 "$UV_BIN" pip install --python "$PYTHON_BIN" "$SDK_WHEEL_PATH" "$WHEEL_PATH" >/dev/null
 "$PYTHON_BIN" -c 'import plaik_core, plaik_installer, plaik_web, plaik_admin' >/dev/null
 READY_RELEASE="$PLAIK_RUNTIME_DIR/releases/$RELEASE_ID"
-mv "$NEW_RELEASE" "$READY_RELEASE"
+commit_staged_release "$NEW_RELEASE" "$READY_RELEASE"
 atomic_switch_release "$READY_RELEASE" "$CURRENT_LINK"
 PYTHON_BIN="$CURRENT_LINK/venv/bin/python"
 
