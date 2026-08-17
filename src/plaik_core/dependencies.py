@@ -126,10 +126,10 @@ def resolve_capabilities(packages: Mapping[str, PackageManifest]) -> None:
             if requirement.optional:
                 continue
             if providers:
-                found = ", ".join(
-                    f"{owner} {version}"
-                    for owner, version in sorted(providers)
-                )
+                owner, version = min(providers)
+                found = f"{owner} {version}"
+                if len(providers) > 1:
+                    found = f"{found} (+{len(providers) - 1})"
                 raise DependencyResolutionError(
                     f"{manifest.id} requires capability {requirement.id} "
                     f"{requirement.version}; found {found}"

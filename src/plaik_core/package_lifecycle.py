@@ -315,6 +315,7 @@ class TransactionalPackageManager:
                 self._validate_graph(after)
                 if status == PackageStatus.ENABLED:
                     _require_enabled_dependencies(after, package_id)
+                    _require_enabled_capabilities(after)
             except TransactionalPackageError:
                 self._fail_without_intent(operation_id, "package.dependency_invalid")
                 raise
