@@ -65,6 +65,38 @@ _SAFE_STR_CALLABLE_ATTRS = frozenset(
 _SAFE_SEQUENCE_CALLABLE_ATTRS = frozenset({"count", "index"})
 
 
+_LAYOUT_TEMPLATE_LIMIT = 256 * 1024
+
+
+class _SafeWebCallable:
+    __slots__ = ("_func",)
+
+    def __init__(self, func: Any) -> None:
+        self._func = func
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._func(*args, **kwargs)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _SafeWebCallable:
+        return self
+
+
+def _allow_web_callable(func: Any) -> _SafeWebCallable:
+    return _SafeWebCallable(func)
+
+
+def _is_environment_callable(environment: SandboxedEnvironment, obj: Any) -> bool:
+    for collection in (
+        environment.globals.values(),
+        environment.filters.values(),
+        environment.tests.values(),
+    ):
+        for item in collection:
+            if item is obj:
+                return True
+    return False
+
+
 def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
     if type(obj) is dict:
         return attr in _SAFE_DICT_CALLABLE_ATTRS
@@ -75,8 +107,13 @@ def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
     return False
 
 
+def _reject_caller_callables(context: dict[str, Any]) -> None:
+    if any(callable(value) for value in context.values()):
+        raise WebRenderError("web context cannot include callables")
+
+
 class WebSandboxedEnvironment(SandboxedEnvironment):
-    """Deny mutating and arbitrary callable attributes on template context objects."""
+    """Deny mutating attributes and unmarked callables in untrusted templates."""
 
     def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
         if attr in _MUTATING_METHODS:
@@ -86,6 +123,13 @@ class WebSandboxedEnvironment(SandboxedEnvironment):
         if callable(value) and not _callable_attr_is_safe(obj, attr):
             return False
         return True
+
+    def is_safe_callable(self, obj: Any) -> bool:
+        if type(obj) is _SafeWebCallable:
+            return True
+        if _is_environment_callable(self, obj):
+            return super().is_safe_callable(obj)
+        return False
 
 
 class WebRenderError(RuntimeError):
@@ -160,6 +204,7 @@ class WebRenderer:
         overlap = sorted(self.RESERVED_CONTEXT & set(extra_context))
         if overlap:
             raise WebRenderError("web context overrides reserved names")
+        _reject_caller_callables(extra_context)
 
         # Theme selection is deliberately the first stateful lookup in SSR.
         try:
@@ -267,9 +312,9 @@ class WebRenderer:
                 "store_id": store_id,
                 "theme_id": active.id,
                 "page": {"title": page_title},
-                "hook": render_hook,
-                "slot": render_slot,
-                "theme_assets": render_assets,
+                "hook": _allow_web_callable(render_hook),
+                "slot": _allow_web_callable(render_slot),
+                "theme_assets": _allow_web_callable(render_assets),
             },
         )
         return RenderedWeb(
@@ -280,6 +325,215 @@ class WebRenderer:
             asset_urls=asset_urls,
             source="theme",
         )
+
+    def render_page_composition(
+        self,
+        *,
+        store_id: str,
+        locale: str,
+        page_title: str,
+        page_type: str,
+        layout: str = "full-width",
+        context: dict[str, Any] | None = None,
+    ) -> RenderedWeb:
+        """Render a validated Theme API v1 page composition through SlotRegistry."""
+
+        from .theme_composition import PageTemplateResolver, ThemeCompositionError
+
+        safe_layout = _safe_layout(layout)
+        extra_context = copy.deepcopy(dict(context or {}))
+        reserved = self.RESERVED_CONTEXT | {"settings", "blocks", "composition"}
+        overlap = sorted(reserved & set(extra_context))
+        if overlap:
+            raise WebRenderError("web context overrides reserved names")
+        _reject_caller_callables(extra_context)
+
+        try:
+            active = self.theme_manager.active(store_id)
+        except KeyError:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
+        chain = self.theme_registry.inheritance_chain(active.id)
+        try:
+            resolved = PageTemplateResolver(
+                self.theme_registry, self.slot_registry
+            ).resolve(active.id, page_type)
+        except ThemeCompositionError as error:
+            raise WebRenderError(str(error)) from error
+        layout_path = self._resolve_layout(chain, safe_layout)
+        if layout_path is None:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
+        asset_urls = self._asset_urls(chain)
+        declared_slots = {
+            slot_id for theme in chain for slot_id in theme.slots
+        }
+
+        def render_hook(name: str) -> Markup:
+            fragments: list[str] = []
+            for binding in self.hook_registry.bindings(name):
+                template_path = self.template_resolver.resolve_module_template(
+                    theme_id=active.id,
+                    module_id=binding.module_id,
+                    template=binding.template,
+                )
+                if template_path is None:
+                    raise WebRenderError("module web template is missing")
+                fragments.append(
+                    self._render_template(
+                        template_path,
+                        {
+                            **extra_context,
+                            "locale": locale,
+                            "store_id": store_id,
+                            "theme_id": active.id,
+                            "page": {"title": page_title},
+                        },
+                    )
+                )
+            return Markup("".join(fragments))
+
+        def render_slot(name: str) -> Markup:
+            if name not in declared_slots:
+                raise WebRenderError("unknown slot")
+            fragments: list[str] = []
+            for binding in self.slot_registry.bindings(name):
+                template_path = self.template_resolver.resolve_module_template(
+                    theme_id=active.id,
+                    module_id=binding.module_id,
+                    template=binding.template,
+                )
+                if template_path is None:
+                    raise WebRenderError("module web template is missing")
+                fragments.append(
+                    self._render_template(
+                        template_path,
+                        {
+                            **extra_context,
+                            "locale": locale,
+                            "store_id": store_id,
+                            "theme_id": active.id,
+                            "page": {"title": page_title},
+                        },
+                    )
+                )
+            return Markup("".join(fragments))
+
+        def render_assets(kind: str) -> Markup:
+            if kind not in {"css", "js"}:
+                raise WebRenderError("unknown theme asset kind")
+            matching = [
+                url
+                for url in asset_urls
+                if (kind == "css" and url.endswith(".css"))
+                or (kind == "js" and url.endswith(".js"))
+            ]
+            if kind == "css":
+                return Markup(
+                    "".join(
+                        f'<link rel="stylesheet" href="{html.escape(url, quote=True)}">'
+                        for url in matching
+                    )
+                )
+            return Markup(
+                "".join(
+                    f'<script src="{html.escape(url, quote=True)}" defer></script>'
+                    for url in matching
+                )
+            )
+
+        helpers = {
+            "locale": locale,
+            "store_id": store_id,
+            "theme_id": active.id,
+            "page": {"title": page_title},
+            "hook": _allow_web_callable(render_hook),
+            "slot": _allow_web_callable(render_slot),
+            "theme_assets": _allow_web_callable(render_assets),
+        }
+        body = "".join(
+            self._render_resolved_section(section, extra_context, helpers)
+            for section in resolved.sections
+        )
+        rendered = self._render_template(
+            layout_path,
+            {
+                **extra_context,
+                **helpers,
+                "composition": Markup(body),
+            },
+        )
+        return RenderedWeb(
+            store_id=store_id,
+            theme_id=active.id,
+            layout=safe_layout,
+            html=rendered,
+            asset_urls=asset_urls,
+            source="theme",
+        )
+
+    def _render_resolved_section(self, section, extra_context, helpers) -> str:
+        blocks = tuple(
+            Markup(self._render_resolved_block(block, extra_context, helpers))
+            for block in section.blocks
+        )
+        return self._render_composition_template(
+            section.theme_id,
+            section.template,
+            {
+                **extra_context,
+                **helpers,
+                "settings": dict(section.settings),
+                "blocks": blocks,
+            },
+        )
+
+    def _render_resolved_block(self, block, extra_context, helpers) -> str:
+        blocks = tuple(
+            Markup(self._render_resolved_block(child, extra_context, helpers))
+            for child in block.blocks
+        )
+        return self._render_composition_template(
+            block.theme_id,
+            block.template,
+            {
+                **extra_context,
+                **helpers,
+                "settings": dict(block.settings),
+                "blocks": blocks,
+            },
+        )
+
+    def _render_composition_template(
+        self, theme_id: str, template: str, context: dict[str, Any]
+    ) -> str:
+        from .theme_composition import (
+            MAX_COMPOSITION_TEMPLATE_BYTES,
+            ThemeCompositionError,
+            read_bounded_contained_text,
+        )
+
+        relative = Path("templates") / Path(*PurePosixPath(template).parts)
+        try:
+            source = read_bounded_contained_text(
+                self.theme_registry.path(theme_id),
+                relative,
+                MAX_COMPOSITION_TEMPLATE_BYTES,
+            )
+        except ThemeCompositionError as error:
+            raise WebRenderError(str(error)) from error
+        try:
+            return self.environment.from_string(source).render(copy.deepcopy(context))
+        except WebRenderError:
+            raise
+        except Exception:
+            raise WebRenderError("web template rendering failed") from None
 
     def asset_path(self, theme_id: str, relative_path: str) -> Path:
         safe_theme = _safe_segment(theme_id)
@@ -364,9 +618,21 @@ class WebRenderer:
                 seen.add(key)
         return tuple(urls)
 
-    def _render_template(self, path: Path, context: dict[str, Any]) -> str:
+    def _render_template(
+        self,
+        path: Path,
+        context: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> str:
+        from .theme_composition import ThemeCompositionError, read_bounded_regular_text
+
         try:
-            source = path.read_text(encoding="utf-8")
+            limit = max_bytes if max_bytes is not None else _LAYOUT_TEMPLATE_LIMIT
+            try:
+                source = read_bounded_regular_text(path, limit)
+            except ThemeCompositionError as error:
+                raise WebRenderError(str(error)) from error
             template = self.environment.from_string(source)
             return template.render(copy.deepcopy(context))
         except WebRenderError:

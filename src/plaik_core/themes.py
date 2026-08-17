@@ -18,7 +18,17 @@ from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 _STORE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 _HOOK_NAME = re.compile(r"^[a-z][A-Za-z0-9]*$")
-_THEME_JSON_FIELDS = {"parent", "layouts", "assets", "hooks", "theme_api", "slots"}
+_THEME_JSON_FIELDS = {
+    "parent",
+    "layouts",
+    "assets",
+    "hooks",
+    "theme_api",
+    "slots",
+    "page_templates",
+    "sections",
+    "blocks",
+}
 _MAX_THEME_PRESENTATION_BYTES = 256 * 1024
 _WINDOWS_RESERVED_BASENAMES = {
     "aux",
@@ -139,6 +149,7 @@ class ThemeRegistry:
         self._themes = themes
         self._locations = locations
         self._validate_inheritance()
+        self._validate_composition()
         return dict(themes)
 
     def validate_candidate(
@@ -184,6 +195,7 @@ class ThemeRegistry:
             )
         except ValidationError as error:
             raise ValueError("theme presentation manifest is invalid") from error
+        parent = None
         if manifest.parent is not None:
             _safe_package_id(manifest.parent)
             if manifest.parent not in available_theme_ids:
@@ -220,6 +232,24 @@ class ThemeRegistry:
             self._validate_candidate_asset(candidate, asset, suffix=".css")
         for asset in manifest.assets.js:
             self._validate_candidate_asset(candidate, asset, suffix=".js")
+        from .theme_composition import (
+            ThemeCompositionError,
+            validate_candidate_composition,
+        )
+
+        try:
+            validate_candidate_composition(
+                candidate,
+                manifest,
+                parent_directory=(
+                    self._locate_theme_directory(manifest.parent)
+                    if parent is not None
+                    else None
+                ),
+                parent_manifest=parent,
+            )
+        except ThemeCompositionError as error:
+            raise ValueError(str(error)) from error
         return manifest
 
     @staticmethod
@@ -229,6 +259,29 @@ class ThemeRegistry:
             raise ValueError("theme asset has an invalid type")
         if _contained_file(candidate, relative) is None:
             raise ValueError(f"theme asset file is missing: {value}")
+
+    def _locate_theme_directory(self, theme_id: str) -> Path | None:
+        for root in self.roots:
+            directory = Path(root) / theme_id
+            if (
+                directory.is_dir()
+                and not directory.is_symlink()
+                and (directory / "manifest.json").is_file()
+                and not (directory / "manifest.json").is_symlink()
+            ):
+                return directory
+        return None
+
+    def _validate_composition(self) -> None:
+        from .theme_composition import (
+            ThemeCompositionError,
+            validate_installed_themes,
+        )
+
+        try:
+            validate_installed_themes(self._themes, self._locations)
+        except ThemeCompositionError as error:
+            raise ValueError(str(error)) from error
 
     def get(self, theme_id: str) -> ThemeManifest | None:
         return self._themes.get(theme_id)
