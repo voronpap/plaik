@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef
+
+from .envelope import dump_resource, dump_scope, envelope_from_row
 from .extension_runtime import _json_snapshot
 
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -24,6 +27,26 @@ class PostgreSQLOutboxEvent:
     payload: dict[str, Any]
     idempotency_key: str | None
     attempt_count: int
+    scope_json: Any = None
+    resource_json: Any = None
+    correlation_id: str | None = None
+    created_at: datetime | None = None
+
+    def as_envelope(self) -> EventEnvelope:
+        if self.created_at is None:
+            raise ValueError("outbox event is missing created_at")
+        return envelope_from_row(
+            event_id=self.id,
+            owner=self.owner,
+            contract=self.contract,
+            version=self.version,
+            payload=self.payload,
+            scope_raw=self.scope_json,
+            resource_raw=self.resource_json,
+            idempotency_key=self.idempotency_key,
+            correlation_id=self.correlation_id,
+            created_at=self.created_at,
+        )
 
 
 class PostgreSQLEventOutbox:
@@ -38,15 +61,21 @@ class PostgreSQLEventOutbox:
         version: str,
         payload: Mapping[str, Any],
         idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
     ) -> str:
         snapshot = _json_snapshot(payload)
         event_id = str(uuid.uuid4())
+        persisted_scope = dump_scope(scope or ScopeRef.installation())
+        persisted_resource = dump_resource(resource)
         with connection.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO plaik_core.plaik_event_outbox
-                    (id, owner, contract, version, payload_json, idempotency_key, created_at)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                    (id, owner, contract, version, payload_json, idempotency_key,
+                     created_at, scope_json, resource_json, correlation_id)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s)
                 ON CONFLICT (owner, contract, idempotency_key)
                     WHERE idempotency_key IS NOT NULL
                 DO UPDATE SET id = plaik_core.plaik_event_outbox.id
@@ -60,6 +89,9 @@ class PostgreSQLEventOutbox:
                     json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
                     idempotency_key,
                     datetime.now(UTC),
+                    persisted_scope,
+                    persisted_resource,
+                    correlation_id,
                 ),
             )
             row = cursor.fetchone()
@@ -76,7 +108,8 @@ class PostgreSQLEventOutbox:
             cursor.execute(
                 """
                 SELECT id, owner, contract, version, payload_json,
-                       idempotency_key, attempt_count
+                       idempotency_key, attempt_count,
+                       scope_json, resource_json, correlation_id, created_at
                 FROM plaik_core.plaik_event_outbox
                 WHERE dispatched_at IS NULL
                   AND dead_at IS NULL
@@ -97,6 +130,10 @@ class PostgreSQLEventOutbox:
                 payload=row[4] if isinstance(row[4], dict) else json.loads(row[4]),
                 idempotency_key=row[5],
                 attempt_count=int(row[6]),
+                scope_json=row[7],
+                resource_json=row[8],
+                correlation_id=row[9],
+                created_at=row[10],
             )
             for row in rows
         )

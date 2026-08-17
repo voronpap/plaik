@@ -40,7 +40,7 @@ from .operation_journal import (
 from .package_artifacts import Ed25519SignatureVerifier
 from .releases import ReleaseDescriptor, ReleaseError, ReleaseManager
 from .secret_store import LocalFileSecretProvider, SecretStoreError
-from .settings_store import SecretReference
+from plaik_contracts import SecretReference
 from .signing_keys import SigningKeyStoreError, load_ed25519_public_keys
 
 

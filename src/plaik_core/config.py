@@ -165,8 +165,8 @@ class CoreSettings:
         return self.data_dir / "installer-config.json"
 
     @property
-    def scoped_settings_path(self) -> Path:
-        return self.data_dir / "settings.json"
+    def connections_path(self) -> Path:
+        return self.data_dir / "connections.json"
 
     @property
     def database_path(self) -> Path:

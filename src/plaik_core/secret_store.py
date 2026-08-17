@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pydantic import SecretStr
-
-from .settings_store import SecretReference
+from plaik_contracts import SecretReference
 
 
 _PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
