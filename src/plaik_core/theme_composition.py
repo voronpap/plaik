@@ -486,6 +486,13 @@ def _openat_regular_file(base: Path, relative: Path) -> int:
             os.close(descriptor)
 
 
+def assert_contained_regular_file(base: Path, relative: Path) -> None:
+    """Verify one contained regular file; every path component uses O_NOFOLLOW."""
+
+    descriptor = _openat_regular_file(base, relative)
+    os.close(descriptor)
+
+
 def read_bounded_contained_text(base: Path, relative: Path, max_bytes: int) -> str:
     """Read one contained UTF-8 file through descriptor-anchored O_NOFOLLOW."""
 

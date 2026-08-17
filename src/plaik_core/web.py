@@ -216,28 +216,31 @@ class WebRenderer:
                 page_title=page_title,
             )
         chain = self.theme_registry.inheritance_chain(active.id)
-        layout_path = self._resolve_layout(chain, safe_layout)
-        if layout_path is None:
+        layout_ref = self._resolve_layout(chain, safe_layout)
+        if layout_ref is None:
             return self._render_system_fallback(
                 store_id=store_id,
                 locale=locale,
                 page_title=page_title,
             )
+        layout_base, layout_relative = layout_ref
         asset_urls = self._asset_urls(chain)
 
         def render_hook(name: str) -> Markup:
             fragments: list[str] = []
             for binding in self.hook_registry.bindings(name):
-                template_path = self.template_resolver.resolve_module_template(
+                template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
                     template=binding.template,
                 )
-                if template_path is None:
+                if template_ref is None:
                     raise WebRenderError("module web template is missing")
+                template_base, template_relative = template_ref
                 fragments.append(
                     self._render_template(
-                        template_path,
+                        template_base,
+                        template_relative,
                         {
                             **extra_context,
                             "locale": locale,
@@ -260,16 +263,18 @@ class WebRenderer:
                 raise WebRenderError("unknown slot")
             fragments: list[str] = []
             for binding in self.slot_registry.bindings(name):
-                template_path = self.template_resolver.resolve_module_template(
+                template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
                     template=binding.template,
                 )
-                if template_path is None:
+                if template_ref is None:
                     raise WebRenderError("module web template is missing")
+                template_base, template_relative = template_ref
                 fragments.append(
                     self._render_template(
-                        template_path,
+                        template_base,
+                        template_relative,
                         {
                             **extra_context,
                             "locale": locale,
@@ -305,7 +310,8 @@ class WebRenderer:
             )
 
         rendered = self._render_template(
-            layout_path,
+            layout_base,
+            layout_relative,
             {
                 **extra_context,
                 "locale": locale,
@@ -363,13 +369,14 @@ class WebRenderer:
             ).resolve(active.id, page_type)
         except ThemeCompositionError as error:
             raise WebRenderError(str(error)) from error
-        layout_path = self._resolve_layout(chain, safe_layout)
-        if layout_path is None:
+        layout_ref = self._resolve_layout(chain, safe_layout)
+        if layout_ref is None:
             return self._render_system_fallback(
                 store_id=store_id,
                 locale=locale,
                 page_title=page_title,
             )
+        layout_base, layout_relative = layout_ref
         asset_urls = self._asset_urls(chain)
         declared_slots = {
             slot_id for theme in chain for slot_id in theme.slots
@@ -378,16 +385,18 @@ class WebRenderer:
         def render_hook(name: str) -> Markup:
             fragments: list[str] = []
             for binding in self.hook_registry.bindings(name):
-                template_path = self.template_resolver.resolve_module_template(
+                template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
                     template=binding.template,
                 )
-                if template_path is None:
+                if template_ref is None:
                     raise WebRenderError("module web template is missing")
+                template_base, template_relative = template_ref
                 fragments.append(
                     self._render_template(
-                        template_path,
+                        template_base,
+                        template_relative,
                         {
                             **extra_context,
                             "locale": locale,
@@ -404,16 +413,18 @@ class WebRenderer:
                 raise WebRenderError("unknown slot")
             fragments: list[str] = []
             for binding in self.slot_registry.bindings(name):
-                template_path = self.template_resolver.resolve_module_template(
+                template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
                     template=binding.template,
                 )
-                if template_path is None:
+                if template_ref is None:
                     raise WebRenderError("module web template is missing")
+                template_base, template_relative = template_ref
                 fragments.append(
                     self._render_template(
-                        template_path,
+                        template_base,
+                        template_relative,
                         {
                             **extra_context,
                             "locale": locale,
@@ -462,7 +473,8 @@ class WebRenderer:
             for section in resolved.sections
         )
         rendered = self._render_template(
-            layout_path,
+            layout_base,
+            layout_relative,
             {
                 **extra_context,
                 **helpers,
@@ -554,16 +566,19 @@ class WebRenderer:
             raise WebRenderError("declared theme asset is missing or unsafe")
         return path
 
-    def _resolve_layout(self, chain, layout: str) -> Path | None:
+    def _resolve_layout(self, chain, layout: str) -> tuple[Path, Path] | None:
+        from .theme_composition import ThemeCompositionError, assert_contained_regular_file
+
+        relative = Path("templates") / "layouts" / f"{layout}.html"
         for theme in chain:
             if layout not in theme.layouts:
                 continue
-            candidate = _regular_layout_file(
-                self.theme_registry.path(theme.id),
-                Path("templates") / "layouts" / f"{layout}.html",
-            )
-            if candidate is not None:
-                return candidate
+            base = self.theme_registry.path(theme.id)
+            try:
+                assert_contained_regular_file(base, relative)
+            except ThemeCompositionError:
+                continue
+            return base, relative
         return None
 
     def _render_system_fallback(
@@ -573,17 +588,19 @@ class WebRenderer:
         locale: str,
         page_title: str,
     ) -> RenderedWeb:
+        from .theme_composition import ThemeCompositionError, assert_contained_regular_file
+
         if self.system_fallback_root is None:
             raise WebRenderError("web layout is unavailable")
-        layout = _regular_layout_file(
-            self.system_fallback_root,
-            Path("layout.html"),
-            missing="unavailable",
-        )
-        if layout is None:
-            raise WebRenderError("web layout is unavailable")
+        base = self.system_fallback_root
+        relative = Path("layout.html")
+        try:
+            assert_contained_regular_file(base, relative)
+        except ThemeCompositionError:
+            raise WebRenderError("web layout is unavailable") from None
         rendered = self._render_template(
-            layout,
+            base,
+            relative,
             {
                 "locale": locale,
                 "store_id": store_id,
@@ -620,17 +637,18 @@ class WebRenderer:
 
     def _render_template(
         self,
-        path: Path,
+        base: Path,
+        relative: Path,
         context: dict[str, Any],
         *,
         max_bytes: int | None = None,
     ) -> str:
-        from .theme_composition import ThemeCompositionError, read_bounded_regular_text
+        from .theme_composition import ThemeCompositionError, read_bounded_contained_text
 
         try:
             limit = max_bytes if max_bytes is not None else _LAYOUT_TEMPLATE_LIMIT
             try:
-                source = read_bounded_regular_text(path, limit)
+                source = read_bounded_contained_text(base, relative, limit)
             except ThemeCompositionError as error:
                 raise WebRenderError(str(error)) from error
             template = self.environment.from_string(source)
