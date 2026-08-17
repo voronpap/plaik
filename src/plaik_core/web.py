@@ -641,12 +641,6 @@ class WebRenderer:
             raise WebRenderError("web template rendering failed") from None
 
 
-def _composition_template_limit() -> int:
-    from .theme_composition import MAX_COMPOSITION_TEMPLATE_BYTES
-
-    return MAX_COMPOSITION_TEMPLATE_BYTES
-
-
 def _safe_layout(value: str) -> str:
     if not isinstance(value, str) or not value:
         raise WebRenderError("invalid web layout")
