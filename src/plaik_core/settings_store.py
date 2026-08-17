@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
+from plaik_contracts import SecretReference
 
 from .context import StoreContext
 from .storage import exclusive_file_lock, read_json, write_json_atomic
@@ -15,36 +16,6 @@ from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 class SettingsStoreError(RuntimeError):
     """Settings data or an operation violates the scoped settings contract."""
-
-
-class SecretReference(BaseModel):
-    """A pointer to a secret held by an external provider, never the value itself."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    provider: str = Field(
-        min_length=1,
-        max_length=32,
-        pattern=r"^[a-z][a-z0-9_-]{0,31}$",
-    )
-    key: str = Field(
-        min_length=1,
-        max_length=255,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,254}$",
-    )
-    version: str | None = Field(default=None, min_length=1, max_length=128)
-
-    def redacted(self) -> dict[str, str]:
-        output = {"provider": self.provider, "key": "[REDACTED]"}
-        if self.version is not None:
-            output["version"] = self.version
-        return output
-
-    def __str__(self) -> str:
-        return f"<secret-reference provider={self.provider}>"
-
-    def __repr__(self) -> str:
-        return f"SecretReference(provider={self.provider!r}, key=<redacted>)"
 
 
 class SettingsAuditEvent(BaseModel):

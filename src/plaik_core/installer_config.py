@@ -23,9 +23,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from plaik_contracts import SecretReference
 
 from .installer import InstallState, InstallStateStore
-from .settings_store import SecretReference
 from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 

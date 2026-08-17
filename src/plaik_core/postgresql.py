@@ -38,6 +38,9 @@ from .migrations import (
     _erase_sql_literals_and_comments,
 )
 from .postgresql_event_outbox_migration import POSTGRESQL_EVENT_OUTBOX_MIGRATION
+from .postgresql_event_outbox_envelope_migration import (
+    POSTGRESQL_EVENT_OUTBOX_ENVELOPE_MIGRATION,
+)
 from .secret_store import SecretProvider, SecretProviderRegistry
 
 
@@ -261,6 +264,7 @@ POSTGRESQL_CORE_MIGRATIONS = (
         ),
     ),
     POSTGRESQL_EVENT_OUTBOX_MIGRATION,
+    POSTGRESQL_EVENT_OUTBOX_ENVELOPE_MIGRATION,
 )
 
 _POSTGRES_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,62}$")
