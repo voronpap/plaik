@@ -35,23 +35,20 @@ _MUTATING_METHODS = frozenset(
         "update",
     }
 )
-_SAFE_CALLABLE_ATTRS = frozenset(
+_SAFE_DICT_CALLABLE_ATTRS = frozenset({"copy", "get", "items", "keys", "values"})
+_SAFE_STR_CALLABLE_ATTRS = frozenset(
     {
         "casefold",
-        "copy",
         "count",
         "endswith",
         "find",
         "format",
-        "get",
         "index",
         "isalnum",
         "isalpha",
         "isdigit",
         "isspace",
-        "items",
         "join",
-        "keys",
         "lower",
         "lstrip",
         "replace",
@@ -63,9 +60,19 @@ _SAFE_CALLABLE_ATTRS = frozenset(
         "strip",
         "title",
         "upper",
-        "values",
     }
 )
+_SAFE_SEQUENCE_CALLABLE_ATTRS = frozenset({"count", "index"})
+
+
+def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
+    if type(obj) is dict:
+        return attr in _SAFE_DICT_CALLABLE_ATTRS
+    if type(obj) is str:
+        return attr in _SAFE_STR_CALLABLE_ATTRS
+    if type(obj) in {list, tuple}:
+        return attr in _SAFE_SEQUENCE_CALLABLE_ATTRS
+    return False
 
 
 class WebSandboxedEnvironment(SandboxedEnvironment):
@@ -76,7 +83,7 @@ class WebSandboxedEnvironment(SandboxedEnvironment):
             return False
         if not super().is_safe_attribute(obj, attr, value):
             return False
-        if callable(value) and attr not in _SAFE_CALLABLE_ATTRS:
+        if callable(value) and not _callable_attr_is_safe(obj, attr):
             return False
         return True
 
