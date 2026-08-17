@@ -499,25 +499,29 @@ class TemplateResolver:
         module_id: str,
         template: str,
         system_fallback: Path | None = None,
-    ) -> Path | None:
+    ) -> tuple[Path, Path] | None:
+        from .theme_composition import ThemeCompositionError, assert_contained_regular_file
+
         safe_template = self._safe_relative(template)
         safe_module_id = self._safe_segment(module_id)
         for theme in self.registry.inheritance_chain(theme_id):
-            candidate = self._contained_file(
-                self.registry.path(theme.id),
-                Path("modules") / safe_module_id / safe_template,
-            )
-            if candidate is not None:
-                return candidate
+            base = self.registry.path(theme.id)
+            relative = Path("modules") / safe_module_id / safe_template
+            try:
+                assert_contained_regular_file(base, relative)
+            except ThemeCompositionError:
+                continue
+            return base, relative
         for root in self.modules_roots:
-            module_template = self._contained_file(
-                Path(root) / safe_module_id,
-                Path("web") / safe_template,
-            )
-            if module_template is not None:
-                return module_template
+            base = Path(root)
+            relative = Path(safe_module_id) / "web" / safe_template
+            try:
+                assert_contained_regular_file(base, relative)
+            except ThemeCompositionError:
+                continue
+            return base, relative
         if system_fallback and system_fallback.is_file():
-            return system_fallback
+            return system_fallback.parent, Path(system_fallback.name)
         return None
 
     @staticmethod
