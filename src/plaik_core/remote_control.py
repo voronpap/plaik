@@ -12,8 +12,12 @@ Runtime loopback invariants are part of the contract:
 
 ``remote_control_enabled`` is derived from observed status. ENABLED is
 impossible without an admin passkey enrolled for the exact current
-``control_hostname`` RP ID. ERROR never opens port 8081. ``wan_surface`` is
-derived only from a validated ``RemoteControlRecord``.
+``control_hostname`` RP ID **and** a gateway inspection of CONTROL_CENTER.
+A verified passkey alone is ``PUBLICATION_PENDING`` with observed
+``ACTIVATE_ONLY``. ERROR never opens port 8081. ``wan_surface`` is the
+observed gateway surface derived from a validated ``RemoteControlRecord``.
+``publication_surface`` is the surface a privileged gateway transaction may
+apply next; it is not observed readiness.
 """
 
 from __future__ import annotations
@@ -74,6 +78,7 @@ class RemoteControlStatus(StrEnum):
     DISABLED = "disabled"
     PREFLIGHT = "preflight"
     ENROLLMENT_PENDING = "enrollment_pending"
+    PUBLICATION_PENDING = "publication_pending"
     ENABLED = "enabled"
     ERROR = "error"
 
@@ -184,17 +189,21 @@ class RemoteControlRecord(BaseModel):
             in {
                 RemoteControlStatus.PREFLIGHT,
                 RemoteControlStatus.ENROLLMENT_PENDING,
+                RemoteControlStatus.PUBLICATION_PENDING,
                 RemoteControlStatus.ENABLED,
             }
             and (self.intent is None or not self.intent.remote_access_requested)
         ):
             raise ValueError("active remote control requires requested intent")
-        if self.status is RemoteControlStatus.ENABLED:
+        if self.status in {
+            RemoteControlStatus.PUBLICATION_PENDING,
+            RemoteControlStatus.ENABLED,
+        }:
             if self.intent is None:
-                raise ValueError("ENABLED requires a remote control intent")
+                raise ValueError(f"{self.status.value} requires a remote control intent")
             if self.enrolled_admin_passkey_rp_id != self.intent.control_hostname:
                 raise ValueError(
-                    "ENABLED requires an admin passkey enrolled for the exact "
+                    f"{self.status.value} requires an admin passkey enrolled for the exact "
                     "control_hostname RP ID"
                 )
         if self.status is not RemoteControlStatus.ERROR and self.error_code is not None:
@@ -223,9 +232,23 @@ class RemoteControlRecord(BaseModel):
             and self.enrolled_admin_passkey
         ):
             return WanSurface.CONTROL_CENTER
-        if self.status is RemoteControlStatus.ENROLLMENT_PENDING:
+        if self.status in {
+            RemoteControlStatus.ENROLLMENT_PENDING,
+            RemoteControlStatus.PUBLICATION_PENDING,
+        }:
             return WanSurface.ACTIVATE_ONLY
         return WanSurface.CLOSED
+
+    @property
+    def publication_surface(self) -> WanSurface:
+        """Surface a privileged gateway transaction may apply next."""
+
+        if (
+            self.status is RemoteControlStatus.PUBLICATION_PENDING
+            and self.enrolled_admin_passkey
+        ):
+            return WanSurface.CONTROL_CENTER
+        return self.wan_surface
 
 
 def canonical_record(record: RemoteControlRecord) -> dict[str, object]:
@@ -253,7 +276,7 @@ class GatewayPlan(BaseModel):
     @model_validator(mode="after")
     def validate_plan_matches_record(self) -> "GatewayPlan":
         record = RemoteControlRecord.model_validate(self.record.model_dump(mode="json"))
-        expected = record.wan_surface
+        expected = record.publication_surface
         if self.wan_surface is not expected:
             raise ValueError(
                 "wan_surface must be derived from the validated remote control record"
@@ -264,8 +287,13 @@ class GatewayPlan(BaseModel):
         ):
             raise ValueError("ACTIVATE_ONLY is only valid for ENROLLMENT_PENDING")
         if self.wan_surface is WanSurface.CONTROL_CENTER:
-            if record.status is not RemoteControlStatus.ENABLED:
-                raise ValueError("CONTROL_CENTER is only valid for ENABLED")
+            if record.status not in {
+                RemoteControlStatus.PUBLICATION_PENDING,
+                RemoteControlStatus.ENABLED,
+            }:
+                raise ValueError(
+                    "CONTROL_CENTER is only valid for PUBLICATION_PENDING or ENABLED"
+                )
             if not record.enrolled_admin_passkey:
                 raise ValueError(
                     "CONTROL_CENTER requires a passkey for the current control hostname"
@@ -286,7 +314,7 @@ class GatewayPlan(BaseModel):
         record = RemoteControlRecord.model_validate(record.model_dump(mode="json"))
         if record.intent is None:
             raise RemoteControlError("gateway plan requires a remote control intent")
-        return cls(record=record, wan_surface=record.wan_surface)
+        return cls(record=record, wan_surface=record.publication_surface)
 
     @property
     def intent(self) -> RemoteControlIntent:
@@ -391,6 +419,7 @@ class RemoteControlStore:
             if current.status not in {
                 RemoteControlStatus.PREFLIGHT,
                 RemoteControlStatus.ENROLLMENT_PENDING,
+                RemoteControlStatus.PUBLICATION_PENDING,
                 RemoteControlStatus.ENABLED,
             }:
                 raise InvalidRemoteControlTransition(
@@ -408,7 +437,10 @@ class RemoteControlStore:
                 )
             if current.enrolled_admin_passkey:
                 record = current.model_copy(
-                    update={"status": RemoteControlStatus.ENABLED, "error_code": None}
+                    update={
+                        "status": RemoteControlStatus.PUBLICATION_PENDING,
+                        "error_code": None,
+                    }
                 )
             else:
                 record = current.model_copy(
@@ -425,7 +457,7 @@ class RemoteControlStore:
         rp_id: str,
         install_state: InstallState,
     ) -> RemoteControlRecord:
-        """WebAuthn enrollment hook. PR1 records RP ID binding, not the ceremony."""
+        """Record a verified first admin passkey. Does not observe CONTROL_CENTER."""
 
         _require_completed(install_state)
         rp_id = validate_dns_hostname(rp_id, label="rp_id")
@@ -446,9 +478,55 @@ class RemoteControlStore:
             record = current.model_copy(
                 update={
                     "enrolled_admin_passkey_rp_id": rp_id,
-                    "status": RemoteControlStatus.ENABLED,
+                    "status": RemoteControlStatus.PUBLICATION_PENDING,
                     "error_code": None,
                 }
+            )
+            return self._write_unlocked(record)
+
+    def observe_control_center(
+        self,
+        expected: RemoteControlRecord,
+        *,
+        inspection: GatewayInspection,
+        install_state: InstallState,
+    ) -> RemoteControlRecord:
+        """Persist ENABLED only with a fail-closed CONTROL_CENTER inspection."""
+
+        _require_completed(install_state)
+        if inspection.wan_surface is not WanSurface.CONTROL_CENTER:
+            raise InvalidRemoteControlTransition(
+                "ENABLED requires inspected CONTROL_CENTER"
+            )
+        if inspection.control_port_public or inspection.installer_open:
+            raise InvalidRemoteControlTransition(
+                "CONTROL_CENTER inspection is not fail-closed"
+            )
+        with exclusive_file_lock(self.path):
+            current = self.read()
+            if not records_match(current, expected):
+                raise InvalidRemoteControlTransition(
+                    "remote control record drifted during gateway observation"
+                )
+            if (
+                current.intent is None
+                or inspection.provider is not current.intent.gateway_provider
+            ):
+                raise InvalidRemoteControlTransition(
+                    "CONTROL_CENTER inspection provider does not match intent"
+                )
+            if current.status is RemoteControlStatus.ENABLED and current.enrolled_admin_passkey:
+                return current
+            if current.status is not RemoteControlStatus.PUBLICATION_PENDING:
+                raise InvalidRemoteControlTransition(
+                    "CONTROL_CENTER observation is only valid during PUBLICATION_PENDING"
+                )
+            if not current.enrolled_admin_passkey:
+                raise InvalidRemoteControlTransition(
+                    "CONTROL_CENTER observation requires an enrolled admin passkey"
+                )
+            record = current.model_copy(
+                update={"status": RemoteControlStatus.ENABLED, "error_code": None}
             )
             return self._write_unlocked(record)
 

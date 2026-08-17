@@ -601,7 +601,11 @@ def mount_passkey_activate(
             except InvalidRemoteControlTransition:
                 remote = remote_store.read()
                 if (
-                    remote.status is not RemoteControlStatus.ENABLED
+                    remote.status
+                    not in {
+                        RemoteControlStatus.PUBLICATION_PENDING,
+                        RemoteControlStatus.ENABLED,
+                    }
                     or remote.enrolled_admin_passkey_rp_id != control_hostname
                 ):
                     raise
@@ -630,7 +634,7 @@ def mount_passkey_activate(
         response = JSONResponse(
             {
                 "status": "enrolled",
-                "next": "control-center",
+                "next": "publication",
                 "control_hostname": control_hostname,
             },
             headers={"Cache-Control": "no-store"},
@@ -785,7 +789,7 @@ _PASSKEY_HTML = """<!doctype html>
 [data-plaik-activate] .err{color:#f3b4b4}
 </style></head><body><main><section class="card">
 <h1>Passkey</h1>
-<p>Зареєструйте passkey на цьому control origin. Control Center відкриється після цього.</p>
+<p>Зареєструйте passkey на цьому control origin. Control Center відкриється після публікації шлюзу.</p>
 <button id="enroll" type="button">Зареєструвати passkey</button>
 <p id="status" class="err" hidden></p>
 </section></main>
@@ -804,7 +808,7 @@ document.getElementById('enroll').onclick=async()=>{
     const done=await fetch('/activate/passkey',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',origin:location.origin},body:JSON.stringify(body)});
     if(!done.ok) throw new Error('register');
     const payload=await done.json();
-    status.hidden=false;status.className='';status.textContent='Passkey прийнято. Control Center: '+payload.control_hostname;
+    status.hidden=false;status.className='';status.textContent='Passkey прийнято. Далі потрібна публікація Control Center: '+payload.control_hostname;
   }catch(e){status.hidden=false;status.textContent='Не вдалося зареєструвати passkey.';}
 };
 </script></body></html>"""
