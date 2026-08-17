@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -450,15 +451,15 @@ class TemplateResolver:
         safe_module_id = self._safe_segment(module_id)
         for theme in self.registry.inheritance_chain(theme_id):
             candidate = self._contained_file(
-                self.registry.path(theme.id) / "modules" / safe_module_id,
-                safe_template,
+                self.registry.path(theme.id),
+                Path("modules") / safe_module_id / safe_template,
             )
             if candidate is not None:
                 return candidate
         for root in self.modules_roots:
             module_template = self._contained_file(
-                root / safe_module_id / "web",
-                safe_template,
+                Path(root) / safe_module_id,
+                Path("web") / safe_template,
             )
             if module_template is not None:
                 return module_template
@@ -538,14 +539,31 @@ def _safe_relative_path(value: str, *, error: str) -> Path:
 
 
 def _contained_file(base: Path, relative: Path) -> Path | None:
+    current = Path(base)
     try:
-        resolved_base = base.resolve(strict=False)
-        candidate = (base / relative).resolve(strict=True)
-    except (OSError, RuntimeError):
+        metadata = current.lstat()
+    except OSError:
         return None
-    if not candidate.is_relative_to(resolved_base) or not candidate.is_file():
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return None
-    return candidate
+    parts = Path(relative).parts
+    if not parts:
+        return None
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(metadata.st_mode):
+            return None
+        if index == len(parts) - 1:
+            if not stat.S_ISREG(metadata.st_mode):
+                return None
+            return current
+        if not stat.S_ISDIR(metadata.st_mode):
+            return None
+    return None
 
 
 def _validate_theme_presentation_paths(manifest: ThemeManifest) -> None:
