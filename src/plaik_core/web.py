@@ -65,7 +65,36 @@ _SAFE_STR_CALLABLE_ATTRS = frozenset(
 _SAFE_SEQUENCE_CALLABLE_ATTRS = frozenset({"count", "index"})
 
 
-_WEB_CALLABLE_MARK = "_plaik_web_callable"
+_LAYOUT_TEMPLATE_LIMIT = 256 * 1024
+
+
+class _SafeWebCallable:
+    __slots__ = ("_func",)
+
+    def __init__(self, func: Any) -> None:
+        self._func = func
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._func(*args, **kwargs)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _SafeWebCallable:
+        return self
+
+
+def _allow_web_callable(func: Any) -> _SafeWebCallable:
+    return _SafeWebCallable(func)
+
+
+def _is_environment_callable(environment: SandboxedEnvironment, obj: Any) -> bool:
+    for collection in (
+        environment.globals.values(),
+        environment.filters.values(),
+        environment.tests.values(),
+    ):
+        for item in collection:
+            if item is obj:
+                return True
+    return False
 
 
 def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
@@ -76,11 +105,6 @@ def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
     if type(obj) in {list, tuple}:
         return attr in _SAFE_SEQUENCE_CALLABLE_ATTRS
     return False
-
-
-def _allow_web_callable(func: Any) -> Any:
-    setattr(func, _WEB_CALLABLE_MARK, True)
-    return func
 
 
 def _reject_caller_callables(context: dict[str, Any]) -> None:
@@ -101,11 +125,9 @@ class WebSandboxedEnvironment(SandboxedEnvironment):
         return True
 
     def is_safe_callable(self, obj: Any) -> bool:
-        if getattr(obj, _WEB_CALLABLE_MARK, False) is True:
+        if type(obj) is _SafeWebCallable:
             return True
-        if obj in self.globals.values() or obj in self.filters.values():
-            return super().is_safe_callable(obj)
-        if obj in self.tests.values():
+        if _is_environment_callable(self, obj):
             return super().is_safe_callable(obj)
         return False
 
@@ -590,19 +612,14 @@ class WebRenderer:
         *,
         max_bytes: int | None = None,
     ) -> str:
-        try:
-            if max_bytes is None:
-                source = path.read_text(encoding="utf-8")
-            else:
-                from .theme_composition import (
-                    ThemeCompositionError,
-                    read_bounded_regular_text,
-                )
+        from .theme_composition import ThemeCompositionError, read_bounded_regular_text
 
-                try:
-                    source = read_bounded_regular_text(path, max_bytes)
-                except ThemeCompositionError as error:
-                    raise WebRenderError(str(error)) from error
+        try:
+            limit = max_bytes if max_bytes is not None else _LAYOUT_TEMPLATE_LIMIT
+            try:
+                source = read_bounded_regular_text(path, limit)
+            except ThemeCompositionError as error:
+                raise WebRenderError(str(error)) from error
             template = self.environment.from_string(source)
             return template.render(copy.deepcopy(context))
         except WebRenderError:
