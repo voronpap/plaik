@@ -35,15 +35,50 @@ _MUTATING_METHODS = frozenset(
         "update",
     }
 )
+_SAFE_CALLABLE_ATTRS = frozenset(
+    {
+        "casefold",
+        "copy",
+        "count",
+        "endswith",
+        "find",
+        "format",
+        "get",
+        "index",
+        "isalnum",
+        "isalpha",
+        "isdigit",
+        "isspace",
+        "items",
+        "join",
+        "keys",
+        "lower",
+        "lstrip",
+        "replace",
+        "rfind",
+        "rindex",
+        "rstrip",
+        "split",
+        "startswith",
+        "strip",
+        "title",
+        "upper",
+        "values",
+    }
+)
 
 
 class WebSandboxedEnvironment(SandboxedEnvironment):
-    """Deny mutating methods on context objects passed into theme templates."""
+    """Deny mutating and arbitrary callable attributes on template context objects."""
 
     def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
         if attr in _MUTATING_METHODS:
             return False
-        return super().is_safe_attribute(obj, attr, value)
+        if not super().is_safe_attribute(obj, attr, value):
+            return False
+        if callable(value) and attr not in _SAFE_CALLABLE_ATTRS:
+            return False
+        return True
 
 
 class WebRenderError(RuntimeError):

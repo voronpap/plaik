@@ -23,7 +23,7 @@ from .package_artifacts import (
     PackageArtifactVerifier,
     VerifiedPackageArtifact,
 )
-from .packages import PackageRecord, PackageStatus
+from .packages import PackageRecord, PackageStatus, RESERVED_PACKAGE_IDS
 from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 
@@ -258,7 +258,7 @@ class TransactionalPackageManager:
 
             before = self._read_records()
             existing = before.get(package_id)
-            if package_id == "system-fallback":
+            if package_id in RESERVED_PACKAGE_IDS:
                 self._fail_without_intent(operation_id, "package.reserved")
                 raise TransactionalPackageError("package id is reserved")
             if action == "install" and existing is not None:
