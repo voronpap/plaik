@@ -16,7 +16,12 @@ from pydantic import BaseModel, ConfigDict
 
 from plaik_contracts import PackageManifest, PackageType
 
-from .dependencies import DependencyResolutionError, resolve_install_order, version_matches
+from .dependencies import (
+    DependencyResolutionError,
+    resolve_capabilities,
+    resolve_install_order,
+    version_matches,
+)
 from .operation_journal import OperationJournal, OperationStatus
 from .package_artifacts import (
     INTEGRITY_MARKER_FILENAME,
@@ -420,6 +425,7 @@ class TransactionalPackageManager:
             if action == "enable":
                 try:
                     _require_enabled_dependencies(before, package_id)
+                    _require_enabled_capabilities(before, enabling=package_id)
                 except TransactionalPackageError:
                     self._fail_without_intent(
                         operation_id, "package.dependency_not_enabled"
@@ -431,6 +437,13 @@ class TransactionalPackageManager:
                 if dependents:
                     self._fail_without_intent(operation_id, "package.dependents")
                     raise TransactionalPackageError("enabled dependents block disable")
+                try:
+                    _require_enabled_capabilities(before, disabling=package_id)
+                except TransactionalPackageError:
+                    self._fail_without_intent(
+                        operation_id, "package.capability_dependents"
+                    )
+                    raise
                 status = PackageStatus.DISABLED
             after = dict(before)
             after[package_id] = record.model_copy(update={"status": status})
@@ -930,6 +943,24 @@ def _require_enabled_dependencies(
             raise TransactionalPackageError("required package dependency is not enabled")
         if not version_matches(target.manifest.version, dependency.version):
             raise TransactionalPackageError("required package dependency is incompatible")
+
+
+def _require_enabled_capabilities(
+    records: Mapping[str, PackageRecord],
+    *,
+    enabling: str | None = None,
+    disabling: str | None = None,
+) -> None:
+    selected = {
+        package_id: record.manifest
+        for package_id, record in records.items()
+        if package_id != disabling
+        and (record.status == PackageStatus.ENABLED or package_id == enabling)
+    }
+    try:
+        resolve_capabilities(selected)
+    except DependencyResolutionError as error:
+        raise TransactionalPackageError(str(error)) from error
 
 
 def _required_dependents(

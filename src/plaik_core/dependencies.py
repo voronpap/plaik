@@ -70,6 +70,8 @@ def resolve_install_order(
                     f"found {target.version}"
                 )
 
+    resolve_capabilities(all_packages)
+
     visiting: set[str] = set()
     visited: set[str] = set()
     ordered: list[PackageManifest] = []
@@ -96,3 +98,43 @@ def resolve_install_order(
     for package_id in sorted(candidates):
         visit(package_id, ())
     return ordered
+
+
+def resolve_capabilities(packages: Mapping[str, PackageManifest]) -> None:
+    """Fail closed when a required shared capability is not provided.
+
+    Capability ids are interchangeable contracts. Several packages may provide
+    the same id; Core accepts any matching version and does not select a winner
+    or interpret the capability's business meaning.
+    """
+
+    provided: dict[str, list[tuple[str, str]]] = {}
+    for manifest in packages.values():
+        for capability in manifest.provides:
+            provided.setdefault(capability.id, []).append(
+                (manifest.id, capability.version)
+            )
+
+    for manifest in packages.values():
+        for requirement in manifest.requires:
+            providers = provided.get(requirement.id, [])
+            if any(
+                version_matches(version, requirement.version)
+                for _owner, version in providers
+            ):
+                continue
+            if requirement.optional:
+                continue
+            if providers:
+                found = ", ".join(
+                    f"{owner} {version}"
+                    for owner, version in sorted(providers)
+                )
+                raise DependencyResolutionError(
+                    f"{manifest.id} requires capability {requirement.id} "
+                    f"{requirement.version}; found {found}"
+                )
+            raise DependencyResolutionError(
+                f"{manifest.id} requires missing capability {requirement.id} "
+                f"{requirement.version}"
+            )

@@ -9,7 +9,12 @@ from pydantic import BaseModel, ConfigDict
 
 from plaik_contracts import PackageManifest
 
-from .dependencies import resolve_install_order, version_matches
+from .dependencies import (
+    DependencyResolutionError,
+    resolve_capabilities,
+    resolve_install_order,
+    version_matches,
+)
 from .storage import read_json, write_json_atomic
 
 
@@ -93,6 +98,17 @@ class PackageRegistry:
                     f"cannot enable {package_id}: dependency "
                     f"{dependency.package_id} has incompatible version"
                 )
+        enabled = {
+            other_id: other.manifest
+            for other_id, other in records.items()
+            if other.status == PackageStatus.ENABLED or other_id == package_id
+        }
+        try:
+            resolve_capabilities(enabled)
+        except DependencyResolutionError as error:
+            raise PackageLifecycleError(
+                f"cannot enable {package_id}: {error}"
+            ) from error
         updated = record.model_copy(update={"status": PackageStatus.ENABLED})
         records[package_id] = updated
         self._write(records)
@@ -106,6 +122,17 @@ class PackageRegistry:
             raise PackageLifecycleError(
                 f"cannot disable {package_id}: enabled dependents {sorted(dependents)}"
             )
+        remaining = {
+            other_id: other.manifest
+            for other_id, other in records.items()
+            if other.status == PackageStatus.ENABLED and other_id != package_id
+        }
+        try:
+            resolve_capabilities(remaining)
+        except DependencyResolutionError as error:
+            raise PackageLifecycleError(
+                f"cannot disable {package_id}: {error}"
+            ) from error
         updated = record.model_copy(update={"status": PackageStatus.DISABLED})
         records[package_id] = updated
         self._write(records)
