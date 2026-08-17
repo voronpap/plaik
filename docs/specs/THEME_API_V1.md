@@ -272,10 +272,13 @@ Existing hooks may continue to support simple extension points while slots becom
 Migration should avoid a flag day:
 
 ```text
-existing hooks -> compatibility layer -> v1 slots
+existing HookRegistry  = compatibility path for camelCase web hooks
+new SlotRegistry       = authoritative Theme API v1 path for dotted slots
 ```
 
 Core must not silently reinterpret a hook as a semantically different slot.
+A package contribution is rendered by exactly one of those paths, never both,
+unless the package explicitly declares both a hook and a slot.
 
 ## 11. Theme settings schema
 

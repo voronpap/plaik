@@ -17,6 +17,7 @@ from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 _STORE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 _HOOK_NAME = re.compile(r"^[a-z][A-Za-z0-9]*$")
+_THEME_JSON_FIELDS = {"parent", "layouts", "assets", "hooks", "theme_api", "slots"}
 _MAX_THEME_PRESENTATION_BYTES = 256 * 1024
 _WINDOWS_RESERVED_BASENAMES = {
     "aux",
@@ -93,12 +94,7 @@ class ThemeRegistry:
                         theme_data = json.loads(
                             theme_path.read_text(encoding="utf-8")
                         )
-                        if not isinstance(theme_data, dict) or set(theme_data) - {
-                            "parent",
-                            "layouts",
-                            "assets",
-                            "hooks",
-                        }:
+                        if not isinstance(theme_data, dict) or set(theme_data) - _THEME_JSON_FIELDS:
                             raise ValueError(
                                 f"installed theme {package.id!r} has invalid theme.json"
                             )
@@ -155,12 +151,7 @@ class ThemeRegistry:
             theme_data = json.loads(theme_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ValueError("theme presentation manifest is invalid") from error
-        if not isinstance(theme_data, dict) or set(theme_data) - {
-            "parent",
-            "layouts",
-            "assets",
-            "hooks",
-        }:
+        if not isinstance(theme_data, dict) or set(theme_data) - _THEME_JSON_FIELDS:
             raise ValueError("theme presentation manifest is invalid")
         try:
             manifest = ThemeManifest.model_validate(
@@ -180,6 +171,11 @@ class ThemeRegistry:
             if manifest.parent not in available_theme_ids:
                 raise ValueError(
                     f"theme {manifest.id} requires missing parent {manifest.parent}"
+                )
+            parent = self._themes.get(manifest.parent)
+            if parent is not None and parent.parent is not None:
+                raise ValueError(
+                    f"theme {manifest.id} inheritance depth exceeds 1"
                 )
         if len(manifest.layouts) != len(set(manifest.layouts)):
             raise ValueError("theme candidate contains duplicate layouts")
@@ -256,8 +252,13 @@ class ThemeRegistry:
                     )
                 if current.parent in seen or current.parent == theme.id:
                     raise ValueError(f"theme inheritance cycle involving {theme.id}")
+                parent = self._themes[current.parent]
+                if parent.parent is not None:
+                    raise ValueError(
+                        f"theme {theme.id} inheritance depth exceeds 1"
+                    )
                 seen.add(current.parent)
-                current = self._themes[current.parent]
+                current = parent
 
 
 class ActiveThemeStore:

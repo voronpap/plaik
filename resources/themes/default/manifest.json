@@ -5,6 +5,7 @@
   "name": "PLAIK Default",
   "core": ">=0.1.0",
   "parent": null,
+  "theme_api": 1,
   "layouts": ["full-width"],
   "assets": {
     "css": ["assets/css/theme.css"],
@@ -15,5 +16,15 @@
     "displayHome",
     "displayContent",
     "displayFooter"
+  ],
+  "slots": [
+    "storefront.header.search",
+    "storefront.header.cart",
+    "storefront.product.after-price",
+    "storefront.product.purchase",
+    "storefront.product.reviews",
+    "storefront.cart.summary",
+    "storefront.checkout.shipping",
+    "control.order.sidebar"
   ]
 }

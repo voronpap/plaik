@@ -20,6 +20,7 @@ from .app import create_app as create_core_app
 from .audit import AuditOutcome
 from .config import CoreSettings
 from .hooks import HookRegistry
+from .slots import SlotRegistry
 from .installer import InstallState
 from .installer_config import InstallerConfigurationStore
 from .pairing import PairingStore, mount_pairing_activate
@@ -1027,12 +1028,16 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
     manager = core.state.theme_manager
     default_theme = registry.require_default()
     allowed_hooks = set(default_theme.hooks)
+    allowed_slots = set(default_theme.slots)
     for theme in registry.discover().values():
         allowed_hooks.update(theme.hooks)
+        allowed_slots.update(theme.slots)
     renderer = WebRenderer(
         theme_manager=manager,
         theme_registry=registry,
         hook_registry=HookRegistry(allowed_hooks),
+        slot_registry=SlotRegistry(allowed_slots),
+        system_fallback_root=runtime.system_fallback_dir,
         template_resolver=TemplateResolver(
             registry,
             runtime.modules_dir,
@@ -1096,6 +1101,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
             headers={
                 "Content-Language": locale,
                 "X-Web-Theme": rendered.theme_id,
+                "X-Web-Source": rendered.source,
             },
         )
 

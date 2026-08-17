@@ -27,6 +27,8 @@
       <nav aria-label="Головна навігація">
         <a href="#capabilities">Можливості</a>
         <a href="#status">Статус</a>
+        {{ slot("storefront.header.search") }}
+        {{ slot("storefront.header.cart") }}
       </nav>
     </header>
     <main id="main-content">

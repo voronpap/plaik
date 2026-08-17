@@ -118,6 +118,12 @@ def build_package_manager(
             hooks.update(theme.hooks)
         return hooks
 
+    def allowed_slots() -> set[str]:
+        slots: set[str] = set()
+        for theme in theme_registry.discover().values():
+            slots.update(theme.slots)
+        return slots
+
     def available_themes(
         records: Mapping[str, PackageRecord],
         *,
@@ -158,6 +164,7 @@ def build_package_manager(
                     staging,
                     manifest,
                     allowed_hooks=allowed_hooks(),
+                    allowed_slots=allowed_slots(),
                 )
         except PackageDeclarationError as error:
             raise TransactionalPackageError(str(error)) from None
@@ -193,6 +200,7 @@ def build_package_manager(
                     package_root,
                     record.manifest,
                     allowed_hooks=allowed_hooks(),
+                    allowed_slots=allowed_slots(),
                 )
         except TransactionalPackageError:
             raise
