@@ -479,48 +479,61 @@ class WebRenderer:
         )
 
     def _render_resolved_section(self, section, extra_context, helpers) -> str:
-        path = _regular_layout_file(
-            self.theme_registry.path(section.theme_id),
-            Path("templates") / Path(*PurePosixPath(section.template).parts),
-        )
-        if path is None:
-            raise WebRenderError("composition template is missing")
         blocks = tuple(
             Markup(self._render_resolved_block(block, extra_context, helpers))
             for block in section.blocks
         )
-        return self._render_template(
-            path,
+        return self._render_composition_template(
+            section.theme_id,
+            section.template,
             {
                 **extra_context,
                 **helpers,
                 "settings": dict(section.settings),
                 "blocks": blocks,
             },
-            max_bytes=_composition_template_limit(),
         )
 
     def _render_resolved_block(self, block, extra_context, helpers) -> str:
-        path = _regular_layout_file(
-            self.theme_registry.path(block.theme_id),
-            Path("templates") / Path(*PurePosixPath(block.template).parts),
-        )
-        if path is None:
-            raise WebRenderError("composition template is missing")
         blocks = tuple(
             Markup(self._render_resolved_block(child, extra_context, helpers))
             for child in block.blocks
         )
-        return self._render_template(
-            path,
+        return self._render_composition_template(
+            block.theme_id,
+            block.template,
             {
                 **extra_context,
                 **helpers,
                 "settings": dict(block.settings),
                 "blocks": blocks,
             },
-            max_bytes=_composition_template_limit(),
         )
+
+    def _render_composition_template(
+        self, theme_id: str, template: str, context: dict[str, Any]
+    ) -> str:
+        from .theme_composition import (
+            MAX_COMPOSITION_TEMPLATE_BYTES,
+            ThemeCompositionError,
+            read_bounded_contained_text,
+        )
+
+        relative = Path("templates") / Path(*PurePosixPath(template).parts)
+        try:
+            source = read_bounded_contained_text(
+                self.theme_registry.path(theme_id),
+                relative,
+                MAX_COMPOSITION_TEMPLATE_BYTES,
+            )
+        except ThemeCompositionError as error:
+            raise WebRenderError(str(error)) from error
+        try:
+            return self.environment.from_string(source).render(copy.deepcopy(context))
+        except WebRenderError:
+            raise
+        except Exception:
+            raise WebRenderError("web template rendering failed") from None
 
     def asset_path(self, theme_id: str, relative_path: str) -> Path:
         safe_theme = _safe_segment(theme_id)

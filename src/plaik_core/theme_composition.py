@@ -440,41 +440,72 @@ def _add_bytes(total: int, size: int) -> int:
     return total
 
 
-def read_bounded_regular_text(path: Path, max_bytes: int) -> str:
-    """Read one regular UTF-8 file via O_NOFOLLOW without following a swap."""
-
-    target = Path(path)
-    if not hasattr(os, "O_NOFOLLOW") and target.is_symlink():
-        raise ThemeCompositionError("composition file is missing or unsafe")
+def _openat_flags(*, directory: bool) -> int:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if directory:
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def _openat_regular_file(base: Path, relative: Path) -> int:
+    """Open a contained regular file; every path component uses O_NOFOLLOW."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ThemeCompositionError("composition file is missing or unsafe")
+    parts = Path(relative).parts
+    if not parts or Path(relative).is_absolute():
+        raise ThemeCompositionError("composition file is missing or unsafe")
+    owned: list[int] = []
+    file_fd: int | None = None
     try:
-        descriptor = os.open(target, flags)
+        current = os.open(base, _openat_flags(directory=True))
+        owned.append(current)
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            nxt = os.open(part, _openat_flags(directory=not last), dir_fd=current)
+            if last:
+                file_fd = nxt
+            else:
+                owned.append(nxt)
+                current = nxt
+        if file_fd is None:
+            raise ThemeCompositionError("composition file is missing or unsafe")
+        metadata = os.fstat(file_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            os.close(file_fd)
+            file_fd = None
+            raise ThemeCompositionError("composition file is missing or unsafe")
+        return file_fd
     except OSError as error:
+        if file_fd is not None:
+            os.close(file_fd)
+            file_fd = None
         raise ThemeCompositionError("composition file is missing or unsafe") from error
+    finally:
+        for descriptor in owned:
+            os.close(descriptor)
+
+
+def read_bounded_contained_text(base: Path, relative: Path, max_bytes: int) -> str:
+    """Read one contained UTF-8 file through descriptor-anchored O_NOFOLLOW."""
+
+    _, validate_segment = _theme_file_helpers()
+    for part in Path(relative).parts:
+        validate_segment(part, error="invalid composition path")
+    descriptor = _openat_regular_file(base, relative)
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+        if metadata.st_size > max_bytes:
             raise ThemeCompositionError("composition document is too large")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             payload = stream.read(max_bytes + 1)
-        try:
-            after = os.fstat(descriptor)
-            current = os.stat(target, follow_symlinks=False)
-        except OSError as error:
-            raise ThemeCompositionError("composition file is missing or unsafe") from error
+        after = os.fstat(descriptor)
         if (
             len(payload) > max_bytes
             or len(payload) != metadata.st_size
             or after.st_dev != metadata.st_dev
             or after.st_ino != metadata.st_ino
             or after.st_size != metadata.st_size
-            or after.st_mtime_ns != metadata.st_mtime_ns
-            or after.st_ctime_ns != metadata.st_ctime_ns
-            or stat.S_ISLNK(current.st_mode)
-            or not stat.S_ISREG(current.st_mode)
-            or current.st_dev != after.st_dev
-            or current.st_ino != after.st_ino
-            or current.st_size != after.st_size
         ):
             raise ThemeCompositionError("composition file is missing or unsafe")
         try:
@@ -483,6 +514,13 @@ def read_bounded_regular_text(path: Path, max_bytes: int) -> str:
             raise ThemeCompositionError("composition document is invalid") from error
     finally:
         os.close(descriptor)
+
+
+def read_bounded_regular_text(path: Path, max_bytes: int) -> str:
+    """Last-component O_NOFOLLOW read for already-resolved layout files."""
+
+    target = Path(path)
+    return read_bounded_contained_text(target.parent, Path(target.name), max_bytes)
 
 
 def _json_nesting_too_deep(text: str, limit: int) -> bool:
@@ -513,13 +551,7 @@ def _json_nesting_too_deep(text: str, limit: int) -> bool:
 def _read_declared_json(
     directory: Path, relative: Path, *, max_bytes: int
 ) -> tuple[dict[str, Any], int]:
-    contained_file, _validate_safe_path_segment = _theme_file_helpers()
-    for part in relative.parts:
-        _validate_safe_path_segment(part, error="invalid composition path")
-    path = contained_file(directory, relative)
-    if path is None:
-        raise ThemeCompositionError("composition file is missing or unsafe")
-    text = read_bounded_regular_text(path, max_bytes)
+    text = read_bounded_contained_text(directory, relative, max_bytes)
     if _json_nesting_too_deep(text, MAX_JSON_NESTING_DEPTH):
         raise ThemeCompositionError("composition document is invalid")
     try:
@@ -538,14 +570,10 @@ def _read_declared_json(
 
 
 def _require_template_file(directory: Path, template: str) -> int:
-    contained_file, _validate_safe_path_segment = _theme_file_helpers()
     relative = Path("templates") / Path(*PurePosixPath(template).parts)
-    for part in relative.parts:
-        _validate_safe_path_segment(part, error="invalid composition path")
-    path = contained_file(directory, relative)
-    if path is None:
-        raise ThemeCompositionError("composition template is missing or unsafe")
-    text = read_bounded_regular_text(path, MAX_COMPOSITION_TEMPLATE_BYTES)
+    text = read_bounded_contained_text(
+        directory, relative, MAX_COMPOSITION_TEMPLATE_BYTES
+    )
     return len(text.encode("utf-8"))
 
 
