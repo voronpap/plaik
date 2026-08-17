@@ -54,6 +54,57 @@ class ThemeRegistry:
         self._themes: dict[str, ThemeManifest] = {}
         self._locations: dict[str, Path] = {}
 
+    def _parse_theme_directory(self, directory: Path) -> ThemeManifest | None:
+        directory = Path(directory)
+        manifest_path = directory / "manifest.json"
+        if not directory.is_dir() or not manifest_path.is_file():
+            return None
+        if directory.is_symlink() or manifest_path.is_symlink():
+            raise ValueError("theme discovery does not follow symlinks")
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("type") != "theme":
+            return None
+        try:
+            manifest = ThemeManifest.model_validate(raw)
+        except ValidationError:
+            package = PackageManifest.model_validate(raw)
+            theme_path = directory / "theme.json"
+            if not theme_path.is_file() or theme_path.is_symlink():
+                raise ValueError(
+                    f"installed theme {package.id!r} is missing theme.json"
+                ) from None
+            theme_data = json.loads(theme_path.read_text(encoding="utf-8"))
+            if not isinstance(theme_data, dict) or set(theme_data) - _THEME_JSON_FIELDS:
+                raise ValueError(
+                    f"installed theme {package.id!r} has invalid theme.json"
+                )
+            manifest = ThemeManifest.model_validate(
+                {
+                    "id": package.id,
+                    "type": "theme",
+                    "version": package.version,
+                    "name": package.name,
+                    "core": package.core,
+                    **theme_data,
+                }
+            )
+        _safe_package_id(manifest.id)
+        _validate_theme_presentation_paths(manifest)
+        if manifest.id != directory.name:
+            raise ValueError(
+                f"theme directory {directory.name!r} does not match manifest id {manifest.id!r}"
+            )
+        return manifest
+
+    def _read_theme_manifest(self, theme_id: str) -> ThemeManifest | None:
+        """Load a parent from registry roots, never from the discover cache."""
+
+        for root in self.roots:
+            parsed = self._parse_theme_directory(Path(root) / theme_id)
+            if parsed is not None:
+                return parsed
+        return None
+
     def discover(self) -> dict[str, ThemeManifest]:
         themes: dict[str, ThemeManifest] = {}
         locations: dict[str, Path] = {}
@@ -77,43 +128,9 @@ class ThemeRegistry:
                     continue
                 manifest_path = directory / "manifest.json"
                 if directory.is_dir() and manifest_path.is_file():
-                    if directory.is_symlink() or manifest_path.is_symlink():
-                        raise ValueError("theme discovery does not follow symlinks")
-                    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if not isinstance(raw, dict) or raw.get("type") != "theme":
+                    manifest = self._parse_theme_directory(directory)
+                    if manifest is None:
                         continue
-                    try:
-                        manifest = ThemeManifest.model_validate(raw)
-                    except ValidationError:
-                        package = PackageManifest.model_validate(raw)
-                        theme_path = directory / "theme.json"
-                        if not theme_path.is_file() or theme_path.is_symlink():
-                            raise ValueError(
-                                f"installed theme {package.id!r} is missing theme.json"
-                            ) from None
-                        theme_data = json.loads(
-                            theme_path.read_text(encoding="utf-8")
-                        )
-                        if not isinstance(theme_data, dict) or set(theme_data) - _THEME_JSON_FIELDS:
-                            raise ValueError(
-                                f"installed theme {package.id!r} has invalid theme.json"
-                            )
-                        manifest = ThemeManifest.model_validate(
-                            {
-                                "id": package.id,
-                                "type": "theme",
-                                "version": package.version,
-                                "name": package.name,
-                                "core": package.core,
-                                **theme_data,
-                            }
-                        )
-                    _safe_package_id(manifest.id)
-                    _validate_theme_presentation_paths(manifest)
-                    if manifest.id != directory.name:
-                        raise ValueError(
-                            f"theme directory {directory.name!r} does not match manifest id {manifest.id!r}"
-                        )
                     if manifest.id in themes:
                         raise ValueError(f"duplicate theme id: {manifest.id}")
                     themes[manifest.id] = manifest
@@ -172,8 +189,12 @@ class ThemeRegistry:
                 raise ValueError(
                     f"theme {manifest.id} requires missing parent {manifest.parent}"
                 )
-            parent = self._themes.get(manifest.parent)
-            if parent is not None and parent.parent is not None:
+            parent = self._read_theme_manifest(manifest.parent)
+            if parent is None:
+                raise ValueError(
+                    f"theme {manifest.id} requires missing parent {manifest.parent}"
+                )
+            if parent.parent is not None:
                 raise ValueError(
                     f"theme {manifest.id} inheritance depth exceeds 1"
                 )
@@ -373,9 +394,12 @@ class ThemeManager:
         self.state = state
 
     def active(self, store_id: str = "default") -> ThemeManifest:
-        self.registry.require_default()
+        self.registry.discover()
         theme_id = self.state.get(store_id)
-        return self.registry.get(theme_id) or self.registry.require_default()
+        theme = self.registry.get(theme_id)
+        if theme is None:
+            raise KeyError(f"theme not found: {theme_id}")
+        return theme
 
     def activate(self, theme_id: str, store_id: str = "default") -> ThemeManifest:
         self.registry.require_default()
@@ -466,6 +490,7 @@ def _safe_package_id(value: str) -> str:
     if (
         not isinstance(value, str)
         or len(value) > 64
+        or value == "system-fallback"
         or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", value)
     ):
         raise ValueError("invalid theme id")

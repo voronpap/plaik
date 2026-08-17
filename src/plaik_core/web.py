@@ -91,7 +91,14 @@ class WebRenderer:
             raise WebRenderError("web context overrides reserved names")
 
         # Theme selection is deliberately the first stateful lookup in SSR.
-        active = self.theme_manager.active(store_id)
+        try:
+            active = self.theme_manager.active(store_id)
+        except KeyError:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
         chain = self.theme_registry.inheritance_chain(active.id)
         layout_path = self._resolve_layout(chain, safe_layout)
         if layout_path is None:

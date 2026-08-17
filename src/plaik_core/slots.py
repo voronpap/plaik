@@ -45,7 +45,9 @@ class SlotRegistry:
         ):
             raise ValueError("invalid module id")
         _validate_path_segment(binding.module_id, error="invalid module id")
-        if not _is_safe_relative_path(binding.template):
+        if not _is_safe_relative_path(binding.template) or not binding.template.endswith(
+            ".html"
+        ):
             raise ValueError("invalid template")
         self._bindings.add(binding)
 
