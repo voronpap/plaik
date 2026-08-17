@@ -46,12 +46,32 @@ from .identity import (
     UserRecord,
 )
 
-
 _COOKIE_NAME = re.compile(r"^__Host-[A-Za-z0-9_-]{1,64}$")
 _HEADER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9-]{1,63}$")
 _PERMISSION = re.compile(r"^[a-z][a-z0-9_.:-]{1,127}(?:\.\*)?$|^\*$")
 _BOOTSTRAP_NONCE = re.compile(r"^[A-Za-z0-9_-]{40,64}$")
 _HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def request_host_is_loopback(request: Request) -> bool:
+    raw = (request.headers.get("host") or "").strip().casefold()
+    if raw.startswith("["):
+        end = raw.find("]")
+        host = raw[1:end] if end > 1 else ""
+    else:
+        host = raw.split(":", 1)[0]
+    return host in _LOOPBACK_HOSTS
+
+
+def request_is_wan_control(request: Request, control_hostname: str | None) -> bool:
+    """True when the request is not loopback and Remote Control is advertised."""
+
+    if not control_hostname:
+        return False
+    return not request_host_is_loopback(request)
 
 
 class PublicIdentity(BaseModel):
@@ -116,6 +136,10 @@ class HttpAuthPolicy(BaseModel):
     )
     session_cookie_name: str = Field(
         default="__Host-plaik-session",
+        pattern=_COOKIE_NAME.pattern,
+    )
+    control_session_cookie_name: str = Field(
+        default="__Host-plaik_control_session",
         pattern=_COOKIE_NAME.pattern,
     )
     csrf_cookie_name: str = Field(
@@ -342,6 +366,7 @@ class HttpAuth:
         policy: HttpAuthPolicy | None = None,
         rate_limiter: LoginRateLimiter | None = None,
         audit_checkpoint: Callable[[AuditEvent], None] | Callable[[], None] | None = None,
+        wan_control_hostname: Callable[[], str | None] | None = None,
     ) -> None:
         if not isinstance(csrf_key, (bytes, bytearray)) or len(csrf_key) < 32:
             raise ValueError("CSRF integrity key must contain at least 32 bytes")
@@ -356,6 +381,12 @@ class HttpAuth:
         self.policy = policy or HttpAuthPolicy()
         if self.policy.session_cookie_name == self.policy.csrf_cookie_name:
             raise ValueError("session and CSRF cookie names must differ")
+        if self.policy.control_session_cookie_name in {
+            self.policy.session_cookie_name,
+            self.policy.csrf_cookie_name,
+        }:
+            raise ValueError("control session cookie name must be distinct")
+        self._wan_control_hostname = wan_control_hostname
         self.rate_limiter = (
             rate_limiter if rate_limiter is not None else LoginRateLimiter()
         )
@@ -370,10 +401,20 @@ class HttpAuth:
     def __repr__(self) -> str:
         return f"HttpAuth(route_prefix={self.policy.route_prefix!r})"
 
+    def _raw_session_token(self, request: Request) -> str | None:
+        control = request.cookies.get(self.policy.control_session_cookie_name)
+        loopback = request.cookies.get(self.policy.session_cookie_name)
+        advertised = (
+            self._wan_control_hostname() if self._wan_control_hostname is not None else None
+        )
+        if advertised and not request_host_is_loopback(request):
+            return control
+        return loopback or control
+
     def authenticate(self, request: Request) -> AuthenticatedPrincipal:
         """FastAPI dependency: require a valid session and an active identity."""
 
-        raw_token = request.cookies.get(self.policy.session_cookie_name)
+        raw_token = self._raw_session_token(request)
         if not raw_token:
             self._deny_authentication(request)
         try:
@@ -539,6 +580,14 @@ class HttpAuth:
         return router
 
     async def _login(self, request: Request, response: Response) -> LoginResponse:
+        if self._wan_control_hostname is not None and request_is_wan_control(
+            request, self._wan_control_hostname()
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="not found",
+                headers={"Cache-Control": "no-store"},
+            )
         client_key = self.rate_limiter.key_for(request)
         try:
             self.rate_limiter.check(client_key)
@@ -645,7 +694,7 @@ class HttpAuth:
             ) from None
 
     def _optional_principal(self, request: Request) -> AuthenticatedPrincipal | None:
-        raw_token = request.cookies.get(self.policy.session_cookie_name)
+        raw_token = self._raw_session_token(request)
         if not raw_token:
             return None
         try:
@@ -821,6 +870,13 @@ class HttpAuth:
     def _clear_cookies(self, response: Response) -> None:
         response.delete_cookie(
             self.policy.session_cookie_name,
+            path=self.policy.cookie_path,
+            secure=self.policy.cookie_secure,
+            httponly=True,
+            samesite=self.policy.cookie_same_site,
+        )
+        response.delete_cookie(
+            self.policy.control_session_cookie_name,
             path=self.policy.cookie_path,
             secure=self.policy.cookie_secure,
             httponly=True,

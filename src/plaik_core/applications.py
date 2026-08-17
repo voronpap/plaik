@@ -23,6 +23,7 @@ from .hooks import HookRegistry
 from .installer import InstallState
 from .installer_config import InstallerConfigurationStore
 from .pairing import PairingStore, mount_pairing_activate
+from .passkeys import PasskeyStore, mount_passkey_activate, mount_passkey_login
 from .remote_control import RemoteControlStore
 from .observability import (
     CorrelationMiddleware,
@@ -259,13 +260,39 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
     )
     _safe_validation(application)
     _copy_state(core, application)
+    remote_store = RemoteControlStore(runtime.remote_control_path)
+    pairing_store = PairingStore(runtime.remote_control_pairing_path)
+    passkey_store = PasskeyStore(runtime.admin_passkeys_path)
     mount_pairing_activate(
         application,
-        remote_store=RemoteControlStore(runtime.remote_control_path),
-        pairing_store=PairingStore(runtime.remote_control_pairing_path),
+        remote_store=remote_store,
+        pairing_store=pairing_store,
         installation_id_provider=lambda: _installation_id(runtime),
         install_state_provider=lambda: application.state.install_store.read(),
     )
+    sessions = None
+    if application.state.install_store.read() == InstallState.COMPLETED:
+        sessions, _, _ = core.state.security_services(create_missing=False)
+    mount_passkey_activate(
+        application,
+        remote_store=remote_store,
+        pairing_store=pairing_store,
+        passkey_store=passkey_store,
+        identity_store=application.state.identity_store,
+        session_store=sessions,
+        installation_id_provider=lambda: _installation_id(runtime),
+        install_state_provider=lambda: application.state.install_store.read(),
+    )
+    if sessions is not None:
+        mount_passkey_login(
+            application,
+            remote_store=remote_store,
+            passkey_store=passkey_store,
+            identity_store=application.state.identity_store,
+            session_store=sessions,
+            installation_id_provider=lambda: _installation_id(runtime),
+            install_state_provider=lambda: application.state.install_store.read(),
+        )
 
     @application.get("/health")
     def admin_health(response: Response) -> dict:

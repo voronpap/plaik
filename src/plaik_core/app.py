@@ -31,6 +31,7 @@ from .integrity import (
     JournalKind,
 )
 from .postgresql_integrity import PostgreSQLCheckpointStore
+from .remote_control import RemoteControlStore
 from .installer import (
     INSTALL_SEQUENCE,
     InstallState,
@@ -389,12 +390,19 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         csrf_key = providers.resolve(csrf_key_reference)
         from .http_auth import HttpAuth
 
+        def wan_control_hostname() -> str | None:
+            record = RemoteControlStore(runtime.remote_control_path).read()
+            if record.intent is None:
+                return None
+            return record.intent.control_hostname
+
         adapter = HttpAuth(
             identity_store,
             sessions,
             audit,
             csrf_key=csrf_key.get_secret_value().encode("utf-8"),
             audit_checkpoint=anchor_audit_event,
+            wan_control_hostname=wan_control_hostname,
         )
         application.state.http_auth = adapter
         return adapter
