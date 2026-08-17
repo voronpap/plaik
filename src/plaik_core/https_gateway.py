@@ -3,7 +3,8 @@
 This layer runs ``plan → validate → apply → verify → inspect`` against the
 current ``RemoteControlRecord``. It never binds WAN listeners itself, never
 writes nginx configuration, never reopens the installer, and never moves
-installation off ``COMPLETED``.
+installation off ``COMPLETED``. After a CONTROL_CENTER inspection of
+``PUBLICATION_PENDING``, it persists observed ``ENABLED``.
 
 Provider side effects are serialized by a dedicated cross-process lock, separate
 from the RemoteControlStore lock. Core persists ``ERROR`` (derived CLOSED) only
@@ -122,9 +123,9 @@ def _assert_record_current(
         )
 
 
-def _assert_inspection_matches_record(
+def _assert_inspection_matches_plan(
     inspection: GatewayInspection,
-    record: RemoteControlRecord,
+    plan: GatewayPlan,
     expected_provider: GatewayProviderName,
 ) -> None:
     if inspection.control_port_public:
@@ -135,9 +136,9 @@ def _assert_inspection_matches_record(
         raise GatewayTransactionError(
             "gateway inspection provider does not match the stored intent"
         )
-    if inspection.wan_surface is not record.wan_surface:
+    if inspection.wan_surface is not plan.wan_surface:
         raise GatewayTransactionError(
-            "gateway inspection wan_surface does not match the validated record"
+            "gateway inspection wan_surface does not match the published plan"
         )
 
 
@@ -247,8 +248,8 @@ class HttpsGatewayTransaction:
                 _assert_record_current(self._store, record)
                 inspection = self._provider.inspect()
                 steps.append("inspect")
-                _assert_inspection_matches_record(
-                    inspection, record, expected_provider
+                _assert_inspection_matches_plan(
+                    inspection, plan, expected_provider
                 )
                 _assert_record_current(self._store, record)
             except GatewayTransactionError as error:
@@ -260,8 +261,25 @@ class HttpsGatewayTransaction:
             except Exception as error:
                 error_code = "gateway_inspect_failed"
                 raise GatewayTransactionError("gateway inspect failed") from error
+            persisted = record
+            if (
+                record.status is RemoteControlStatus.PUBLICATION_PENDING
+                and plan.wan_surface is WanSurface.CONTROL_CENTER
+            ):
+                try:
+                    persisted = self._store.observe_control_center(
+                        record,
+                        inspection=inspection,
+                        install_state=install_state,
+                    )
+                    steps.append("observe")
+                except InvalidRemoteControlTransition as error:
+                    error_code = "gateway_record_drifted"
+                    raise GatewayTransactionError(
+                        "remote control record drifted during gateway observation"
+                    ) from error
             return HttpsGatewayTransactionResult(
-                record=record,
+                record=persisted,
                 applied=True,
                 steps=tuple(steps),
             )
