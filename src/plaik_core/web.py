@@ -475,6 +475,7 @@ class WebRenderer:
                 "settings": dict(section.settings),
                 "blocks": blocks,
             },
+            max_bytes=_composition_template_limit(),
         )
 
     def _render_resolved_block(self, block, extra_context, helpers) -> str:
@@ -496,6 +497,7 @@ class WebRenderer:
                 "settings": dict(block.settings),
                 "blocks": blocks,
             },
+            max_bytes=_composition_template_limit(),
         )
 
     def asset_path(self, theme_id: str, relative_path: str) -> Path:
@@ -581,15 +583,38 @@ class WebRenderer:
                 seen.add(key)
         return tuple(urls)
 
-    def _render_template(self, path: Path, context: dict[str, Any]) -> str:
+    def _render_template(
+        self,
+        path: Path,
+        context: dict[str, Any],
+        *,
+        max_bytes: int | None = None,
+    ) -> str:
         try:
-            source = path.read_text(encoding="utf-8")
+            if max_bytes is None:
+                source = path.read_text(encoding="utf-8")
+            else:
+                from .theme_composition import (
+                    ThemeCompositionError,
+                    read_bounded_regular_text,
+                )
+
+                try:
+                    source = read_bounded_regular_text(path, max_bytes)
+                except ThemeCompositionError as error:
+                    raise WebRenderError(str(error)) from error
             template = self.environment.from_string(source)
             return template.render(copy.deepcopy(context))
         except WebRenderError:
             raise
         except Exception:
             raise WebRenderError("web template rendering failed") from None
+
+
+def _composition_template_limit() -> int:
+    from .theme_composition import MAX_COMPOSITION_TEMPLATE_BYTES
+
+    return MAX_COMPOSITION_TEMPLATE_BYTES
 
 
 def _safe_layout(value: str) -> str:

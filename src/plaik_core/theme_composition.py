@@ -117,7 +117,9 @@ def load_theme_composition_catalog(
             raise ThemeCompositionError("section definition is invalid") from error
         if definition.type != type_id:
             raise ThemeCompositionError("section type does not match file")
-        _require_template_file(directory, definition.template)
+        total_bytes = _add_bytes(
+            total_bytes, _require_template_file(directory, definition.template)
+        )
         sections[type_id] = BoundSectionDefinition(manifest.id, definition)
     _reject_undeclared_json(directory / "sections", set(manifest.sections))
 
@@ -135,7 +137,9 @@ def load_theme_composition_catalog(
             raise ThemeCompositionError("block definition is invalid") from error
         if definition.type != type_id:
             raise ThemeCompositionError("block type does not match file")
-        _require_template_file(directory, definition.template)
+        total_bytes = _add_bytes(
+            total_bytes, _require_template_file(directory, definition.template)
+        )
         blocks[type_id] = BoundBlockDefinition(manifest.id, definition)
     _reject_undeclared_json(directory / "blocks", set(manifest.blocks))
 
@@ -533,7 +537,7 @@ def _read_declared_json(
     return payload, len(text.encode("utf-8"))
 
 
-def _require_template_file(directory: Path, template: str) -> None:
+def _require_template_file(directory: Path, template: str) -> int:
     contained_file, _validate_safe_path_segment = _theme_file_helpers()
     relative = Path("templates") / Path(*PurePosixPath(template).parts)
     for part in relative.parts:
@@ -541,7 +545,8 @@ def _require_template_file(directory: Path, template: str) -> None:
     path = contained_file(directory, relative)
     if path is None:
         raise ThemeCompositionError("composition template is missing or unsafe")
-    read_bounded_regular_text(path, MAX_COMPOSITION_TEMPLATE_BYTES)
+    text = read_bounded_regular_text(path, MAX_COMPOSITION_TEMPLATE_BYTES)
+    return len(text.encode("utf-8"))
 
 
 def _reject_undeclared_json(directory: Path, declared: set[str]) -> None:
