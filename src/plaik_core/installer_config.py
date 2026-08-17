@@ -207,8 +207,12 @@ class InstallerConfiguration(BaseModel):
 
     def redacted(self) -> dict[str, Any]:
         output = self.model_dump(mode="json")
-        if isinstance(self.database, PostgreSQLDatabase):
-            output["database"]["credential"] = self.database.credential.redacted()
+        database = output.get("database")
+        if isinstance(self.database, PostgreSQLDatabase) and isinstance(database, dict):
+            for field in ("credential", "runtime_credential", "checkpoint_credential"):
+                value = getattr(self.database, field)
+                if value is not None:
+                    database[field] = value.redacted()
         return output
 
     def fingerprint(self) -> str:

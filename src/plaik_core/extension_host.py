@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from plaik_contracts import ScopeRef, SecretReference
+from plaik_contracts import ScopeRef
 from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
@@ -21,7 +21,7 @@ from plaik_sdk import (
     SlotContributor,
 )
 
-from .connection_store import ConnectionStore
+from .connection_store import ConnectionStore, ConnectionStoreError
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import DurableJobQueue
@@ -40,21 +40,20 @@ class _NullSettings(SettingsReader):
 
 
 class _OwnerSecrets(SecretReader):
-    def __init__(
-        self,
-        providers: SecretProviderRegistry | None,
-        allowed: Mapping[str, SecretReference],
-    ) -> None:
-        self._providers = providers
-        self._allowed = dict(allowed)
+    def __init__(self, host: ExtensionHost, owner: str) -> None:
+        self._host = host
+        self._owner = owner
 
     def get(self, key: str) -> SecretValue:
-        reference = self._allowed.get(key)
-        if reference is None:
-            raise SecretNotFoundError(f"secret is not granted to this package: {key}")
-        if self._providers is None:
+        try:
+            connection = self._host._connections.get(self._owner, key)
+        except ConnectionStoreError as error:
+            raise SecretNotFoundError(
+                f"secret is not granted to this package: {key}"
+            ) from error
+        if self._host._secrets is None:
             raise SecretNotFoundError("secret providers are unavailable")
-        return self._providers.resolve(reference)
+        return self._host._secrets.resolve(connection.secret)
 
 
 class _OwnerServices(ServiceResolver):
@@ -203,16 +202,12 @@ class ExtensionHost:
         locale: str,
     ) -> ExtensionRuntime:
         store_id = scope.store_id or scope.group_id or scope.installation_id
-        allowed = {
-            connection.id: connection.secret
-            for connection in self._connections.list_for_owner(package_id)
-        }
         return ExtensionRuntime(
             package_id=package_id,
             store_id=store_id,
             locale=locale,
             settings=_NullSettings(),
-            secrets=_OwnerSecrets(self._secrets, allowed),
+            secrets=_OwnerSecrets(self, package_id),
             services=_OwnerServices(self._services),
             events=_OwnerEvents(self._events, package_id),
             jobs=_OwnerJobs(self._jobs),
