@@ -19,7 +19,6 @@ from . import __version__
 from .app import create_app as create_core_app
 from .audit import AuditOutcome
 from .config import CoreSettings
-from .hooks import HookRegistry
 from .installer import InstallState
 from .installer_config import InstallerConfigurationStore
 from .pairing import PairingStore, mount_pairing_activate
@@ -47,7 +46,7 @@ from .packages import PackageStatus
 from .signing_keys import SigningKeyStoreError
 from .storage import exclusive_file_lock
 from .web import WebRenderError, WebRenderer
-from .web_extensions import project_enabled_hooks
+from .web_extensions import project_enabled_hooks, project_enabled_slots
 from .theme_operations import ThemeActivationCoordinator, ThemeOperationError
 from .themes import TemplateResolver
 
@@ -1034,14 +1033,27 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
     core = create_core_app(runtime)
     registry = core.state.theme_registry
     manager = core.state.theme_manager
-    default_theme = registry.require_default()
-    allowed_hooks = set(default_theme.hooks)
-    for theme in registry.discover().values():
+    discovered = registry.discover()
+    allowed_hooks: set[str] = set()
+    allowed_slots: set[str] = set()
+    for theme in discovered.values():
         allowed_hooks.update(theme.hooks)
+        allowed_slots.update(theme.slots)
+    records = core.state.package_registry.records()
     renderer = WebRenderer(
         theme_manager=manager,
         theme_registry=registry,
-        hook_registry=HookRegistry(allowed_hooks),
+        hook_registry=project_enabled_hooks(
+            records,
+            runtime.installed_packages_dir,
+            allowed_hooks=allowed_hooks,
+        ),
+        slot_registry=project_enabled_slots(
+            records,
+            runtime.installed_packages_dir,
+            allowed_slots=allowed_slots,
+        ),
+        system_fallback_root=runtime.system_fallback_dir,
         template_resolver=TemplateResolver(
             registry,
             runtime.modules_dir,
@@ -1105,6 +1117,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
             headers={
                 "Content-Language": locale,
                 "X-Web-Theme": rendered.theme_id,
+                "X-Web-Source": rendered.source,
             },
         )
 

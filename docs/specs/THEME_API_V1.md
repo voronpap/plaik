@@ -272,10 +272,19 @@ Existing hooks may continue to support simple extension points while slots becom
 Migration should avoid a flag day:
 
 ```text
-existing hooks -> compatibility layer -> v1 slots
+existing HookRegistry  = compatibility path for camelCase web hooks
+new SlotRegistry       = authoritative Theme API v1 path for dotted slots
 ```
 
 Core must not silently reinterpret a hook as a semantically different slot.
+A package contribution is rendered by exactly one of those paths, never both,
+unless the package explicitly declares both a hook and a slot.
+
+Theme API v1 `web.slots` / `SlotRegistry` is not the kernel
+`ExtensionRuntime.slots` / `RenderSlotRegistry` surface used by package
+`register(runtime)`. Storefront contributions must be declared on
+`PackageManifest.web.slots`; a kernel slot bind does not appear in Theme API
+SSR.
 
 ## 11. Theme settings schema
 

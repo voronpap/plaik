@@ -14,7 +14,7 @@ dependencies = [
   "fastapi==0.138.2",
   "jinja2==3.1.6",
   "packaging==26.3",
-  "plaik-sdk>=0.3.0,<0.4.0",
+  "plaik-sdk>=0.3.1,<0.4.0",
   "psycopg[binary]==3.3.4",
   "pydantic==2.13.4",
   "uvicorn[standard]==0.52.1",
@@ -40,6 +40,7 @@ packages = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "resources/themes/default" = "plaik_core/_bundled/themes/default"
+"resources/system-fallback" = "plaik_core/_bundled/system-fallback"
 "src/plaik_installer/wizard.html" = "plaik_installer/wizard.html"
 "src/plaik_installer/wizard.css" = "plaik_installer/wizard.css"
 "src/plaik_installer/wizard.js" = "plaik_installer/wizard.js"

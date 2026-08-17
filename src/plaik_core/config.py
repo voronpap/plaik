@@ -79,6 +79,12 @@ def _default_themes_dir() -> Path:
     return PACKAGE_ROOT / "_bundled" / "themes"
 
 
+def _default_system_fallback_dir() -> Path:
+    if _SOURCE_REPOSITORY_ROOT is not None:
+        return _SOURCE_REPOSITORY_ROOT / "resources" / "system-fallback"
+    return PACKAGE_ROOT / "_bundled" / "system-fallback"
+
+
 def _default_modules_dir() -> Path:
     return _default_data_dir() / "extensions" / "modules"
 
@@ -98,6 +104,7 @@ def _admin_path_from_environment() -> str:
 class CoreSettings:
     data_dir: Path = field(default_factory=_default_data_dir)
     themes_dir: Path = field(default_factory=_default_themes_dir)
+    system_fallback_dir: Path = field(default_factory=_default_system_fallback_dir)
     modules_dir: Path = field(default_factory=_default_modules_dir)
     installer_token: str | None = field(
         default_factory=_installer_token_from_environment,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -12,6 +13,7 @@ from markupsafe import Markup
 from pydantic import BaseModel, ConfigDict
 
 from .hooks import HookRegistry
+from .slots import SlotRegistry
 from .themes import TemplateResolver, ThemeManager, ThemeRegistry
 
 
@@ -27,6 +29,7 @@ class RenderedWeb(BaseModel):
     layout: str
     html: str
     asset_urls: tuple[str, ...]
+    source: str = "theme"
 
 
 class WebRenderer:
@@ -34,6 +37,7 @@ class WebRenderer:
 
     RESERVED_CONTEXT = {
         "hook",
+        "slot",
         "locale",
         "page",
         "store_id",
@@ -48,12 +52,18 @@ class WebRenderer:
         theme_registry: ThemeRegistry,
         hook_registry: HookRegistry,
         template_resolver: TemplateResolver,
+        slot_registry: SlotRegistry | None = None,
+        system_fallback_root: Path | None = None,
         asset_url_prefix: str = "/themes",
     ) -> None:
         self.theme_manager = theme_manager
         self.theme_registry = theme_registry
         self.hook_registry = hook_registry
+        self.slot_registry = slot_registry or SlotRegistry(set())
         self.template_resolver = template_resolver
+        self.system_fallback_root = (
+            Path(system_fallback_root) if system_fallback_root is not None else None
+        )
         self.asset_url_prefix = asset_url_prefix.rstrip("/")
         self.environment = SandboxedEnvironment(
             autoescape=select_autoescape(
@@ -81,16 +91,51 @@ class WebRenderer:
             raise WebRenderError("web context overrides reserved names")
 
         # Theme selection is deliberately the first stateful lookup in SSR.
-        active = self.theme_manager.active(store_id)
+        try:
+            active = self.theme_manager.active(store_id)
+        except KeyError:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
         chain = self.theme_registry.inheritance_chain(active.id)
         layout_path = self._resolve_layout(chain, safe_layout)
         if layout_path is None:
-            raise WebRenderError("web layout is unavailable")
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
         asset_urls = self._asset_urls(chain)
 
         def render_hook(name: str) -> Markup:
             fragments: list[str] = []
             for binding in self.hook_registry.bindings(name):
+                template_path = self.template_resolver.resolve_module_template(
+                    theme_id=active.id,
+                    module_id=binding.module_id,
+                    template=binding.template,
+                )
+                if template_path is None:
+                    raise WebRenderError("module web template is missing")
+                fragments.append(
+                    self._render_template(
+                        template_path,
+                        {
+                            **extra_context,
+                            "locale": locale,
+                            "store_id": store_id,
+                            "theme_id": active.id,
+                            "page": {"title": page_title},
+                        },
+                    )
+                )
+            return Markup("".join(fragments))
+
+        def render_slot(name: str) -> Markup:
+            fragments: list[str] = []
+            for binding in self.slot_registry.bindings(name):
                 template_path = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
@@ -144,6 +189,7 @@ class WebRenderer:
                 "theme_id": active.id,
                 "page": {"title": page_title},
                 "hook": render_hook,
+                "slot": render_slot,
                 "theme_assets": render_assets,
             },
         )
@@ -153,6 +199,7 @@ class WebRenderer:
             layout=safe_layout,
             html=rendered,
             asset_urls=asset_urls,
+            source="theme",
         )
 
     def asset_path(self, theme_id: str, relative_path: str) -> Path:
@@ -178,21 +225,42 @@ class WebRenderer:
         for theme in chain:
             if layout not in theme.layouts:
                 continue
-            candidate = _contained_file(
+            candidate = _regular_layout_file(
                 self.theme_registry.path(theme.id) / "templates" / "layouts",
-                Path(f"{layout}.html"),
-            )
-            if candidate is not None:
-                return candidate
-        default = self.theme_registry.get("default")
-        if default is not None and layout in default.layouts:
-            candidate = _contained_file(
-                self.theme_registry.path("default") / "templates" / "layouts",
-                Path(f"{layout}.html"),
+                f"{layout}.html",
             )
             if candidate is not None:
                 return candidate
         return None
+
+    def _render_system_fallback(
+        self,
+        *,
+        store_id: str,
+        locale: str,
+        page_title: str,
+    ) -> RenderedWeb:
+        if self.system_fallback_root is None:
+            raise WebRenderError("web layout is unavailable")
+        layout = self.system_fallback_root / "layout.html"
+        if layout.is_symlink() or not layout.is_file():
+            raise WebRenderError("web layout is unavailable")
+        rendered = self._render_template(
+            layout,
+            {
+                "locale": locale,
+                "store_id": store_id,
+                "page": {"title": page_title},
+            },
+        )
+        return RenderedWeb(
+            store_id=store_id,
+            theme_id="system-fallback",
+            layout="system-fallback",
+            html=rendered,
+            asset_urls=(),
+            source="system-fallback",
+        )
 
     def _asset_urls(self, chain) -> tuple[str, ...]:
         urls: list[str] = []
@@ -253,6 +321,26 @@ def _safe_relative(value: str) -> str:
     ):
         raise WebRenderError("invalid web relative path")
     return path.as_posix()
+
+
+def _regular_layout_file(base: Path, name: str) -> Path | None:
+    """Return a regular layout file, failing closed on symlink escapes."""
+
+    current = Path(base)
+    try:
+        if current.is_symlink() or not current.is_dir():
+            raise WebRenderError("web layout is unsafe")
+        candidate = current / name
+        metadata = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode):
+        raise WebRenderError("web layout is unsafe")
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    return candidate
 
 
 def _contained_file(base: Path, relative: Path) -> Path | None:
