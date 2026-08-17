@@ -946,7 +946,355 @@ JavaScript second
 
 The public Theme API must not require third-party theme developers to adopt React, Vue, Svelte or another specific frontend framework.
 
-## 50. Definition of Done for Default Theme v1
+## 50. Storefront usability requirements
+
+Usability is a compatibility requirement, not optional visual polish. `PLAIK Default` must provide a complete, understandable and efficient purchasing experience across desktop, tablet, touch and mobile devices.
+
+### 50.1 Mobile is a primary storefront target
+
+Mobile must not be a reduced or merely compressed desktop experience.
+
+Requirements:
+
+- all critical storefront flows must remain available on mobile;
+- layouts must reflow without loss of functionality at narrow viewports down to 320 CSS px where content semantics permit;
+- portrait and landscape orientation must work;
+- browser zoom, OS text scaling and text enlargement up to 200% must not make critical content or actions inaccessible;
+- safe-area insets must be respected on devices with notches/home indicators;
+- virtual keyboards must not hide the active field, validation message or primary form action;
+- no critical action may require hover;
+- desktop, tablet and mobile may have separate presentation composition, but must not require duplicated business data.
+
+### 50.2 Touch and pointer interaction
+
+The default theme should use at least 44x44 CSS px practical hit areas for primary touch controls where layout permits, while never violating the current accessibility baseline for minimum target size.
+
+Requirements:
+
+- controls must have sufficient spacing to prevent accidental activation;
+- swipe, drag, pinch and other gestures may enhance interaction but must not be the only way to complete an action;
+- drag-and-drop interfaces require an alternative single-pointer/keyboard mechanism;
+- touch feedback must be immediate and visible;
+- destructive controls must not be positioned so close to primary actions that accidental activation is likely.
+
+### 50.3 Keyboard and focus behavior
+
+Every critical storefront flow must be operable with keyboard only.
+
+Requirements:
+
+- logical focus order follows visual/task order;
+- focus indicators are clearly visible;
+- sticky headers, sticky buy bars, drawers and overlays must not obscure keyboard focus;
+- opening a dialog/drawer moves focus correctly and closing it restores focus to the triggering control;
+- Escape closes dismissible overlays where expected;
+- focus must never become trapped outside an intentional modal interaction.
+
+### 50.4 Navigation and orientation
+
+Users must always understand where they are and how to continue.
+
+Requirements:
+
+- logo/home, catalog navigation, search, account and cart remain predictably discoverable;
+- category hierarchy and breadcrumbs are used where they improve orientation;
+- the browser Back/Forward actions must behave naturally;
+- returning from a product page should preserve useful category/search context such as scroll position, sort order and active filters where technically possible;
+- mobile navigation must expose the complete supported catalog hierarchy without requiring desktop-only interactions;
+- sticky navigation must not consume an unreasonable share of a small viewport.
+
+### 50.5 Search usability
+
+Search is a first-class storefront flow.
+
+The theme must provide presentation contracts for:
+
+- a clearly discoverable search field/action;
+- explicit search submission on touch/mobile;
+- accessible autocomplete;
+- keyboard navigation of suggestions;
+- recent/popular suggestions when the corresponding module supports them;
+- typo/synonym/model/OEM/VIN-oriented results supplied by search modules;
+- useful no-results states.
+
+A no-results page must not be a dead end. It should provide presentation space for query correction, alternative categories, suggestions, filter reset and other module-provided recovery actions.
+
+### 50.6 Category, filtering and sorting usability
+
+Requirements:
+
+- active filters must remain clearly visible and individually removable;
+- `Clear all` must be available when multiple filters are active;
+- result count and current sort state must be understandable;
+- mobile filters must use an accessible drawer/sheet or equivalent mobile-first pattern rather than forcing a desktop sidebar into a narrow viewport;
+- large filter groups must support scalable presentation, including search within values when provided by the filtering module;
+- applying filters must not unnecessarily reset context or produce large unexpected layout jumps;
+- filtering state should survive product-detail round trips and browser history where the routing contract supports it.
+
+### 50.7 Product-card usability
+
+A product card must expose enough information to decide whether opening the product is worthwhile.
+
+The standard card contract should support clear presentation of:
+
+- primary image;
+- understandable product name;
+- current price and previous price where relevant;
+- availability/status;
+- important variant/attribute information;
+- badges without excessive visual noise;
+- optional rating, wishlist, compare and quick-action slots.
+
+For technical/Auto Parts storefronts, the presentation contract must support high-value identifiers and fitment status supplied by modules, including brand/OEM/reference information where configured.
+
+Hover-only secondary information is not acceptable for information required to make a purchase decision.
+
+### 50.8 Product-page usability
+
+The product page must establish a clear decision hierarchy.
+
+The default composition must make the following discoverable without unnecessary hunting when the corresponding data/module exists:
+
+- product identity;
+- media;
+- price;
+- availability;
+- variants/options;
+- fitment/compatibility status;
+- delivery/fulfilment information;
+- primary purchase action.
+
+Requirements:
+
+- media gallery supports touch and keyboard interaction;
+- hidden/additional images are clearly discoverable;
+- zoom is an enhancement, not a requirement to inspect the primary image;
+- on mobile, long secondary information should use vertical disclosure patterns such as accessible accordions when appropriate;
+- horizontal tab systems must not make important content effectively undiscoverable on narrow screens;
+- a mobile sticky purchase bar may be used, but it must respect safe areas, keyboard/focus visibility and available viewport space.
+
+### 50.9 Cart usability
+
+Cart presentation must be resistant to accidental state changes and clear about totals.
+
+Requirements:
+
+- quantity changes use obvious controls and may provide direct numeric entry where large quantities are realistic;
+- removal must be explicit and should offer undo/recovery where supported;
+- updates to quantity, promotion, shipping or removal must visibly update affected totals;
+- loading/pending state must prevent contradictory duplicate actions without hiding what is happening;
+- failed cart mutations must keep the previous known-good state visible and provide a retry/recovery path;
+- cart drawer and full-cart page must expose the same essential state consistently.
+
+### 50.10 Checkout usability
+
+Checkout must minimize friction without weakening security or correctness.
+
+Requirements:
+
+- guest checkout must be supported by presentation whenever the checkout module allows it;
+- account creation must not be visually presented as mandatory when it is optional;
+- users must not be asked to re-enter information already supplied in the same checkout flow unless required for security or correctness;
+- forms must use appropriate HTML input types, `autocomplete` and `inputmode` values;
+- required and optional fields must be understandable before submission;
+- entered data must survive recoverable validation/network errors;
+- the order-review state must clearly show items, quantities, discounts, shipping, taxes/fees when applicable, and final payable total before confirmation;
+- fulfilment choices should show human-readable delivery expectations when the shipping module provides them;
+- submitting the final order must have an unambiguous pending/success/failure state and must be compatible with idempotent order submission.
+
+### 50.11 Forms and validation
+
+Every form error must answer three questions: what happened, where it happened, and how to fix it.
+
+Requirements:
+
+- validation messages appear next to the relevant control and are also accessible to assistive technology;
+- user input must not be cleared after a recoverable error;
+- validation should not aggressively report errors while the user is still entering a valid value;
+- generic protocol/internal error strings must not be shown as the only user-facing explanation;
+- long forms must move focus or otherwise guide the user to the first actionable error after submission;
+- paste and password-manager use must not be blocked in authentication flows.
+
+### 50.12 Async states and feedback
+
+Every asynchronous storefront action must have a deterministic visible state.
+
+Supported states include, where relevant:
+
+```text
+idle -> pending -> success | recoverable error | terminal error
+```
+
+Requirements:
+
+- prefer local feedback for the affected component rather than blocking the whole page with a global spinner;
+- skeletons/placeholders must reserve appropriate space and avoid unnecessary layout shift;
+- `Add to cart` must immediately communicate whether the action succeeded or failed;
+- disabled controls should communicate the reason when it is not obvious;
+- retry must be available for recoverable network/service failures where safe.
+
+### 50.13 Performance as usability
+
+Performance targets apply to real user experience, not only synthetic desktop tests.
+
+Where field measurement is available, the target at the 75th percentile should meet the current Core Web Vitals good thresholds, with the initial reference targets:
+
+- LCP <= 2.5 s;
+- INP <= 200 ms;
+- CLS <= 0.1.
+
+Targets should be evaluated separately for mobile and desktop where data allows.
+
+The theme must avoid:
+
+- excessive main-thread JavaScript;
+- layout instability caused by media, banners or async module slots;
+- interaction delays introduced by decorative effects;
+- loading desktop-sized media unnecessarily on mobile.
+
+### 50.14 Cognitive load and visual hierarchy
+
+The default theme must prefer clarity over decorative density.
+
+Requirements:
+
+- one primary action should visually dominate each decision context;
+- destructive actions must be visually distinct from primary actions;
+- identical actions must use consistent labels across pages;
+- color must not be the only carrier of meaning;
+- badges, banners, popups and promotional elements must not overwhelm product/navigation tasks;
+- important information must not depend on unusually precise pointer movement or memory of a previous screen.
+
+### 50.15 Honest commerce UI
+
+The default theme must not include or encourage deceptive interaction patterns.
+
+Do not implement as default-theme behavior:
+
+- fake scarcity or false stock urgency;
+- fake countdown timers;
+- hidden recurring charges;
+- preselected paid extras without a legitimate product requirement;
+- disguised advertising;
+- misleading button hierarchy;
+- intentionally difficult opt-out/cancel paths;
+- visual tricks that make consent/refusal asymmetrical without a legitimate reason.
+
+### 50.16 Accessibility baseline
+
+`PLAIK Default` targets WCAG 2.2 AA as the minimum reference accessibility baseline unless the project adopts a newer compatible baseline.
+
+This includes, at minimum:
+
+- semantic structure;
+- keyboard operability;
+- visible and unobscured focus;
+- sufficient color contrast;
+- text resizing/reflow;
+- accessible authentication;
+- consistent help placement where help is provided;
+- reduced-motion handling;
+- accessible dialogs, drawers, menus and live updates;
+- no critical meaning communicated only by color, position, hover or motion.
+
+Accessibility is built into normal presentation and must not depend on a separate "accessibility mode".
+
+### 50.17 Responsive content integrity
+
+Responsive configuration may alter presentation, but should preserve content integrity.
+
+Requirements:
+
+- mobile-specific hiding of content must be deliberate and schema-controlled;
+- critical commerce information/actions must not disappear merely to simplify the mobile layout;
+- responsive reordering must preserve understandable reading and focus order;
+- long translated strings must not overlap or be clipped;
+- RTL layout must not break action order, icons or drawers;
+- dynamic type/text scaling must not produce inaccessible fixed-height components.
+
+### 50.18 State and context preservation
+
+The storefront should preserve user effort where safe and appropriate.
+
+This includes:
+
+- cart state;
+- active filters/sort;
+- vehicle/fitment selection supplied by modules;
+- search context;
+- partially completed checkout fields after recoverable errors;
+- scroll/context when returning to product listings.
+
+Authentication, locale/currency changes, reload and browser history should not unnecessarily discard those states.
+
+Sensitive state must still follow Core/module privacy and security rules.
+
+### 50.19 Resilience to weak devices and networks
+
+The default theme must remain usable on realistically constrained mobile hardware and networks.
+
+Requirements:
+
+- avoid long main-thread tasks caused by theme code;
+- do not require large JS bundles for primary content;
+- primary content remains readable while enhancements load;
+- network failures produce recoverable local states instead of blank pages where possible;
+- images and optional content degrade gracefully;
+- retry behavior must not create duplicate durable actions.
+
+### 50.20 Theme/module UX contracts
+
+Theme compatibility must include required UI states, not just successful markup rendering.
+
+Public presentation contracts for critical components must account for states such as:
+
+- loading;
+- empty;
+- success;
+- validation error;
+- service/network error;
+- unavailable/out of stock;
+- disabled with reason;
+- partial module availability.
+
+A third-party module may own business behavior, but the Theme API must provide stable means to render these states without forcing the theme to import private module implementation.
+
+Optional enhancements such as quick view, animation, sticky controls, carousels and swipe interaction must remain removable without breaking the primary commerce flow.
+
+## 51. Usability verification gates
+
+Usability requirements must be verified through repeatable checks before Default Theme v1 is considered complete.
+
+The minimum verification matrix must cover:
+
+- keyboard-only navigation through home -> category/search -> product -> cart -> checkout shell;
+- screen-reader smoke checks for landmarks, headings, forms, dialogs, errors and dynamic cart feedback;
+- narrow viewport around 320 CSS px;
+- common mobile widths and tablet widths;
+- portrait and landscape orientation;
+- browser zoom/text resize to 200%;
+- touch interaction without hover;
+- safe-area behavior for sticky top/bottom UI;
+- virtual-keyboard behavior in search, account and checkout forms;
+- reduced-motion preference;
+- Back/Forward navigation and restoration of relevant listing context;
+- no-JavaScript baseline for server-rendered primary content where the architecture promises progressive enhancement;
+- slow network and constrained-CPU behavior;
+- long product titles and long translated strings;
+- RTL presentation smoke checks;
+- empty, loading, unavailable, validation-error, network-error and retry states;
+- out-of-stock and partially available module states;
+- large catalog/filter-value sets;
+- product quantities of 1 and realistically large values;
+- checkout validation failure and payment/service failure presentation supplied through public module contracts;
+- prevention of duplicate final actions during pending submission;
+- Core Web Vitals measurement with separate mobile/desktop interpretation when field data exists.
+
+Theme Editor responsive preview is useful but does not replace testing in real browser/device conditions.
+
+Usability failures in a critical purchase flow are release-blocking defects for the Default Theme, even if the page is visually correct.
+
+## 52. Definition of Done for Default Theme v1
 
 Default Theme v1 is complete when all of the following are true:
 
@@ -964,7 +1312,11 @@ Default Theme v1 is complete when all of the following are true:
 - settings schema exists;
 - presets exist;
 - responsive behavior is complete;
+- mobile is verified as a primary storefront target rather than a reduced desktop fallback;
+- critical flows are usable by touch and keyboard;
 - accessibility baseline is verified;
+- required error/loading/empty/unavailable states are verified;
+- usability verification gates in this specification pass;
 - SEO baseline is verified;
 - localization is supported;
 - safe theme activation exists;
@@ -975,7 +1327,7 @@ Default Theme v1 is complete when all of the following are true:
 - official modules can integrate presentation through stable released slots/contracts;
 - applicable public/private boundary and validation gates pass.
 
-## 51. Product goal
+## 53. Product goal
 
 The target is a theme system that combines:
 
@@ -989,6 +1341,8 @@ strong component isolation
 PLAIK module/package boundaries
 +
 performance-first server rendering
++
+mobile-first, accessible and verifiable storefront usability
 ```
 
 A user should be able to build substantially different storefronts from one `PLAIK Default` codebase without forking the theme, while the theme remains a presentation layer rather than a monolithic implementation of store business logic.
