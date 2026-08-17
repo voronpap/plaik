@@ -153,6 +153,7 @@ class ExtensionHost:
         self._connections = connection_store
         self._secrets = secret_providers
         self._runtimes: dict[str, ExtensionRuntime] = {}
+        self._registered: set[str] = set()
         self._lock = threading.RLock()
 
     def set_secret_providers(self, providers: SecretProviderRegistry | None) -> None:
@@ -182,11 +183,15 @@ class ExtensionHost:
             for package_id in tuple(self._runtimes):
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
+                    if package_id not in records:
+                        self._registered.discard(package_id)
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
                     runtime = self._build_runtime(package_id, scope, configuration.locale)
-                    self._try_register(package_id, runtime)
+                    if package_id not in self._registered:
+                        self._try_register(package_id, runtime)
+                        self._registered.add(package_id)
                     self._runtimes[package_id] = runtime
                 bound.append(runtime)
         return tuple(bound)

@@ -30,8 +30,11 @@ class PostgreSQLOutboxEvent:
     scope_json: Any = None
     resource_json: Any = None
     correlation_id: str | None = None
+    created_at: datetime | None = None
 
-    def as_envelope(self, *, created_at: datetime | None = None) -> EventEnvelope:
+    def as_envelope(self) -> EventEnvelope:
+        if self.created_at is None:
+            raise ValueError("outbox event is missing created_at")
         return envelope_from_row(
             event_id=self.id,
             owner=self.owner,
@@ -42,7 +45,7 @@ class PostgreSQLOutboxEvent:
             resource_raw=self.resource_json,
             idempotency_key=self.idempotency_key,
             correlation_id=self.correlation_id,
-            created_at=created_at or datetime.now(UTC),
+            created_at=self.created_at,
         )
 
 
@@ -106,7 +109,7 @@ class PostgreSQLEventOutbox:
                 """
                 SELECT id, owner, contract, version, payload_json,
                        idempotency_key, attempt_count,
-                       scope_json, resource_json, correlation_id
+                       scope_json, resource_json, correlation_id, created_at
                 FROM plaik_core.plaik_event_outbox
                 WHERE dispatched_at IS NULL
                   AND dead_at IS NULL
@@ -130,6 +133,7 @@ class PostgreSQLEventOutbox:
                 scope_json=row[7],
                 resource_json=row[8],
                 correlation_id=row[9],
+                created_at=row[10],
             )
             for row in rows
         )
