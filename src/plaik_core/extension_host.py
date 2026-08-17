@@ -183,8 +183,9 @@ class ExtensionHost:
             for package_id in tuple(self._runtimes):
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
-                    if package_id not in records:
-                        self._registered.discard(package_id)
+            for package_id in tuple(self._registered):
+                if package_id not in records:
+                    self._registered.discard(package_id)
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
