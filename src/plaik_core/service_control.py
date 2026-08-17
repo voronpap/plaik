@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import REMOTE_CONTROL_PAIRING_HOME, CoreSettings
+from .config import ADMIN_PASSKEYS_NAME, REMOTE_CONTROL_PAIRING_HOME, CoreSettings
 from .host_inventory import discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import InstallerConfigurationStore, PostgreSQLDatabase
@@ -325,6 +325,7 @@ _PRIVATE_NAMES = frozenset(
         "secrets",
         "identities.json",
         "sessions.json",
+        ADMIN_PASSKEYS_NAME,
         "audit.jsonl",
         "installer-operations.jsonl",
         "package-inbox",

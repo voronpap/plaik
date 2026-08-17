@@ -1216,7 +1216,7 @@ UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
-InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/run -$PLAIK_DATA_DIR/secrets -$PLAIK_DATA_DIR/identities.json -$PLAIK_DATA_DIR/sessions.json -$PLAIK_DATA_DIR/audit.jsonl -$PLAIK_DATA_DIR/installer-operations.jsonl -$PLAIK_DATA_DIR/package-inbox -$PLAIK_DATA_DIR/package-transactions
+InaccessiblePaths=-$INSTALLER_ENV -$PLAIK_DATA_DIR/run -$PLAIK_DATA_DIR/secrets -$PLAIK_DATA_DIR/identities.json -$PLAIK_DATA_DIR/sessions.json -$PLAIK_DATA_DIR/admin-passkeys.json -$PLAIK_DATA_DIR/audit.jsonl -$PLAIK_DATA_DIR/installer-operations.jsonl -$PLAIK_DATA_DIR/package-inbox -$PLAIK_DATA_DIR/package-transactions
 EOF
 )
 WORKDIR=$PLAIK_DATA_DIR/public

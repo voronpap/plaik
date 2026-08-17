@@ -3,7 +3,7 @@
 This module issues and consumes the WAN bootstrap credential. It does not
 register WebAuthn credentials, open Control Center, or change
 ``RemoteControlStatus``. Successful pairing stays ENROLLMENT_PENDING and only
-creates a short-lived enrollment session for a later passkey PR.
+creates a short-lived enrollment session for passkey registration.
 
 The pairing code is hashed at rest with scrypt. The plaintext is returned once
 from ``issue()`` and is never written to disk. After a successful consume the
@@ -11,9 +11,10 @@ code verifier is destroyed. The enrollment session token is stored only as
 SHA-256.
 
 Pairing state is shared privileged state between the local root operator and
-``plaik-admin``. It lives in a dedicated setgid directory, mode ``0660``
-``root:plaik-admin``. Public and installer identities must not be able to read
-the verifier or enrollment session. Generic JSON storage is unchanged.
+``plaik-admin``. It lives in a dedicated setgid directory, mode ``2770``
+``root:plaik-admin``, with state and lock files mode ``0660``. Public and
+installer identities must not be able to read the verifier or enrollment
+session. Generic JSON storage is unchanged.
 """
 
 from __future__ import annotations
@@ -982,4 +983,5 @@ _PAIRED_HTML = """<!doctype html>
 </style></head><body><main><section class="card">
 <h1>Код прийнято</h1>
 <p>Далі потрібен passkey на цьому control origin. Control Center ще закритий.</p>
+<p><a href="/activate/passkey">Зареєструвати passkey</a></p>
 </section></main></body></html>"""

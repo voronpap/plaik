@@ -66,6 +66,10 @@ _ACTIVATE_PROXY = re.compile(
     r"location\s+=\s+/activate/?\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:\d+",
     re.DOTALL,
 )
+_ACTIVATE_PREFIX = re.compile(
+    r"location\s+\^~\s+/activate\s*\{[^}]*proxy_pass\s+http://127\.0\.0\.1:\d+",
+    re.DOTALL,
+)
 _LOOPBACK_PROXY = re.compile(r"^http://127\.0\.0\.1:([1-9][0-9]{0,4})$")
 _SERVER_NAME = re.compile(r"server_name\s+(\S+);")
 _MARKER_VALUE = re.compile(r"# plaik-(public|control)-hostname:\s*(\S+)")
@@ -474,7 +478,7 @@ def _managed_config_path(managed_root: Path) -> Path:
 
 def _proxy_headers() -> str:
     return (
-        "        proxy_set_header Host $host;\n"
+        "        proxy_set_header Host $server_name;\n"
         "        proxy_set_header X-Forwarded-Proto $scheme;\n"
         "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
     )
@@ -551,11 +555,7 @@ def render_nginx_gateway_config(
     )
     if plan.wan_surface is WanSurface.ACTIVATE_ONLY:
         control_locations = (
-            "    location = /activate {\n"
-            f"        proxy_pass {control_proxy};\n"
-            f"{_proxy_headers()}\n"
-            "    }\n"
-            "    location = /activate/ {\n"
+            "    location ^~ /activate {\n"
             f"        proxy_pass {control_proxy};\n"
             f"{_proxy_headers()}\n"
             "    }\n"
@@ -664,12 +664,24 @@ def inspect_nginx_config(text: str) -> WanSurface:
     control_targets = _proxy_targets(control_block)
     if any(target.endswith(":8765") for target in control_targets):
         raise NginxGatewayError("managed nginx config cannot proxy the installer")
-    if _PROXY_CONTROL_ROOT.search(control_block) and not _ACTIVATE_PROXY.search(control_block):
+    if _PROXY_CONTROL_ROOT.search(control_block) and not (
+        _ACTIVATE_PROXY.search(control_block) or _ACTIVATE_PREFIX.search(control_block)
+    ):
         if len(control_targets) != 1:
             raise NginxGatewayError("unknown managed nginx topology")
         if _PROXY_ADMIN.search(control_block) or _PROXY_CONTROL_CENTER.search(control_block):
             raise NginxGatewayError("unknown managed nginx topology")
         return WanSurface.CONTROL_CENTER
+    if _ACTIVATE_PREFIX.search(control_block) and not _PROXY_CONTROL_ROOT.search(control_block):
+        if _PROXY_ADMIN.search(control_block) or _PROXY_CONTROL_CENTER.search(control_block):
+            raise NginxGatewayError("activate-only config proxies the Control Center")
+        if len(control_targets) != 1:
+            raise NginxGatewayError("unknown managed nginx topology")
+        if "location /control-center { return 404; }" not in control_block:
+            raise NginxGatewayError("unknown managed nginx topology")
+        if "location /api/admin { return 404; }" not in control_block:
+            raise NginxGatewayError("unknown managed nginx topology")
+        return WanSurface.ACTIVATE_ONLY
     if _ACTIVATE_PROXY.search(control_block) and not _PROXY_CONTROL_ROOT.search(control_block):
         if _PROXY_ADMIN.search(control_block) or _PROXY_CONTROL_CENTER.search(control_block):
             raise NginxGatewayError("activate-only config proxies the Control Center")

@@ -13,6 +13,7 @@ _RESERVED_ADMIN_PATHS = {"/admin", "/api", "/install", "/panel", "/vrnpap"}
 _INSTALLER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
 REMOTE_CONTROL_PAIRING_HOME = "remote-control-pairing"
 REMOTE_CONTROL_PAIRING_STATE = "state.json"
+ADMIN_PASSKEYS_NAME = "admin-passkeys.json"
 
 
 def _source_repository_root() -> Path | None:
@@ -135,6 +136,10 @@ class CoreSettings:
     @property
     def remote_control_pairing_path(self) -> Path:
         return self.remote_control_pairing_home / REMOTE_CONTROL_PAIRING_STATE
+
+    @property
+    def admin_passkeys_path(self) -> Path:
+        return self.data_dir / ADMIN_PASSKEYS_NAME
 
     @property
     def package_registry_path(self) -> Path:
