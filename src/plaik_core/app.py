@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from plaik_contracts import PackageManifest
+from plaik_contracts import PackageManifest, SecretReference
 
 from . import __version__
 from .audit import AuditEvent, AuditLog, AuditOutcome
@@ -73,7 +73,9 @@ from .service_control import (
     request_database_provision,
     request_service_finalization,
 )
-from .settings_store import SecretReference
+from .connection_store import ConnectionStore
+from .extension_host import ExtensionHost
+from .health_issues import HealthIssueRegistry
 from .storage import exclusive_file_lock, read_json
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
 
@@ -171,6 +173,16 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     permission_catalog = PackagePermissionCatalog(
         runtime.package_permission_catalog_path
     )
+    connection_store = ConnectionStore(runtime.connections_path)
+    health_issues = HealthIssueRegistry()
+    extension_host = ExtensionHost(
+        packages_root=runtime.installed_packages_dir,
+        service_registry=service_registry,
+        event_bus=event_bus,
+        render_slots=render_slots,
+        job_queue=job_queue,
+        connection_store=connection_store,
+    )
     session_pepper_reference = SecretReference(
         provider="local",
         key="platform/session-pepper",
@@ -238,6 +250,9 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     application.state.event_bus = event_bus
     application.state.render_slots = render_slots
     application.state.permission_catalog = permission_catalog
+    application.state.connection_store = connection_store
+    application.state.health_issues = health_issues
+    application.state.extension_host = extension_host
     application.state.secret_providers = None
     application.state.session_store = None
     application.state.audit_log = None
@@ -251,6 +266,17 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         maximum_clients=4096,
     )
     application.state.installer_rate_limiter = installer_rate_limiter
+
+    def sync_extension_host() -> None:
+        host: ExtensionHost = application.state.extension_host
+        host.set_secret_providers(application.state.secret_providers)
+        try:
+            configuration = configuration_store.require()
+        except Exception:
+            return
+        host.sync_enabled(package_registry.records(), configuration)
+
+    application.state.sync_extension_host = sync_extension_host
 
     def security_services(
         *, create_missing: bool,
@@ -343,6 +369,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         application.state.session_store = sessions
         application.state.audit_log = audit
         application.state.operation_journal = operations
+        sync_extension_host()
         return sessions, audit, operations
 
     def maintenance_safety() -> MaintenanceController:
