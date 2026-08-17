@@ -7,6 +7,7 @@ second slot path and does not rewrite hooks into slots.
 from __future__ import annotations
 
 import json
+import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -30,6 +31,9 @@ from plaik_contracts.theme_composition import (
 )
 
 from .slots import SlotRegistry
+
+MAX_JSON_NESTING_DEPTH = 32
+MAX_COMPOSITION_TEMPLATE_BYTES = 64 * 1024
 
 
 class ThemeCompositionError(ValueError):
@@ -152,24 +156,44 @@ def load_theme_composition_catalog(
     return ThemeCompositionCatalog(sections, blocks, pages)
 
 
-def merge_composition_catalogs(
-    child: ThemeCompositionCatalog, parent: ThemeCompositionCatalog
+def finalize_composition_catalog(
+    catalog: ThemeCompositionCatalog,
 ) -> ThemeCompositionCatalog:
-    sections = {**parent.sections, **child.sections}
-    blocks = {**parent.blocks, **child.blocks}
-    pages = {**parent.pages, **child.pages}
+    """Reject cyclic or dangling allowed_blocks on a complete catalog."""
+
     try:
         reject_block_type_cycles(
-            {type_id: bound.definition for type_id, bound in blocks.items()}
+            {type_id: bound.definition for type_id, bound in catalog.blocks.items()}
         )
     except ValueError as error:
         raise ThemeCompositionError(str(error)) from error
-    known_blocks = set(blocks)
-    for bound in (*sections.values(), *blocks.values()):
+    known_blocks = set(catalog.blocks)
+    for bound in (*catalog.sections.values(), *catalog.blocks.values()):
         unknown = sorted(set(bound.definition.allowed_blocks) - known_blocks)
         if unknown:
             raise ThemeCompositionError("unknown block type")
-    return ThemeCompositionCatalog(sections, blocks, pages)
+    return catalog
+
+
+def merge_composition_catalogs(
+    child: ThemeCompositionCatalog, parent: ThemeCompositionCatalog
+) -> ThemeCompositionCatalog:
+    return finalize_composition_catalog(
+        ThemeCompositionCatalog(
+            {**parent.sections, **child.sections},
+            {**parent.blocks, **child.blocks},
+            {**parent.pages, **child.pages},
+        )
+    )
+
+
+def complete_composition_catalog(
+    catalog: ThemeCompositionCatalog,
+    parent: ThemeCompositionCatalog | None = None,
+) -> ThemeCompositionCatalog:
+    if parent is None:
+        return finalize_composition_catalog(catalog)
+    return merge_composition_catalogs(catalog, parent)
 
 
 def validate_catalog(
@@ -179,6 +203,9 @@ def validate_catalog(
 ) -> None:
     if catalog.empty():
         return
+    registry_slots = None if slot_registry is None else slot_registry.allowed_slots
+    for bound in (*catalog.sections.values(), *catalog.blocks.values()):
+        _require_known_slots(bound.definition.slots, chain_slots, registry_slots)
     for page_type, page in catalog.pages.items():
         resolve_page_template(
             page_type,
@@ -252,9 +279,8 @@ def validate_installed_themes(
         for theme_id, manifest in themes.items()
     }
     for theme in themes.values():
-        merged = catalogs[theme.id]
-        if theme.parent:
-            merged = merge_composition_catalogs(merged, catalogs[theme.parent])
+        parent_catalog = catalogs[theme.parent] if theme.parent else None
+        merged = complete_composition_catalog(catalogs[theme.id], parent_catalog)
         chain_slots = set(theme.slots)
         if theme.parent:
             chain_slots.update(themes[theme.parent].slots)
@@ -270,15 +296,15 @@ def validate_candidate_composition(
 ) -> None:
     catalog = load_theme_composition_catalog(directory, manifest)
     chain_slots = set(manifest.slots)
+    parent_catalog = None
     if parent_manifest is not None:
         if parent_directory is None:
             raise ThemeCompositionError("theme parent composition is unavailable")
         parent_catalog = load_theme_composition_catalog(
             parent_directory, parent_manifest
         )
-        catalog = merge_composition_catalogs(catalog, parent_catalog)
         chain_slots.update(parent_manifest.slots)
-    validate_catalog(catalog, chain_slots)
+    validate_catalog(complete_composition_catalog(catalog, parent_catalog), chain_slots)
 
 
 class PageTemplateResolver:
@@ -410,6 +436,76 @@ def _add_bytes(total: int, size: int) -> int:
     return total
 
 
+def read_bounded_regular_text(path: Path, max_bytes: int) -> str:
+    """Read one regular UTF-8 file via O_NOFOLLOW without following a swap."""
+
+    target = Path(path)
+    if not hasattr(os, "O_NOFOLLOW") and target.is_symlink():
+        raise ThemeCompositionError("composition file is missing or unsafe")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(target, flags)
+    except OSError as error:
+        raise ThemeCompositionError("composition file is missing or unsafe") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+            raise ThemeCompositionError("composition document is too large")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(max_bytes + 1)
+        try:
+            after = os.fstat(descriptor)
+            current = os.stat(target, follow_symlinks=False)
+        except OSError as error:
+            raise ThemeCompositionError("composition file is missing or unsafe") from error
+        if (
+            len(payload) > max_bytes
+            or len(payload) != metadata.st_size
+            or after.st_dev != metadata.st_dev
+            or after.st_ino != metadata.st_ino
+            or after.st_size != metadata.st_size
+            or after.st_mtime_ns != metadata.st_mtime_ns
+            or after.st_ctime_ns != metadata.st_ctime_ns
+            or stat.S_ISLNK(current.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_dev != after.st_dev
+            or current.st_ino != after.st_ino
+            or current.st_size != after.st_size
+        ):
+            raise ThemeCompositionError("composition file is missing or unsafe")
+        try:
+            return payload.decode("utf-8")
+        except UnicodeError as error:
+            raise ThemeCompositionError("composition document is invalid") from error
+    finally:
+        os.close(descriptor)
+
+
+def _json_nesting_too_deep(text: str, limit: int) -> bool:
+    depth = 0
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            if depth > limit:
+                return True
+        elif char in "}]":
+            if depth:
+                depth -= 1
+    return False
+
+
 def _read_declared_json(
     directory: Path, relative: Path, *, max_bytes: int
 ) -> tuple[dict[str, Any], int]:
@@ -419,26 +515,22 @@ def _read_declared_json(
     path = contained_file(directory, relative)
     if path is None:
         raise ThemeCompositionError("composition file is missing or unsafe")
+    text = read_bounded_regular_text(path, max_bytes)
+    if _json_nesting_too_deep(text, MAX_JSON_NESTING_DEPTH):
+        raise ThemeCompositionError("composition document is invalid")
     try:
-        metadata = path.lstat()
-    except OSError as error:
-        raise ThemeCompositionError("composition file is missing or unsafe") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ThemeCompositionError("composition file is missing or unsafe")
-    if metadata.st_size > max_bytes:
-        raise ThemeCompositionError("composition document is too large")
-    try:
-        text = path.read_text(encoding="utf-8")
         payload = json.loads(
             text,
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_keys,
         )
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+    except RecursionError as error:
+        raise ThemeCompositionError("composition document is invalid") from error
+    except (ValueError, json.JSONDecodeError) as error:
         raise ThemeCompositionError("composition document is invalid") from error
     if not isinstance(payload, dict):
         raise ThemeCompositionError("composition document is invalid")
-    return payload, metadata.st_size
+    return payload, len(text.encode("utf-8"))
 
 
 def _require_template_file(directory: Path, template: str) -> None:
@@ -446,8 +538,10 @@ def _require_template_file(directory: Path, template: str) -> None:
     relative = Path("templates") / Path(*PurePosixPath(template).parts)
     for part in relative.parts:
         _validate_safe_path_segment(part, error="invalid composition path")
-    if contained_file(directory, relative) is None:
+    path = contained_file(directory, relative)
+    if path is None:
         raise ThemeCompositionError("composition template is missing or unsafe")
+    read_bounded_regular_text(path, MAX_COMPOSITION_TEMPLATE_BYTES)
 
 
 def _reject_undeclared_json(directory: Path, declared: set[str]) -> None:
@@ -468,9 +562,10 @@ def _reject_undeclared_json(directory: Path, declared: set[str]) -> None:
             child_meta = child.lstat()
         except OSError as error:
             raise ThemeCompositionError("composition file is missing or unsafe") from error
-        if stat.S_ISLNK(child_meta.st_mode):
+        if stat.S_ISLNK(child_meta.st_mode) or not stat.S_ISREG(child_meta.st_mode):
             raise ThemeCompositionError("composition file is missing or unsafe")
         if not child.name.endswith(".json"):
+            extra.append(child.name)
             continue
         type_id = child.name[: -len(".json")]
         if type_id not in declared:
