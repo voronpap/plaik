@@ -281,6 +281,199 @@ class WebRenderer:
             source="theme",
         )
 
+    def render_page_composition(
+        self,
+        *,
+        store_id: str,
+        locale: str,
+        page_title: str,
+        page_type: str,
+        layout: str = "full-width",
+        context: dict[str, Any] | None = None,
+    ) -> RenderedWeb:
+        """Render a validated Theme API v1 page composition through SlotRegistry."""
+
+        from .theme_composition import PageTemplateResolver, ThemeCompositionError
+
+        safe_layout = _safe_layout(layout)
+        extra_context = copy.deepcopy(dict(context or {}))
+        reserved = self.RESERVED_CONTEXT | {"settings", "blocks", "composition"}
+        overlap = sorted(reserved & set(extra_context))
+        if overlap:
+            raise WebRenderError("web context overrides reserved names")
+
+        try:
+            active = self.theme_manager.active(store_id)
+        except KeyError:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
+        chain = self.theme_registry.inheritance_chain(active.id)
+        try:
+            resolved = PageTemplateResolver(
+                self.theme_registry, self.slot_registry
+            ).resolve(active.id, page_type)
+        except ThemeCompositionError as error:
+            raise WebRenderError(str(error)) from error
+        layout_path = self._resolve_layout(chain, safe_layout)
+        if layout_path is None:
+            return self._render_system_fallback(
+                store_id=store_id,
+                locale=locale,
+                page_title=page_title,
+            )
+        asset_urls = self._asset_urls(chain)
+        declared_slots = {
+            slot_id for theme in chain for slot_id in theme.slots
+        }
+
+        def render_hook(name: str) -> Markup:
+            fragments: list[str] = []
+            for binding in self.hook_registry.bindings(name):
+                template_path = self.template_resolver.resolve_module_template(
+                    theme_id=active.id,
+                    module_id=binding.module_id,
+                    template=binding.template,
+                )
+                if template_path is None:
+                    raise WebRenderError("module web template is missing")
+                fragments.append(
+                    self._render_template(
+                        template_path,
+                        {
+                            **extra_context,
+                            "locale": locale,
+                            "store_id": store_id,
+                            "theme_id": active.id,
+                            "page": {"title": page_title},
+                        },
+                    )
+                )
+            return Markup("".join(fragments))
+
+        def render_slot(name: str) -> Markup:
+            if name not in declared_slots:
+                raise WebRenderError("unknown slot")
+            fragments: list[str] = []
+            for binding in self.slot_registry.bindings(name):
+                template_path = self.template_resolver.resolve_module_template(
+                    theme_id=active.id,
+                    module_id=binding.module_id,
+                    template=binding.template,
+                )
+                if template_path is None:
+                    raise WebRenderError("module web template is missing")
+                fragments.append(
+                    self._render_template(
+                        template_path,
+                        {
+                            **extra_context,
+                            "locale": locale,
+                            "store_id": store_id,
+                            "theme_id": active.id,
+                            "page": {"title": page_title},
+                        },
+                    )
+                )
+            return Markup("".join(fragments))
+
+        def render_assets(kind: str) -> Markup:
+            if kind not in {"css", "js"}:
+                raise WebRenderError("unknown theme asset kind")
+            matching = [
+                url
+                for url in asset_urls
+                if (kind == "css" and url.endswith(".css"))
+                or (kind == "js" and url.endswith(".js"))
+            ]
+            if kind == "css":
+                return Markup(
+                    "".join(
+                        f'<link rel="stylesheet" href="{html.escape(url, quote=True)}">'
+                        for url in matching
+                    )
+                )
+            return Markup(
+                "".join(
+                    f'<script src="{html.escape(url, quote=True)}" defer></script>'
+                    for url in matching
+                )
+            )
+
+        helpers = {
+            "locale": locale,
+            "store_id": store_id,
+            "theme_id": active.id,
+            "page": {"title": page_title},
+            "hook": render_hook,
+            "slot": render_slot,
+            "theme_assets": render_assets,
+        }
+        body = "".join(
+            self._render_resolved_section(section, extra_context, helpers)
+            for section in resolved.sections
+        )
+        rendered = self._render_template(
+            layout_path,
+            {
+                **extra_context,
+                **helpers,
+                "composition": Markup(body),
+            },
+        )
+        return RenderedWeb(
+            store_id=store_id,
+            theme_id=active.id,
+            layout=safe_layout,
+            html=rendered,
+            asset_urls=asset_urls,
+            source="theme",
+        )
+
+    def _render_resolved_section(self, section, extra_context, helpers) -> str:
+        path = _regular_layout_file(
+            self.theme_registry.path(section.theme_id),
+            Path("templates") / Path(*PurePosixPath(section.template).parts),
+        )
+        if path is None:
+            raise WebRenderError("composition template is missing")
+        blocks = tuple(
+            Markup(self._render_resolved_block(block, extra_context, helpers))
+            for block in section.blocks
+        )
+        return self._render_template(
+            path,
+            {
+                **extra_context,
+                **helpers,
+                "settings": dict(section.settings),
+                "blocks": blocks,
+            },
+        )
+
+    def _render_resolved_block(self, block, extra_context, helpers) -> str:
+        path = _regular_layout_file(
+            self.theme_registry.path(block.theme_id),
+            Path("templates") / Path(*PurePosixPath(block.template).parts),
+        )
+        if path is None:
+            raise WebRenderError("composition template is missing")
+        blocks = tuple(
+            Markup(self._render_resolved_block(child, extra_context, helpers))
+            for child in block.blocks
+        )
+        return self._render_template(
+            path,
+            {
+                **extra_context,
+                **helpers,
+                "settings": dict(block.settings),
+                "blocks": blocks,
+            },
+        )
+
     def asset_path(self, theme_id: str, relative_path: str) -> Path:
         safe_theme = _safe_segment(theme_id)
         safe_relative = _safe_relative(relative_path)
