@@ -282,13 +282,16 @@ def validate_candidate_composition(
 
 
 class PageTemplateResolver:
-    """Resolve a declared page type through the active theme inheritance chain."""
+    """Resolve a declared page type through the active theme inheritance chain.
 
-    def __init__(
-        self,
-        theme_registry: Any,
-        slot_registry: SlotRegistry | None = None,
-    ) -> None:
+    Runtime resolution requires SlotRegistry. Install-time catalog validation
+    checks theme-declared slots without a registry because packages are not
+    projected yet.
+    """
+
+    def __init__(self, theme_registry: Any, slot_registry: SlotRegistry) -> None:
+        if not isinstance(slot_registry, SlotRegistry):
+            raise TypeError("page template resolution requires SlotRegistry")
         self.theme_registry = theme_registry
         self.slot_registry = slot_registry
 

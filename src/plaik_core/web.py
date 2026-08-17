@@ -65,6 +65,9 @@ _SAFE_STR_CALLABLE_ATTRS = frozenset(
 _SAFE_SEQUENCE_CALLABLE_ATTRS = frozenset({"count", "index"})
 
 
+_WEB_CALLABLE_MARK = "_plaik_web_callable"
+
+
 def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
     if type(obj) is dict:
         return attr in _SAFE_DICT_CALLABLE_ATTRS
@@ -75,8 +78,18 @@ def _callable_attr_is_safe(obj: Any, attr: str) -> bool:
     return False
 
 
+def _allow_web_callable(func: Any) -> Any:
+    setattr(func, _WEB_CALLABLE_MARK, True)
+    return func
+
+
+def _reject_caller_callables(context: dict[str, Any]) -> None:
+    if any(callable(value) for value in context.values()):
+        raise WebRenderError("web context cannot include callables")
+
+
 class WebSandboxedEnvironment(SandboxedEnvironment):
-    """Deny mutating and arbitrary callable attributes on template context objects."""
+    """Deny mutating attributes and unmarked callables in untrusted templates."""
 
     def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
         if attr in _MUTATING_METHODS:
@@ -86,6 +99,15 @@ class WebSandboxedEnvironment(SandboxedEnvironment):
         if callable(value) and not _callable_attr_is_safe(obj, attr):
             return False
         return True
+
+    def is_safe_callable(self, obj: Any) -> bool:
+        if getattr(obj, _WEB_CALLABLE_MARK, False) is True:
+            return True
+        if obj in self.globals.values() or obj in self.filters.values():
+            return super().is_safe_callable(obj)
+        if obj in self.tests.values():
+            return super().is_safe_callable(obj)
+        return False
 
 
 class WebRenderError(RuntimeError):
@@ -160,6 +182,7 @@ class WebRenderer:
         overlap = sorted(self.RESERVED_CONTEXT & set(extra_context))
         if overlap:
             raise WebRenderError("web context overrides reserved names")
+        _reject_caller_callables(extra_context)
 
         # Theme selection is deliberately the first stateful lookup in SSR.
         try:
@@ -267,9 +290,9 @@ class WebRenderer:
                 "store_id": store_id,
                 "theme_id": active.id,
                 "page": {"title": page_title},
-                "hook": render_hook,
-                "slot": render_slot,
-                "theme_assets": render_assets,
+                "hook": _allow_web_callable(render_hook),
+                "slot": _allow_web_callable(render_slot),
+                "theme_assets": _allow_web_callable(render_assets),
             },
         )
         return RenderedWeb(
@@ -301,6 +324,7 @@ class WebRenderer:
         overlap = sorted(reserved & set(extra_context))
         if overlap:
             raise WebRenderError("web context overrides reserved names")
+        _reject_caller_callables(extra_context)
 
         try:
             active = self.theme_manager.active(store_id)
@@ -407,9 +431,9 @@ class WebRenderer:
             "store_id": store_id,
             "theme_id": active.id,
             "page": {"title": page_title},
-            "hook": render_hook,
-            "slot": render_slot,
-            "theme_assets": render_assets,
+            "hook": _allow_web_callable(render_hook),
+            "slot": _allow_web_callable(render_slot),
+            "theme_assets": _allow_web_callable(render_assets),
         }
         body = "".join(
             self._render_resolved_section(section, extra_context, helpers)
