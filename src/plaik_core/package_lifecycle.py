@@ -258,6 +258,9 @@ class TransactionalPackageManager:
 
             before = self._read_records()
             existing = before.get(package_id)
+            if package_id == "system-fallback":
+                self._fail_without_intent(operation_id, "package.reserved")
+                raise TransactionalPackageError("package id is reserved")
             if action == "install" and existing is not None:
                 self._fail_without_intent(operation_id, "package.already_installed")
                 raise TransactionalPackageError("package is already installed")

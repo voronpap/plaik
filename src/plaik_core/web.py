@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import html
 import stat
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,34 @@ from pydantic import BaseModel, ConfigDict
 from .hooks import HookRegistry
 from .slots import SlotRegistry
 from .themes import TemplateResolver, ThemeManager, ThemeRegistry
+
+
+_MUTATING_METHODS = frozenset(
+    {
+        "add",
+        "append",
+        "clear",
+        "discard",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+    }
+)
+
+
+class WebSandboxedEnvironment(SandboxedEnvironment):
+    """Deny mutating methods on context objects passed into theme templates."""
+
+    def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
+        if attr in _MUTATING_METHODS:
+            return False
+        return super().is_safe_attribute(obj, attr, value)
 
 
 class WebRenderError(RuntimeError):
@@ -65,7 +94,7 @@ class WebRenderer:
             Path(system_fallback_root) if system_fallback_root is not None else None
         )
         self.asset_url_prefix = asset_url_prefix.rstrip("/")
-        self.environment = SandboxedEnvironment(
+        self.environment = WebSandboxedEnvironment(
             autoescape=select_autoescape(
                 enabled_extensions=("html", "xml"),
                 default_for_string=True,
@@ -85,7 +114,7 @@ class WebRenderer:
         context: dict[str, Any] | None = None,
     ) -> RenderedWeb:
         safe_layout = _safe_layout(layout)
-        extra_context = dict(context or {})
+        extra_context = copy.deepcopy(dict(context or {}))
         overlap = sorted(self.RESERVED_CONTEXT & set(extra_context))
         if overlap:
             raise WebRenderError("web context overrides reserved names")
@@ -133,7 +162,15 @@ class WebRenderer:
                 )
             return Markup("".join(fragments))
 
+        declared_slots = {
+            slot_id
+            for theme in chain
+            for slot_id in theme.slots
+        }
+
         def render_slot(name: str) -> Markup:
+            if name not in declared_slots:
+                raise WebRenderError("unknown slot")
             fragments: list[str] = []
             for binding in self.slot_registry.bindings(name):
                 template_path = self.template_resolver.resolve_module_template(
@@ -226,8 +263,8 @@ class WebRenderer:
             if layout not in theme.layouts:
                 continue
             candidate = _regular_layout_file(
-                self.theme_registry.path(theme.id) / "templates" / "layouts",
-                f"{layout}.html",
+                self.theme_registry.path(theme.id),
+                Path("templates") / "layouts" / f"{layout}.html",
             )
             if candidate is not None:
                 return candidate
@@ -242,8 +279,12 @@ class WebRenderer:
     ) -> RenderedWeb:
         if self.system_fallback_root is None:
             raise WebRenderError("web layout is unavailable")
-        layout = self.system_fallback_root / "layout.html"
-        if layout.is_symlink() or not layout.is_file():
+        layout = _regular_layout_file(
+            self.system_fallback_root,
+            Path("layout.html"),
+            missing="unavailable",
+        )
+        if layout is None:
             raise WebRenderError("web layout is unavailable")
         rendered = self._render_template(
             layout,
@@ -285,7 +326,7 @@ class WebRenderer:
         try:
             source = path.read_text(encoding="utf-8")
             template = self.environment.from_string(source)
-            return template.render(context)
+            return template.render(copy.deepcopy(context))
         except WebRenderError:
             raise
         except Exception:
@@ -323,34 +364,70 @@ def _safe_relative(value: str) -> str:
     return path.as_posix()
 
 
-def _regular_layout_file(base: Path, name: str) -> Path | None:
-    """Return a regular layout file, failing closed on symlink escapes."""
+def _regular_layout_file(
+    root: Path,
+    relative: Path,
+    *,
+    missing: str = "missing",
+) -> Path | None:
+    """Return a regular layout file, failing closed on any symlink ancestor."""
 
-    current = Path(base)
-    try:
-        if current.is_symlink() or not current.is_dir():
-            raise WebRenderError("web layout is unsafe")
-        candidate = current / name
-        metadata = candidate.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return None
-    if stat.S_ISLNK(metadata.st_mode):
+    path = _walk_regular_file(root, relative)
+    if path is not None:
+        return path
+    if _path_has_symlink(Path(root), relative):
         raise WebRenderError("web layout is unsafe")
-    if not stat.S_ISREG(metadata.st_mode):
+    if missing == "unavailable":
         return None
-    return candidate
+    return None
 
 
 def _contained_file(base: Path, relative: Path) -> Path | None:
-    """Resolve one regular file without allowing a symlink escape from base."""
+    """Return one regular file without following any symlink from base."""
 
+    return _walk_regular_file(base, relative)
+
+
+def _walk_regular_file(root: Path, relative: Path) -> Path | None:
+    current = Path(root)
     try:
-        resolved_base = Path(base).resolve(strict=True)
-        candidate = (Path(base) / relative).resolve(strict=True)
-    except (OSError, RuntimeError):
+        metadata = current.lstat()
+    except OSError:
         return None
-    if not candidate.is_relative_to(resolved_base) or not candidate.is_file():
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return None
-    return candidate
+    parts = Path(relative).parts
+    if not parts:
+        return None
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(metadata.st_mode):
+            return None
+        if index == len(parts) - 1:
+            if not stat.S_ISREG(metadata.st_mode):
+                return None
+            return current
+        if not stat.S_ISDIR(metadata.st_mode):
+            return None
+    return None
+
+
+def _path_has_symlink(root: Path, relative: Path) -> bool:
+    current = Path(root)
+    try:
+        if stat.S_ISLNK(current.lstat().st_mode):
+            return True
+    except OSError:
+        return False
+    for part in Path(relative).parts:
+        current = current / part
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode):
+                return True
+        except OSError:
+            return False
+    return False

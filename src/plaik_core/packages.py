@@ -13,6 +13,9 @@ from .dependencies import resolve_install_order, version_matches
 from .storage import read_json, write_json_atomic
 
 
+RESERVED_PACKAGE_IDS = frozenset({"system-fallback"})
+
+
 class PackageLifecycleError(RuntimeError):
     """A package lifecycle operation would violate registry invariants."""
 
@@ -51,6 +54,11 @@ class PackageRegistry:
 
     def install_many(self, manifests: list[PackageManifest]) -> list[PackageRecord]:
         records = self.records()
+        reserved = sorted(
+            manifest.id for manifest in manifests if manifest.id in RESERVED_PACKAGE_IDS
+        )
+        if reserved:
+            raise PackageLifecycleError(f"package id is reserved: {reserved}")
         duplicate = sorted(manifest.id for manifest in manifests if manifest.id in records)
         if duplicate:
             raise PackageLifecycleError(f"packages already installed: {duplicate}")
