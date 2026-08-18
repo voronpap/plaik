@@ -1,5 +1,12 @@
-<aside class="plaik-filters plaik-filters-{% if settings.drawer %}drawer{% else %}inline{% endif %}" aria-label="{{ theme_strings.filters_label }}">
-  {{ slot("storefront.collection.filters") }}
-  {{ slot("storefront.search.filters") }}
-  {{ slot("storefront.collection.sort") }}
+{% if settings.drawer %}
+<details class="plaik-filter-drawer">
+  <summary class="plaik-menu-toggle">{{ theme_strings.filters_label }}</summary>
+  <aside class="plaik-filters plaik-filters-drawer" aria-label="{{ theme_strings.filters_label }}">
+    {% if settings.source == "search" %}{{ slot("storefront.search.filters") }}{% else %}{{ slot("storefront.collection.filters") }}{{ slot("storefront.collection.sort") }}{% endif %}
+  </aside>
+</details>
+{% else %}
+<aside class="plaik-filters plaik-filters-inline" aria-label="{{ theme_strings.filters_label }}">
+  {% if settings.source == "search" %}{{ slot("storefront.search.filters") }}{% else %}{{ slot("storefront.collection.filters") }}{{ slot("storefront.collection.sort") }}{% endif %}
 </aside>
+{% endif %}

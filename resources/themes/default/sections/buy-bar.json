@@ -9,7 +9,6 @@
     }
   ],
   "slots": [
-    "storefront.product.buy-bar",
-    "storefront.product.add-to-cart"
+    "storefront.product.buy-bar"
   ]
 }
