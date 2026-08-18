@@ -2,10 +2,30 @@
   "type": "hero",
   "template": "sections/hero.html",
   "settings": [
-    {"id": "heading", "type": "string", "max_length": 120, "default": ""},
-    {"id": "alignment", "type": "enum", "choices": ["left", "center", "right"], "default": "left"}
+    {
+      "id": "heading",
+      "type": "string",
+      "max_length": 120,
+      "default": ""
+    },
+    {
+      "id": "alignment",
+      "type": "enum",
+      "choices": [
+        "left",
+        "center",
+        "right"
+      ],
+      "default": "left"
+    }
   ],
-  "allowed_blocks": ["heading"],
-  "max_blocks": 4,
-  "max_block_nesting_depth": 1
+  "allowed_blocks": [
+    "heading",
+    "product-card"
+  ],
+  "max_blocks": 24,
+  "max_block_nesting_depth": 1,
+  "slots": [
+    "storefront.home.featured"
+  ]
 }
