@@ -161,6 +161,10 @@ class CoreSettings:
         return self.data_dir / "active-themes.json"
 
     @property
+    def theme_revisions_path(self) -> Path:
+        return self.data_dir / "theme-revisions"
+
+    @property
     def installer_config_path(self) -> Path:
         return self.data_dir / "installer-config.json"
 
