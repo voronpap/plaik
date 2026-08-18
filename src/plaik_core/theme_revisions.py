@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Iterator
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -93,7 +96,8 @@ class ThemeRevisionStore:
             preset_id=preset_id,
             created_at=_as_utc(now or datetime.now(UTC)),
         )
-        self._write_revision(store_id, revision)
+        with self._locked(store_id):
+            self._write_revision(store_id, revision)
         return revision
 
     def update_draft(
@@ -106,30 +110,32 @@ class ThemeRevisionStore:
         preset_id: str | None = None,
     ) -> ThemeConfigurationRevision:
         store_id = _validate_store_id(store_id)
-        revision = self.get(store_id, revision_id)
-        if revision.status is not RevisionStatus.DRAFT:
-            raise ThemeRevisionError("only draft revisions can be updated")
-        updated = revision.model_copy(
-            update={
-                "settings": _coerce_settings(settings)
-                if settings is not None
-                else revision.settings,
-                "pages": dict(pages) if pages is not None else revision.pages,
-                "preset_id": preset_id if preset_id is not None else revision.preset_id,
-            }
-        )
-        self._write_revision(store_id, updated)
-        return updated
+        with self._locked(store_id):
+            revision = self.get(store_id, revision_id)
+            if revision.status is not RevisionStatus.DRAFT:
+                raise ThemeRevisionError("only draft revisions can be updated")
+            updated = revision.model_copy(
+                update={
+                    "settings": _coerce_settings(settings)
+                    if settings is not None
+                    else revision.settings,
+                    "pages": dict(pages) if pages is not None else revision.pages,
+                    "preset_id": preset_id if preset_id is not None else revision.preset_id,
+                }
+            )
+            self._write_revision(store_id, updated)
+            return updated
 
     def validate(self, store_id: str, revision_id: str) -> ThemeConfigurationRevision:
         store_id = _validate_store_id(store_id)
-        revision = self.get(store_id, revision_id)
-        if revision.status is RevisionStatus.PREPARED:
-            raise ThemeRevisionError("prepared revisions are immutable")
-        resolved = self._require_valid(store_id, revision)
-        updated = resolved.model_copy(update={"status": RevisionStatus.VALIDATED})
-        self._write_revision(store_id, updated)
-        return updated
+        with self._locked(store_id):
+            revision = self.get(store_id, revision_id)
+            if revision.status is RevisionStatus.PREPARED:
+                raise ThemeRevisionError("prepared revisions are immutable")
+            resolved = self._require_valid(store_id, revision)
+            updated = resolved.model_copy(update={"status": RevisionStatus.VALIDATED})
+            self._write_revision(store_id, updated)
+            return updated
 
     def prepare(
         self,
@@ -140,20 +146,23 @@ class ThemeRevisionStore:
         now: datetime | None = None,
     ) -> ThemeConfigurationRevision:
         store_id = _validate_store_id(store_id)
-        revision = self.get(store_id, revision_id)
-        if revision.status is RevisionStatus.PREPARED:
-            return revision
-        if revision.status is not RevisionStatus.VALIDATED:
-            raise ThemeRevisionError("revision must be validated before prepare")
-        resolved = self._require_valid(store_id, revision, slot_registry=slot_registry)
-        updated = resolved.model_copy(
-            update={
-                "status": RevisionStatus.PREPARED,
-                "prepared_at": _as_utc(now or datetime.now(UTC)),
-            }
-        )
-        self._write_revision(store_id, updated)
-        return updated
+        with self._locked(store_id):
+            revision = self.get(store_id, revision_id)
+            if revision.status is RevisionStatus.PREPARED:
+                return revision
+            if revision.status is not RevisionStatus.VALIDATED:
+                raise ThemeRevisionError("revision must be validated before prepare")
+            resolved = self._require_valid(
+                store_id, revision, slot_registry=slot_registry
+            )
+            updated = resolved.model_copy(
+                update={
+                    "status": RevisionStatus.PREPARED,
+                    "prepared_at": _as_utc(now or datetime.now(UTC)),
+                }
+            )
+            self._write_revision(store_id, updated)
+            return updated
 
     def preview(self, store_id: str, revision_id: str) -> ThemeConfigurationRevision:
         store_id = _validate_store_id(store_id)
@@ -316,6 +325,11 @@ class ThemeRevisionStore:
     def _revision_path(self, store_id: str, revision_id: str) -> Path:
         return self.path / store_id / "revisions" / f"{revision_id}.json"
 
+    @contextmanager
+    def _locked(self, store_id: str) -> Iterator[None]:
+        with exclusive_file_lock(self._state_path(store_id)):
+            yield
+
     def _read_state(self, store_id: str) -> _StoreRevisionState:
         payload = read_json(self._state_path(store_id), {"version": 1})
         try:
@@ -331,10 +345,12 @@ class ThemeRevisionStore:
     ) -> None:
         path = self._revision_path(store_id, revision.revision_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if revision.status is RevisionStatus.PREPARED and path.exists():
+        if path.exists():
             existing = self.get(store_id, revision.revision_id)
             if existing.status is RevisionStatus.PREPARED:
                 raise ThemeRevisionError("prepared revisions are immutable")
+            if _status_rank(revision.status) < _status_rank(existing.status):
+                raise ThemeRevisionError("revision status cannot move backwards")
         write_json_atomic(path, revision.model_dump(mode="json"))
 
 
@@ -420,19 +436,35 @@ def _load_json(directory: Path, relative: Path, *, max_bytes: int) -> dict:
 
 def _reject_unexpected_configuration(directory: Path) -> None:
     for relative in (Path("settings.json"), Path("presets")):
-        if (Path(directory) / relative).exists():
-            raise ThemeRevisionError("undeclared configuration file")
+        path = Path(directory) / relative
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise ThemeRevisionError("undeclared configuration file") from error
+        raise ThemeRevisionError("undeclared configuration file")
 
 
 def _reject_undeclared_presets(directory: Path, declared: set[str]) -> None:
     path = Path(directory)
-    if not path.exists():
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
         if declared:
             raise ThemeRevisionError("theme preset is invalid")
         return
+    except OSError as error:
+        raise ThemeRevisionError("theme preset is invalid") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ThemeRevisionError("theme preset is invalid")
     extra: list[str] = []
     for child in sorted(path.iterdir()):
-        if child.is_symlink() or not child.is_file():
+        try:
+            child_meta = child.lstat()
+        except OSError as error:
+            raise ThemeRevisionError("theme preset is invalid") from error
+        if stat.S_ISLNK(child_meta.st_mode) or not stat.S_ISREG(child_meta.st_mode):
             raise ThemeRevisionError("theme preset is invalid")
         if not child.name.endswith(".json"):
             extra.append(child.name)
@@ -442,6 +474,14 @@ def _reject_undeclared_presets(directory: Path, declared: set[str]) -> None:
             extra.append(preset_id)
     if extra:
         raise ThemeRevisionError("undeclared configuration file")
+
+
+def _status_rank(status: RevisionStatus) -> int:
+    return {
+        RevisionStatus.DRAFT: 0,
+        RevisionStatus.VALIDATED: 1,
+        RevisionStatus.PREPARED: 2,
+    }[status]
 
 
 def _as_utc(value: datetime) -> datetime:
