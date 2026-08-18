@@ -20,6 +20,25 @@ from .storage import read_json, write_json_atomic
 
 RESERVED_PACKAGE_IDS = frozenset({"system-fallback"})
 
+# Keys written by completed 0.2.x registries and removed from PackageManifest.
+_LEGACY_MANIFEST_KEYS = frozenset({"capabilities"})
+
+
+def _legacy_record_payload(record: object) -> object:
+    if not isinstance(record, dict):
+        return record
+    manifest = record.get("manifest")
+    if not isinstance(manifest, dict):
+        return record
+    cleaned = {
+        key: value
+        for key, value in manifest.items()
+        if key not in _LEGACY_MANIFEST_KEYS
+    }
+    if cleaned == manifest:
+        return record
+    return {**record, "manifest": cleaned}
+
 
 class PackageLifecycleError(RuntimeError):
     """A package lifecycle operation would violate registry invariants."""
@@ -53,7 +72,7 @@ class PackageRegistry:
     def records(self) -> dict[str, PackageRecord]:
         data = read_json(self.path, {"packages": {}})
         return {
-            package_id: PackageRecord.model_validate(record)
+            package_id: PackageRecord.model_validate(_legacy_record_payload(record))
             for package_id, record in data.get("packages", {}).items()
         }
 
