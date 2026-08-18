@@ -4,9 +4,14 @@
     <span>{{ brand | default('PLAIK') }}</span>
   </a>
   {% if settings.show_nav %}
+    {% if blocks %}
   <nav class="plaik-header-nav" aria-label="{{ theme_strings.nav_label }}">
-    <a href="#capabilities">{{ theme_strings.nav_capabilities }}</a>
-    <a href="#status">{{ theme_strings.nav_status }}</a>
+    {% for block in blocks %}{{ block }}{% endfor %}
+  </nav>
+    {% endif %}
+  {% elif blocks %}
+  <nav class="plaik-header-nav" aria-label="{{ theme_strings.nav_label }}">
+    {% for block in blocks %}{{ block }}{% endfor %}
   </nav>
   {% endif %}
   <div class="plaik-header-tools">

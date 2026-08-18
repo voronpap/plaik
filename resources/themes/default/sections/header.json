@@ -29,5 +29,10 @@
     "storefront.header.account",
     "storefront.header.wishlist",
     "storefront.header.compare"
-  ]
+  ],
+  "allowed_blocks": [
+    "nav-item"
+  ],
+  "max_blocks": 16,
+  "max_block_nesting_depth": 1
 }
