@@ -28,7 +28,12 @@ from .package_artifacts import (
     PackageArtifactVerifier,
     VerifiedPackageArtifact,
 )
-from .packages import PackageRecord, PackageStatus, RESERVED_PACKAGE_IDS
+from .packages import (
+    PackageRecord,
+    PackageStatus,
+    RESERVED_PACKAGE_IDS,
+    _legacy_record_payload,
+)
 from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 
@@ -810,7 +815,7 @@ class TransactionalPackageManager:
             raise TransactionalPackageError("package registry is invalid")
         try:
             records = {
-                package_id: PackageRecord.model_validate(raw)
+                package_id: PackageRecord.model_validate(_legacy_record_payload(raw))
                 for package_id, raw in raw_records.items()
             }
         except Exception as error:
