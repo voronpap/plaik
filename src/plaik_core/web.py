@@ -158,6 +158,8 @@ class WebRenderer:
         "store_id",
         "theme_assets",
         "theme_id",
+        "theme_settings",
+        "revision_id",
     }
 
     def __init__(
@@ -168,6 +170,7 @@ class WebRenderer:
         hook_registry: HookRegistry,
         template_resolver: TemplateResolver,
         slot_registry: SlotRegistry | None = None,
+        revision_store: object | None = None,
         system_fallback_root: Path | None = None,
         asset_url_prefix: str = "/themes",
     ) -> None:
@@ -175,6 +178,7 @@ class WebRenderer:
         self.theme_registry = theme_registry
         self.hook_registry = hook_registry
         self.slot_registry = slot_registry or SlotRegistry(set())
+        self.revision_store = revision_store
         self.template_resolver = template_resolver
         self.system_fallback_root = (
             Path(system_fallback_root) if system_fallback_root is not None else None
@@ -341,10 +345,13 @@ class WebRenderer:
         page_type: str,
         layout: str = "full-width",
         context: dict[str, Any] | None = None,
+        revision_id: str | None = None,
+        preview: bool = False,
     ) -> RenderedWeb:
         """Render a validated Theme API v1 page composition through SlotRegistry."""
 
         from .theme_composition import PageTemplateResolver, ThemeCompositionError
+        from .theme_revisions import ThemeRevisionError
 
         safe_layout = _safe_layout(layout)
         extra_context = copy.deepcopy(dict(context or {}))
@@ -363,10 +370,31 @@ class WebRenderer:
                 page_title=page_title,
             )
         chain = self.theme_registry.inheritance_chain(active.id)
+        revision = None
+        if preview:
+            if self.revision_store is None or not revision_id:
+                raise WebRenderError("preview requires a prepared revision")
+            try:
+                revision = self.revision_store.preview(store_id, revision_id)
+            except ThemeRevisionError as error:
+                raise WebRenderError(str(error)) from error
+        elif self.revision_store is not None:
+            revision = self.revision_store.published(store_id)
+        if revision is not None and revision.theme_id != active.id:
+            revision = None
+        elif revision is not None and (
+            revision.theme_version != active.version
+            or revision.theme_api != (active.theme_api or 1)
+        ):
+            raise WebRenderError("revision theme version does not match")
         try:
             resolved = PageTemplateResolver(
                 self.theme_registry, self.slot_registry
-            ).resolve(active.id, page_type)
+            ).resolve(
+                active.id,
+                page_type,
+                pages=None if revision is None else revision.pages,
+            )
         except ThemeCompositionError as error:
             raise WebRenderError(str(error)) from error
         layout_ref = self._resolve_layout(chain, safe_layout)
@@ -467,6 +495,8 @@ class WebRenderer:
             "hook": _allow_web_callable(render_hook),
             "slot": _allow_web_callable(render_slot),
             "theme_assets": _allow_web_callable(render_assets),
+            "theme_settings": dict(revision.settings.values) if revision is not None else {},
+            "revision_id": None if revision is None else revision.revision_id,
         }
         body = "".join(
             self._render_resolved_section(section, extra_context, helpers)
