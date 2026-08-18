@@ -21,7 +21,8 @@
   ],
   "allowed_blocks": [
     "heading",
-    "product-card"
+    "product-card",
+    "ui-state"
   ],
   "max_blocks": 24,
   "max_block_nesting_depth": 1,

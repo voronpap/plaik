@@ -35,7 +35,8 @@
     "product-card",
     "product-title",
     "product-image",
-    "price"
+    "price",
+    "ui-state"
   ],
   "max_blocks": 24,
   "max_block_nesting_depth": 1

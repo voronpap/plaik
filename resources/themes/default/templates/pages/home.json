@@ -52,10 +52,19 @@
           },
           "blocks": {},
           "block_order": []
+        },
+        "empty-state": {
+          "type": "ui-state",
+          "settings": {
+            "state": "empty"
+          },
+          "blocks": {},
+          "block_order": []
         }
       },
       "block_order": [
-        "sample-card"
+        "sample-card",
+        "empty-state"
       ]
     },
     "site-footer": {

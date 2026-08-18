@@ -4,9 +4,15 @@
     <span>{{ brand | default('PLAIK') }}</span>
   </a>
   {% if settings.show_nav %}{% if blocks %}
-  <nav class="plaik-header-nav" aria-label="{{ theme_strings.nav_label }}">
+  <nav class="plaik-header-nav plaik-header-nav-desktop" aria-label="{{ theme_strings.nav_label }}">
     {% for block in blocks %}{{ block }}{% endfor %}
   </nav>
+  <details class="plaik-mobile-nav">
+    <summary class="plaik-menu-toggle">{{ theme_strings.menu }}</summary>
+    <nav class="plaik-header-nav-mobile" aria-label="{{ theme_strings.nav_label }}">
+      {% for block in blocks %}{{ block }}{% endfor %}
+    </nav>
+  </details>
   {% endif %}{% endif %}
   <div class="plaik-header-tools">
     {% if settings.show_search %}{{ slot("storefront.header.search") }}{% endif %}

@@ -1,0 +1,31 @@
+{
+  "type": "ui-state",
+  "template": "blocks/ui-state.html",
+  "settings": [
+    {
+      "id": "state",
+      "type": "enum",
+      "choices": [
+        "idle",
+        "pending",
+        "loading",
+        "empty",
+        "success",
+        "validation-error",
+        "service-error",
+        "network-error",
+        "unavailable",
+        "out-of-stock",
+        "disabled-with-reason",
+        "partial-availability"
+      ],
+      "default": "empty"
+    },
+    {
+      "id": "reason",
+      "type": "string",
+      "max_length": 160,
+      "default": ""
+    }
+  ]
+}

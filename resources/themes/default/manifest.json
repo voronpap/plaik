@@ -116,7 +116,8 @@
     "product-title",
     "rich-text",
     "spacer",
-    "text"
+    "text",
+    "ui-state"
   ],
   "settings_schema": true,
   "presets": [
