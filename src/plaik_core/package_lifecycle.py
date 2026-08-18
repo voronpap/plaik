@@ -33,6 +33,8 @@ from .packages import (
     PackageStatus,
     RESERVED_PACKAGE_IDS,
     _legacy_record_payload,
+    _registry_payload_has_legacy_keys,
+    canonical_registry_document,
 )
 from .storage import exclusive_file_lock, read_json, write_json_atomic
 
@@ -822,18 +824,12 @@ class TransactionalPackageManager:
             raise TransactionalPackageError("package registry is invalid") from error
         if any(package_id != record.manifest.id for package_id, record in records.items()):
             raise TransactionalPackageError("package registry identity is invalid")
+        if _registry_payload_has_legacy_keys(data):
+            self._write_records(records)
         return records
 
     def _write_records(self, records: Mapping[str, PackageRecord]) -> None:
-        write_json_atomic(
-            self.registry_path,
-            {
-                "packages": {
-                    package_id: record.model_dump(mode="json")
-                    for package_id, record in sorted(records.items())
-                }
-            },
-        )
+        write_json_atomic(self.registry_path, canonical_registry_document(records))
 
     def _write_intent(self, intent: _TransactionIntent) -> None:
         write_json_atomic(
