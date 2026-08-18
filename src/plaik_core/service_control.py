@@ -319,7 +319,7 @@ _PUBLIC_READ_FILES = (
     "package-permissions.json",
     "settings.json",
 )
-_PUBLIC_READ_DIRS = ("installed-packages",)
+_PUBLIC_READ_DIRS = ("installed-packages", "theme-revisions")
 _PRIVATE_NAMES = frozenset(
     {
         "secrets",
@@ -356,6 +356,8 @@ def apply_identity_isolation(settings: CoreSettings) -> None:
     run = request_dir(settings)
     public.mkdir(parents=True, exist_ok=True)
     run.mkdir(parents=True, exist_ok=True)
+    for name in _PUBLIC_READ_DIRS:
+        (data / name).mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(public, 0o750)
         os.chmod(run, 0o770)
