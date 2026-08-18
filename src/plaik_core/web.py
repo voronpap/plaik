@@ -617,13 +617,24 @@ class WebRenderer:
             return base, relative
         return None
 
+    def uses_page_composition(self, theme_id: str) -> bool:
+        """True when this theme or a parent declares page templates."""
+
+        return any(
+            theme.page_templates
+            for theme in self.theme_registry.inheritance_chain(theme_id)
+        )
+
     def _theme_strings(self, theme_id: str, locale: str) -> dict[str, str]:
         from .theme_locales import ThemeLocaleError, load_theme_strings
 
+        merged: dict[str, str] = {}
         try:
-            return load_theme_strings(self.theme_registry.path(theme_id), locale)
+            for theme in reversed(self.theme_registry.inheritance_chain(theme_id)):
+                merged.update(load_theme_strings(self.theme_registry.path(theme.id), locale))
         except ThemeLocaleError as error:
             raise WebRenderError(str(error)) from error
+        return merged
 
     def _render_system_fallback(
         self,
