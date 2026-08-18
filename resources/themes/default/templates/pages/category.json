@@ -13,12 +13,6 @@
       "blocks": {},
       "block_order": []
     },
-    "site-nav": {
-      "type": "navigation",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
     "crumbs": {
       "type": "breadcrumbs",
       "settings": {},
@@ -28,7 +22,8 @@
     "filters-main": {
       "type": "filters",
       "settings": {
-        "drawer": true
+        "drawer": true,
+        "source": "collection"
       },
       "blocks": {},
       "block_order": []
@@ -49,7 +44,6 @@
   "order": [
     "announce",
     "site-header",
-    "site-nav",
     "crumbs",
     "filters-main",
     "collection-main",

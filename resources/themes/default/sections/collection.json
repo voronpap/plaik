@@ -13,8 +13,6 @@
     }
   ],
   "slots": [
-    "storefront.collection.filters",
-    "storefront.collection.sort",
     "storefront.collection.products"
   ]
 }
