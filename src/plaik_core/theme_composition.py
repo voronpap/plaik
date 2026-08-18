@@ -335,12 +335,18 @@ class PageTemplateResolver:
             merged = merge_composition_catalogs(loaded, merged)
         return merged
 
-    def resolve(self, theme_id: str, page_type: str) -> ResolvedPage:
+    def resolve(
+        self,
+        theme_id: str,
+        page_type: str,
+        *,
+        pages: dict[str, PageTemplate] | None = None,
+    ) -> ResolvedPage:
         from plaik_contracts.theme_composition import require_composition_id
 
         require_composition_id(page_type, error="invalid page type")
         catalog = self.catalog_for(theme_id)
-        page = catalog.pages.get(page_type)
+        page = (pages or {}).get(page_type) or catalog.pages.get(page_type)
         if page is None:
             raise ThemeCompositionError("unknown page template")
         chain_slots = {

@@ -656,11 +656,13 @@ Keep current layouts/hooks operational and add v1 contracts/validators.
 
 Allow Theme API v1 themes to declare page templates, sections, blocks and slots while legacy layout rendering remains available for compatibility.
 
-Core validates and resolves declared JSON composition fail-closed, connecting slot references to the existing `SlotRegistry`. Official Default Theme remains on the layout compatibility path until Stage 3.
+Core validates and resolves declared JSON composition fail-closed, connecting slot references to the existing `SlotRegistry`. Official Default Theme remains on the layout compatibility path until a dedicated Default Theme implementation.
 
 ### Stage 3
 
-Make v1 composition the normal path for `PLAIK Default` and official v1 themes.
+Add schema-validated settings, presets, revisioned configuration, and
+draft/validate/prepare/preview/publish with deterministic cache identity.
+`PLAIK Default` is not migrated in this stage.
 
 ### Stage 4
 

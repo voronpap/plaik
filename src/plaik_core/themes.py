@@ -28,6 +28,8 @@ _THEME_JSON_FIELDS = {
     "page_templates",
     "sections",
     "blocks",
+    "settings_schema",
+    "presets",
 }
 _MAX_THEME_PRESENTATION_BYTES = 256 * 1024
 _WINDOWS_RESERVED_BASENAMES = {
@@ -150,6 +152,7 @@ class ThemeRegistry:
         self._locations = locations
         self._validate_inheritance()
         self._validate_composition()
+        self._validate_configuration()
         return dict(themes)
 
     def validate_candidate(
@@ -250,6 +253,15 @@ class ThemeRegistry:
             )
         except ThemeCompositionError as error:
             raise ValueError(str(error)) from error
+        from .theme_revisions import (
+            ThemeRevisionError,
+            validate_candidate_configuration,
+        )
+
+        try:
+            validate_candidate_configuration(candidate, manifest)
+        except ThemeRevisionError as error:
+            raise ValueError(str(error)) from error
         return manifest
 
     @staticmethod
@@ -281,6 +293,17 @@ class ThemeRegistry:
         try:
             validate_installed_themes(self._themes, self._locations)
         except ThemeCompositionError as error:
+            raise ValueError(str(error)) from error
+
+    def _validate_configuration(self) -> None:
+        from .theme_revisions import (
+            ThemeRevisionError,
+            validate_installed_configuration,
+        )
+
+        try:
+            validate_installed_configuration(self._themes, self._locations)
+        except ThemeRevisionError as error:
             raise ValueError(str(error)) from error
 
     def get(self, theme_id: str) -> ThemeManifest | None:
