@@ -127,6 +127,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         core_version=__version__,
         protected_ids={"default"},
     )
+    if runtime.package_registry_path.is_file():
+        with exclusive_file_lock(runtime.install_operation_lock_path):
+            with exclusive_file_lock(runtime.extension_operation_lock_path):
+                package_registry.persist_legacy_cleanup()
 
     def enabled_theme_package_ids() -> set[str]:
         return {

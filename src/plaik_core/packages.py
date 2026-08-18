@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
 
@@ -40,6 +41,28 @@ def _legacy_record_payload(record: object) -> object:
     return {**record, "manifest": cleaned}
 
 
+def _registry_payload_has_legacy_keys(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    packages = data.get("packages")
+    if not isinstance(packages, dict):
+        return False
+    return any(
+        _legacy_record_payload(record) is not record for record in packages.values()
+    )
+
+
+def canonical_registry_document(
+    records: Mapping[str, PackageRecord],
+) -> dict[str, dict[str, object]]:
+    return {
+        "packages": {
+            package_id: record.model_dump(mode="json")
+            for package_id, record in sorted(records.items())
+        }
+    }
+
+
 class PackageLifecycleError(RuntimeError):
     """A package lifecycle operation would violate registry invariants."""
 
@@ -75,6 +98,32 @@ class PackageRegistry:
             package_id: PackageRecord.model_validate(_legacy_record_payload(record))
             for package_id, record in data.get("packages", {}).items()
         }
+
+    def persist_legacy_cleanup(self) -> bool:
+        """Rewrite a completed 0.2.x registry so stripped keys do not remain on disk.
+
+        Callers that share the registry with installer or TransactionalPackageManager
+        must serialize this rewrite on those writers' locks. Unknown extras still
+        fail closed and the original file is left untouched. The rewrite uses one
+        locked snapshot so a concurrent mutation cannot be clobbered by a stale read.
+        """
+
+        data = read_json(self.path, {"packages": {}})
+        if not _registry_payload_has_legacy_keys(data):
+            return False
+        if not isinstance(data, dict) or set(data) != {"packages"}:
+            raise PackageLifecycleError("package registry is invalid")
+        raw_records = data["packages"]
+        if not isinstance(raw_records, dict):
+            raise PackageLifecycleError("package registry is invalid")
+        records = {
+            package_id: PackageRecord.model_validate(_legacy_record_payload(record))
+            for package_id, record in raw_records.items()
+        }
+        if any(package_id != record.manifest.id for package_id, record in records.items()):
+            raise PackageLifecycleError("package registry identity is invalid")
+        self._write(records)
+        return True
 
     def install_many(self, manifests: list[PackageManifest]) -> list[PackageRecord]:
         records = self.records()
@@ -191,15 +240,7 @@ class PackageRegistry:
         return record
 
     def _write(self, records: dict[str, PackageRecord]) -> None:
-        write_json_atomic(
-            self.path,
-            {
-                "packages": {
-                    package_id: record.model_dump(mode="json")
-                    for package_id, record in sorted(records.items())
-                }
-            },
-        )
+        write_json_atomic(self.path, canonical_registry_document(records))
 
     @staticmethod
     def _require(records: dict[str, PackageRecord], package_id: str) -> PackageRecord:
