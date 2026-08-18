@@ -6,11 +6,18 @@
       "id": "state",
       "type": "enum",
       "choices": [
+        "idle",
+        "pending",
         "loading",
         "empty",
-        "error",
+        "success",
+        "validation-error",
+        "service-error",
+        "network-error",
+        "unavailable",
         "out-of-stock",
-        "disabled-with-reason"
+        "disabled-with-reason",
+        "partial-availability"
       ],
       "default": "empty"
     },

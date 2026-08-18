@@ -24,8 +24,19 @@
       "settings": {
         "layout": "classic"
       },
-      "blocks": {},
-      "block_order": []
+      "blocks": {
+        "empty-state": {
+          "type": "ui-state",
+          "settings": {
+            "state": "empty"
+          },
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "block_order": [
+        "empty-state"
+      ]
     },
     "buy-bar-main": {
       "type": "buy-bar",

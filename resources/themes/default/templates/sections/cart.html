@@ -1,7 +1,7 @@
 <section id="main-content" class="plaik-cart" aria-labelledby="plaik-cart-title">
   <h1 id="plaik-cart-title">{{ theme_strings.cart_title }}</h1>
   {{ slot("storefront.cart.items") }}
-  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.empty_cart }}</p>
+  {% for block in blocks %}{{ block }}{% endfor %}
   {{ slot("storefront.cart.summary") }}
   <div class="plaik-actions">
     {{ slot("storefront.cart.actions") }}

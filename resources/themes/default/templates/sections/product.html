@@ -4,7 +4,7 @@
     <h1>{{ theme_strings.product_title }}</h1>
     <p class="plaik-price">{{ theme_strings.product_card_price }}</p>
     {{ slot("storefront.product.after-price") }}
-    <p class="plaik-ui" data-ui-state="empty">{{ theme_strings.empty_product }}</p>
+    {% for block in blocks %}{{ block }}{% endfor %}
     {{ slot("storefront.product.availability") }}
     {{ slot("storefront.product.variants") }}
     {{ slot("storefront.product.purchase") }}

@@ -6,5 +6,10 @@
     "storefront.cart.items",
     "storefront.cart.actions",
     "storefront.cart.summary"
-  ]
+  ],
+  "allowed_blocks": [
+    "ui-state"
+  ],
+  "max_blocks": 24,
+  "max_block_nesting_depth": 1
 }

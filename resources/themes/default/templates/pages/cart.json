@@ -22,8 +22,19 @@
     "cart-main": {
       "type": "cart",
       "settings": {},
-      "blocks": {},
-      "block_order": []
+      "blocks": {
+        "empty-state": {
+          "type": "ui-state",
+          "settings": {
+            "state": "empty"
+          },
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "block_order": [
+        "empty-state"
+      ]
     },
     "site-footer": {
       "type": "footer",
