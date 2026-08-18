@@ -1,0 +1,194 @@
+{
+  "id": "auto-parts",
+  "settings": {
+    "color_background": "#f4f1ec",
+    "color_surface": "#ffffff",
+    "color_text": "#1a1a1a",
+    "color_muted": "#526078",
+    "color_primary": "#c2410c",
+    "color_secondary": "#9a3412",
+    "color_accent": "#c2410c",
+    "color_success": "#17643a",
+    "color_warning": "#8a5a00",
+    "color_error": "#9b1c1c",
+    "color_border": "#dce3ee",
+    "font_body": "system-ui, sans-serif",
+    "font_heading": "system-ui, sans-serif",
+    "size_base": "1rem",
+    "heading_scale": "1.25",
+    "weight_body": 400,
+    "weight_heading": 700,
+    "line_height": "1.5",
+    "letter_spacing": "0",
+    "content_width": "1440px",
+    "wide_width": "1440px",
+    "page_gutter": "1rem",
+    "section_space": "4rem",
+    "grid_gap": "1rem",
+    "radius_button": "0.75rem",
+    "radius_input": "0.5rem",
+    "radius_card": "1rem",
+    "border_width": "1px",
+    "shadow": "none",
+    "focus_style": "2px solid #1457d9",
+    "product_ratio": "1 / 1",
+    "category_ratio": "4 / 3",
+    "object_fit": "cover",
+    "lazy_loading": true
+  },
+  "pages": {
+    "product": {
+      "schema_version": 1,
+      "sections": {
+        "announce": {
+          "type": "announcement",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "site-header": {
+          "type": "header",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "crumbs": {
+          "type": "breadcrumbs",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "product-main": {
+          "type": "product",
+          "settings": {
+            "layout": "sticky"
+          },
+          "blocks": {
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "empty-state"
+          ]
+        },
+        "buy-bar-main": {
+          "type": "buy-bar",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "site-footer": {
+          "type": "footer",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "order": [
+        "announce",
+        "site-header",
+        "crumbs",
+        "product-main",
+        "buy-bar-main",
+        "site-footer"
+      ]
+    },
+    "home": {
+      "schema_version": 1,
+      "sections": {
+        "announce": {
+          "type": "announcement",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "site-header": {
+          "type": "header",
+          "settings": {},
+          "blocks": {
+            "nav-capabilities": {
+              "type": "nav-item",
+              "settings": {
+                "kind": "capabilities"
+              },
+              "blocks": {},
+              "block_order": []
+            },
+            "nav-status": {
+              "type": "nav-item",
+              "settings": {
+                "kind": "status"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "nav-capabilities",
+            "nav-status"
+          ]
+        },
+        "crumbs": {
+          "type": "breadcrumbs",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "hero-main": {
+          "type": "hero",
+          "settings": {
+            "alignment": "left"
+          },
+          "blocks": {
+            "sample-card": {
+              "type": "product-card",
+              "settings": {
+                "variant": "standard"
+              },
+              "blocks": {},
+              "block_order": []
+            },
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "sample-card",
+            "empty-state"
+          ]
+        },
+        "site-footer": {
+          "type": "footer",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        },
+        "fitment-main": {
+          "type": "fitment",
+          "settings": {},
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "order": [
+        "announce",
+        "site-header",
+        "crumbs",
+        "fitment-main",
+        "hero-main",
+        "site-footer"
+      ]
+    }
+  }
+}

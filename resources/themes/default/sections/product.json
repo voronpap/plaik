@@ -21,8 +21,7 @@
     "storefront.product.add-to-cart",
     "storefront.product.rating",
     "storefront.product.reviews",
-    "storefront.product.purchase",
-    "storefront.seo.structured-data"
+    "storefront.product.purchase"
   ],
   "allowed_blocks": [
     "ui-state"

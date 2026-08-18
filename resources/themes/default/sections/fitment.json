@@ -1,0 +1,10 @@
+{
+  "type": "fitment",
+  "template": "sections/fitment.html",
+  "settings": [],
+  "slots": [
+    "storefront.auto.vin",
+    "storefront.auto.vehicle",
+    "storefront.auto.oem"
+  ]
+}

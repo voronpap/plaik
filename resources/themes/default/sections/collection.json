@@ -10,6 +10,11 @@
         "list"
       ],
       "default": "grid"
+    },
+    {
+      "id": "wide",
+      "type": "boolean",
+      "default": false
     }
   ],
   "slots": [

@@ -66,5 +66,8 @@
   "ui_loading": "Loading",
   "ui_error": "This action could not be completed. Try again.",
   "ui_out_of_stock": "Currently unavailable",
-  "ui_disabled": "This action is unavailable"
+  "ui_disabled": "This action is unavailable",
+  "fitment_label": "Vehicle fitment",
+  "fitment_title": "Find parts that fit",
+  "fitment_body": "VIN, vehicle selector and OEM search are provided by catalog modules."
 }
