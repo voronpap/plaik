@@ -1,0 +1,5 @@
+{
+  "type": "divider",
+  "template": "blocks/divider.html",
+  "settings": []
+}

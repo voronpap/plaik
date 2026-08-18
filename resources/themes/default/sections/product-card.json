@@ -1,0 +1,30 @@
+{
+  "type": "product-card",
+  "template": "sections/product-card.html",
+  "settings": [
+    {
+      "id": "variant",
+      "type": "enum",
+      "choices": [
+        "compact",
+        "standard",
+        "detailed",
+        "horizontal"
+      ],
+      "default": "standard"
+    },
+    {
+      "id": "show_price",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "slots": [
+    "storefront.product.rating",
+    "storefront.product.wishlist",
+    "storefront.product.compare",
+    "storefront.product.quick-view",
+    "storefront.product.add-to-cart",
+    "storefront.product.after-price"
+  ]
+}

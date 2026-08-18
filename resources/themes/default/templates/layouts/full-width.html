@@ -19,25 +19,8 @@
   </head>
   <body>
     <a class="plaik-skip-link" href="#main-content">{{ theme_strings.skip_to_content }}</a>
-    <header class="plaik-header">
-      <a class="plaik-brand" href="/" aria-label="{{ web_brand }}">
-        <span class="plaik-brand-mark" aria-hidden="true">P</span>
-        <span>{{ web_brand }}</span>
-      </a>
-      <nav aria-label="{{ theme_strings.nav_label }}">
-        <a href="#capabilities">{{ theme_strings.nav_capabilities }}</a>
-        <a href="#status">{{ theme_strings.nav_status }}</a>
-        {{ slot("storefront.header.search") }}
-        {{ slot("storefront.header.cart") }}
-      </nav>
-    </header>
-    <main id="main-content">
-      {{ composition }}
-      {{ hook("displayContent") }}
-    </main>
-    <footer class="plaik-footer">
-      <p>{{ theme_strings.footer_note }}</p>
-      {{ hook("displayFooter") }}
-    </footer>
+    {{ composition }}
+    {{ hook("displayContent") }}
+    {{ hook("displayFooter") }}
   </body>
 </html>

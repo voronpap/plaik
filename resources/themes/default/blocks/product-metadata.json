@@ -1,0 +1,12 @@
+{
+  "type": "product-metadata",
+  "template": "blocks/product-metadata.html",
+  "settings": [
+    {
+      "id": "text",
+      "type": "string",
+      "max_length": 160,
+      "default": ""
+    }
+  ]
+}

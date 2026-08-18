@@ -1,0 +1,16 @@
+{
+  "type": "spacer",
+  "template": "blocks/spacer.html",
+  "settings": [
+    {
+      "id": "size",
+      "type": "enum",
+      "choices": [
+        "sm",
+        "md",
+        "lg"
+      ],
+      "default": "md"
+    }
+  ]
+}

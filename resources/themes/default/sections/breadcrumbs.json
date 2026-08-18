@@ -1,0 +1,11 @@
+{
+  "type": "breadcrumbs",
+  "template": "sections/breadcrumbs.html",
+  "settings": [
+    {
+      "id": "enabled",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}

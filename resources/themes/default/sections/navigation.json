@@ -1,0 +1,17 @@
+{
+  "type": "navigation",
+  "template": "sections/navigation.html",
+  "settings": [
+    {
+      "id": "label",
+      "type": "string",
+      "max_length": 80,
+      "default": ""
+    }
+  ],
+  "allowed_blocks": [
+    "nav-item"
+  ],
+  "max_blocks": 16,
+  "max_block_nesting_depth": 1
+}

@@ -1,0 +1,8 @@
+{
+  "type": "module-slot",
+  "template": "blocks/module-slot.html",
+  "settings": [],
+  "slots": [
+    "storefront.home.featured"
+  ]
+}

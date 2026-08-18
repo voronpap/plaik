@@ -26,5 +26,15 @@
   "error_title": "Сторінка недоступна",
   "error_body": "Запитану сторінку вітрини не вдалося показати.",
   "maintenance_title": "Вітрина на обслуговуванні",
-  "maintenance_body": "Вітрина тимчасово недоступна. Спробуйте пізніше."
+  "maintenance_body": "Вітрина тимчасово недоступна. Спробуйте пізніше.",
+  "announcement": "Далі можна підключити каталог і магазинні модулі.",
+  "breadcrumbs_label": "Шлях",
+  "breadcrumb_home": "Головна",
+  "product_card_placeholder": "Товар",
+  "product_card_price": "Ціна за запитом",
+  "product_card_compare": "Було",
+  "product_grid_label": "Товари",
+  "empty_catalog": "Модуль каталогу ще не встановлено.",
+  "image_placeholder": "Зображення",
+  "button_label": "Продовжити"
 }

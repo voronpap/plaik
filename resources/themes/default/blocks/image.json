@@ -1,0 +1,18 @@
+{
+  "type": "image",
+  "template": "blocks/image.html",
+  "settings": [
+    {
+      "id": "alt",
+      "type": "string",
+      "max_length": 120,
+      "default": ""
+    },
+    {
+      "id": "ratio",
+      "type": "string",
+      "max_length": 16,
+      "default": "1 / 1"
+    }
+  ]
+}

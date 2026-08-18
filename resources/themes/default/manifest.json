@@ -6,9 +6,13 @@
   "core": ">=0.1.0",
   "parent": null,
   "theme_api": 1,
-  "layouts": ["full-width"],
+  "layouts": [
+    "full-width"
+  ],
   "assets": {
-    "css": ["assets/css/theme.css"],
+    "css": [
+      "assets/css/theme.css"
+    ],
     "js": []
   },
   "hooks": [
@@ -17,18 +21,63 @@
     "displayFooter"
   ],
   "slots": [
-    "storefront.header.search",
-    "storefront.header.cart",
-    "storefront.product.after-price",
-    "storefront.product.purchase",
-    "storefront.product.reviews",
+    "control.order.sidebar",
     "storefront.cart.summary",
     "storefront.checkout.shipping",
-    "control.order.sidebar"
+    "storefront.footer.columns",
+    "storefront.footer.newsletter",
+    "storefront.header.account",
+    "storefront.header.cart",
+    "storefront.header.compare",
+    "storefront.header.search",
+    "storefront.header.wishlist",
+    "storefront.home.featured",
+    "storefront.product.add-to-cart",
+    "storefront.product.after-price",
+    "storefront.product.compare",
+    "storefront.product.purchase",
+    "storefront.product.quick-view",
+    "storefront.product.rating",
+    "storefront.product.reviews",
+    "storefront.product.wishlist"
   ],
-  "page_templates": ["home", "error", "maintenance"],
-  "sections": ["hero", "status"],
-  "blocks": ["heading"],
+  "page_templates": [
+    "home",
+    "error",
+    "maintenance"
+  ],
+  "sections": [
+    "announcement",
+    "breadcrumbs",
+    "footer",
+    "header",
+    "navigation",
+    "product-card",
+    "product-grid",
+    "text",
+    "hero",
+    "status"
+  ],
+  "blocks": [
+    "badge",
+    "button",
+    "divider",
+    "heading",
+    "icon",
+    "image",
+    "link",
+    "module-slot",
+    "nav-item",
+    "price",
+    "product-image",
+    "product-metadata",
+    "product-title",
+    "rich-text",
+    "spacer",
+    "text"
+  ],
   "settings_schema": true,
-  "presets": ["default"]
+  "presets": [
+    "default"
+  ]
 }

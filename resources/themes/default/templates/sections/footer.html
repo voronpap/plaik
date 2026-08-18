@@ -1,0 +1,6 @@
+<footer class="plaik-footer plaik-footer-cols-{{ settings.columns }}">
+  {{ slot("storefront.footer.columns") }}
+  {{ slot("storefront.footer.newsletter") }}
+  {% for block in blocks %}{{ block }}{% endfor %}
+  {% if settings.show_copyright %}<p>{{ theme_strings.footer_note }}</p>{% endif %}
+</footer>

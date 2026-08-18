@@ -1,4 +1,4 @@
-<section class="plaik-status-page" aria-labelledby="plaik-status-heading">
+<section id="main-content" class="plaik-status-page" aria-labelledby="plaik-status-heading">
   <h1 id="plaik-status-heading">{% if settings.heading %}{{ settings.heading }}{% elif settings.code == "maintenance" %}{{ theme_strings.maintenance_title }}{% else %}{{ theme_strings.error_title }}{% endif %}</h1>
   <p>{% if settings.code == "maintenance" %}{{ theme_strings.maintenance_body }}{% else %}{{ theme_strings.error_body }}{% endif %}</p>
 </section>

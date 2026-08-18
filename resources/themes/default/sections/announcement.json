@@ -1,0 +1,17 @@
+{
+  "type": "announcement",
+  "template": "sections/announcement.html",
+  "settings": [
+    {
+      "id": "enabled",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "id": "message",
+      "type": "string",
+      "max_length": 160,
+      "default": ""
+    }
+  ]
+}

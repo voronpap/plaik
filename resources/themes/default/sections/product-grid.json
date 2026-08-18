@@ -1,0 +1,39 @@
+{
+  "type": "product-grid",
+  "template": "sections/product-grid.html",
+  "settings": [
+    {
+      "id": "columns_desktop",
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 6,
+      "default": 4
+    },
+    {
+      "id": "columns_mobile",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "default": 1
+    },
+    {
+      "id": "mode",
+      "type": "enum",
+      "choices": [
+        "grid",
+        "list"
+      ],
+      "default": "grid"
+    }
+  ],
+  "slots": [
+    "storefront.home.featured"
+  ],
+  "allowed_blocks": [
+    "product-title",
+    "product-image",
+    "price"
+  ],
+  "max_blocks": 24,
+  "max_block_nesting_depth": 1
+}

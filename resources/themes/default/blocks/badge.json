@@ -1,0 +1,12 @@
+{
+  "type": "badge",
+  "template": "blocks/badge.html",
+  "settings": [
+    {
+      "id": "label",
+      "type": "string",
+      "max_length": 32,
+      "default": ""
+    }
+  ]
+}

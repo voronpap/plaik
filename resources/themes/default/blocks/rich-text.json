@@ -1,11 +1,11 @@
 {
-  "type": "heading",
-  "template": "blocks/heading.html",
+  "type": "rich-text",
+  "template": "blocks/rich-text.html",
   "settings": [
     {
       "id": "text",
       "type": "string",
-      "max_length": 120,
+      "max_length": 500,
       "default": ""
     }
   ]

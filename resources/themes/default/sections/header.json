@@ -1,0 +1,28 @@
+{
+  "type": "header",
+  "template": "sections/header.html",
+  "settings": [
+    {
+      "id": "sticky",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "id": "boxed",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "id": "show_search",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "slots": [
+    "storefront.header.search",
+    "storefront.header.cart",
+    "storefront.header.account",
+    "storefront.header.wishlist",
+    "storefront.header.compare"
+  ]
+}

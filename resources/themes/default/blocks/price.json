@@ -1,0 +1,11 @@
+{
+  "type": "price",
+  "template": "blocks/price.html",
+  "settings": [
+    {
+      "id": "show_compare",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}
