@@ -116,8 +116,7 @@
     "product-title",
     "rich-text",
     "spacer",
-    "text",
-    "product-card"
+    "text"
   ],
   "settings_schema": true,
   "presets": [
