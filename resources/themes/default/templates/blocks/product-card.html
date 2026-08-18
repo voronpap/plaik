@@ -1,4 +1,4 @@
-<article class="plaik-product-card plaik-product-card-{{ settings.variant }}">
+<article class="plaik-product-card plaik-product-card-{{ settings.variant }}" data-ui-state="empty">
   <div class="plaik-product-card-media" aria-hidden="true"></div>
   <h3 class="plaik-product-card-title">{{ theme_strings.product_card_placeholder }}</h3>
   {% if settings.show_price %}<p class="plaik-product-card-price">{{ theme_strings.product_card_price }}</p>{{ slot("storefront.product.after-price") }}{% endif %}

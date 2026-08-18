@@ -114,14 +114,14 @@
     "module-slot",
     "nav-item",
     "price",
+    "product-card",
     "product-image",
     "product-metadata",
     "product-title",
     "rich-text",
     "spacer",
     "text",
-    "ui-state",
-    "product-card"
+    "ui-state"
   ],
   "settings_schema": true,
   "presets": [

@@ -52,12 +52,6 @@
           "blocks": {},
           "block_order": []
         },
-        "site-nav": {
-          "type": "navigation",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
         "crumbs": {
           "type": "breadcrumbs",
           "settings": {},
@@ -69,8 +63,19 @@
           "settings": {
             "layout": "classic"
           },
-          "blocks": {},
-          "block_order": []
+          "blocks": {
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "empty-state"
+          ]
         },
         "buy-bar-main": {
           "type": "buy-bar",
@@ -88,7 +93,6 @@
       "order": [
         "announce",
         "site-header",
-        "site-nav",
         "crumbs",
         "product-main",
         "buy-bar-main",
@@ -110,12 +114,6 @@
           "blocks": {},
           "block_order": []
         },
-        "site-nav": {
-          "type": "navigation",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
         "crumbs": {
           "type": "breadcrumbs",
           "settings": {},
@@ -125,7 +123,8 @@
         "filters-main": {
           "type": "filters",
           "settings": {
-            "drawer": true
+            "drawer": true,
+            "source": "collection"
           },
           "blocks": {},
           "block_order": []
@@ -135,8 +134,19 @@
           "settings": {
             "mode": "grid"
           },
-          "blocks": {},
-          "block_order": []
+          "blocks": {
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "empty-state"
+          ]
         },
         "site-footer": {
           "type": "footer",
@@ -148,7 +158,6 @@
       "order": [
         "announce",
         "site-header",
-        "site-nav",
         "crumbs",
         "filters-main",
         "collection-main",

@@ -5,12 +5,7 @@
     {
       "id": "variant",
       "type": "enum",
-      "choices": [
-        "compact",
-        "standard",
-        "detailed",
-        "horizontal"
-      ],
+      "choices": ["compact", "standard", "detailed", "horizontal"],
       "default": "standard"
     },
     {

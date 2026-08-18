@@ -2,5 +2,4 @@
   <h1>{% if settings.heading %}{{ settings.heading }}{% else %}{{ theme_strings.page_title }}{% endif %}</h1>
   {% if settings.body %}<p>{{ settings.body }}</p>{% endif %}
   {{ slot("storefront.page.content") }}
-  {{ slot("storefront.seo.structured-data") }}
 </section>

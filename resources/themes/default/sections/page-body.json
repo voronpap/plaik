@@ -16,7 +16,6 @@
     }
   ],
   "slots": [
-    "storefront.page.content",
-    "storefront.seo.structured-data"
+    "storefront.page.content"
   ]
 }

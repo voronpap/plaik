@@ -52,12 +52,6 @@
           "blocks": {},
           "block_order": []
         },
-        "site-nav": {
-          "type": "navigation",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
         "crumbs": {
           "type": "breadcrumbs",
           "settings": {},
@@ -69,8 +63,19 @@
           "settings": {
             "layout": "sticky"
           },
-          "blocks": {},
-          "block_order": []
+          "blocks": {
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
+            }
+          },
+          "block_order": [
+            "empty-state"
+          ]
         },
         "buy-bar-main": {
           "type": "buy-bar",
@@ -88,7 +93,6 @@
       "order": [
         "announce",
         "site-header",
-        "site-nav",
         "crumbs",
         "product-main",
         "buy-bar-main",
@@ -149,10 +153,19 @@
               },
               "blocks": {},
               "block_order": []
+            },
+            "empty-state": {
+              "type": "ui-state",
+              "settings": {
+                "state": "empty"
+              },
+              "blocks": {},
+              "block_order": []
             }
           },
           "block_order": [
-            "sample-card"
+            "sample-card",
+            "empty-state"
           ]
         },
         "site-footer": {
