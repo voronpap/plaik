@@ -117,8 +117,7 @@
     "rich-text",
     "spacer",
     "text",
-    "ui-state",
-    "product-card"
+    "ui-state"
   ],
   "settings_schema": true,
   "presets": [
