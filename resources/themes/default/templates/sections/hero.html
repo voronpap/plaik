@@ -1,0 +1,34 @@
+<section class="plaik-hero plaik-hero-{{ settings.alignment }}" aria-labelledby="plaik-hero-title">
+  <div>
+    <p class="plaik-status"><span aria-hidden="true"></span> {{ theme_strings.hero_status }}</p>
+    <p class="plaik-kicker">{{ theme_strings.hero_kicker }}</p>
+    <h1 id="plaik-hero-title">{% if settings.heading %}{{ settings.heading }}{% else %}{{ theme_strings.hero_title }}{% endif %}</h1>
+    <p class="plaik-lead">{{ theme_strings.hero_lead }}</p>
+    <div class="plaik-actions">
+      <a class="plaik-button plaik-button-primary" href="#capabilities">{{ theme_strings.hero_primary }}</a>
+      <a class="plaik-button plaik-button-secondary" href="#status">{{ theme_strings.hero_secondary }}</a>
+    </div>
+  </div>
+  <div class="plaik-visual" aria-hidden="true">
+    <span class="plaik-orbit plaik-orbit-one"></span>
+    <span class="plaik-orbit plaik-orbit-two"></span>
+    <span class="plaik-core">P</span>
+  </div>
+</section>
+<section class="plaik-section" id="capabilities" aria-labelledby="plaik-capabilities-title">
+  <p class="plaik-kicker">{{ theme_strings.capabilities_kicker }}</p>
+  <h2 id="plaik-capabilities-title">{{ theme_strings.capabilities_title }}</h2>
+  <div class="plaik-grid">
+    <article><span>01</span><h3>{{ theme_strings.cap_one_title }}</h3><p>{{ theme_strings.cap_one_body }}</p></article>
+    <article><span>02</span><h3>{{ theme_strings.cap_two_title }}</h3><p>{{ theme_strings.cap_two_body }}</p></article>
+    <article><span>03</span><h3>{{ theme_strings.cap_three_title }}</h3><p>{{ theme_strings.cap_three_body }}</p></article>
+  </div>
+</section>
+<section class="plaik-readiness" id="status" aria-labelledby="plaik-status-title">
+  <div>
+    <p class="plaik-kicker">{{ theme_strings.readiness_kicker }}</p>
+    <h2 id="plaik-status-title">{{ theme_strings.readiness_title }}</h2>
+  </div>
+  <p><span aria-hidden="true"></span> {{ theme_strings.readiness_note }}</p>
+</section>
+{% for block in blocks %}{{ block }}{% endfor %}

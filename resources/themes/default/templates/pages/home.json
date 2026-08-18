@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "sections": {
+    "hero-main": {
+      "type": "hero",
+      "settings": {"alignment": "left"},
+      "blocks": {},
+      "block_order": []
+    }
+  },
+  "order": ["hero-main"]
+}

@@ -1,0 +1,8 @@
+{
+  "type": "status",
+  "template": "sections/status.html",
+  "settings": [
+    {"id": "heading", "type": "string", "max_length": 120, "default": ""},
+    {"id": "code", "type": "string", "max_length": 16, "default": ""}
+  ]
+}
