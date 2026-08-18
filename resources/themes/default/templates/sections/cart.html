@@ -1,4 +1,4 @@
-<section id="main-content" class="plaik-cart" aria-labelledby="plaik-cart-title">
+<main id="main-content" class="plaik-cart" aria-labelledby="plaik-cart-title" tabindex="-1">
   <h1 id="plaik-cart-title">{{ theme_strings.cart_title }}</h1>
   {{ slot("storefront.cart.items") }}
   {% for block in blocks %}{{ block }}{% endfor %}
@@ -7,4 +7,4 @@
     {{ slot("storefront.cart.actions") }}
     <a class="plaik-button plaik-button-primary" href="#checkout">{{ theme_strings.cart_checkout }}</a>
   </div>
-</section>
+</main>

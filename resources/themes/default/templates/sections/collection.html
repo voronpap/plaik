@@ -1,4 +1,5 @@
-<main id="main-content" class="plaik-collection plaik-collection-{{ settings.mode }}{% if settings.wide %} plaik-collection-wide{% endif %}" aria-label="{{ theme_strings.collection_label }}">
+<main id="main-content" class="plaik-collection plaik-collection-{{ settings.mode }}{% if settings.wide %} plaik-collection-wide{% endif %}" aria-label="{{ theme_strings.collection_label }}" tabindex="-1">
+  <h1>{{ theme_strings.collection_label }}</h1>
   {{ slot("storefront.collection.products") }}
   {% for block in blocks %}{{ block }}{% endfor %}
 </main>

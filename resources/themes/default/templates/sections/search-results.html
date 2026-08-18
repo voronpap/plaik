@@ -1,6 +1,7 @@
-<section id="main-content" class="plaik-search plaik-search-{{ settings.mode }}" aria-label="{{ theme_strings.search_label }}">
+<main id="main-content" class="plaik-search plaik-search-{{ settings.mode }}" aria-label="{{ theme_strings.search_label }}" tabindex="-1">
+  <h1>{{ theme_strings.search_label }}</h1>
   <div class="plaik-search-form">{{ slot("storefront.search.form") }}</div>
   <div class="plaik-filters">{{ slot("storefront.search.filters") }}</div>
   {{ slot("storefront.search.results") }}
   {% for block in blocks %}{{ block }}{% endfor %}
-</section>
+</main>
