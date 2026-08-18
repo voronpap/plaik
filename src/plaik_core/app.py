@@ -142,7 +142,6 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         enabled_package_ids=enabled_theme_package_ids,
     )
     theme_manager = ThemeManager(theme_registry, ActiveThemeStore(runtime.active_themes_path))
-    runtime.theme_revisions_path.mkdir(parents=True, exist_ok=True)
     theme_revision_store = ThemeRevisionStore(
         runtime.theme_revisions_path,
         theme_registry=theme_registry,
