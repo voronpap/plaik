@@ -1101,12 +1101,25 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
         ) or "PLAIK"
         public_url = str(configuration.public_url).rstrip("/")
         try:
-            rendered = renderer.render(
-                store_id=store_id,
-                locale=locale,
-                page_title=f"{brand} — PLAIK",
-                context={"brand": brand, "public_url": public_url},
-            )
+            try:
+                active = renderer.theme_manager.active(store_id)
+            except KeyError:
+                active = None
+            if active is not None and active.page_templates:
+                rendered = renderer.render_page_composition(
+                    store_id=store_id,
+                    locale=locale,
+                    page_title=f"{brand} — PLAIK",
+                    page_type="home",
+                    context={"brand": brand, "public_url": public_url},
+                )
+            else:
+                rendered = renderer.render(
+                    store_id=store_id,
+                    locale=locale,
+                    page_title=f"{brand} — PLAIK",
+                    context={"brand": brand, "public_url": public_url},
+                )
         except WebRenderError:
             raise HTTPException(
                 status_code=503,

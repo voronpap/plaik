@@ -13,7 +13,6 @@
   },
   "hooks": [
     "displayHeader",
-    "displayHome",
     "displayContent",
     "displayFooter"
   ],
@@ -26,5 +25,10 @@
     "storefront.cart.summary",
     "storefront.checkout.shipping",
     "control.order.sidebar"
-  ]
+  ],
+  "page_templates": ["home", "error", "maintenance"],
+  "sections": ["hero", "status"],
+  "blocks": ["heading"],
+  "settings_schema": true,
+  "presets": ["default"]
 }

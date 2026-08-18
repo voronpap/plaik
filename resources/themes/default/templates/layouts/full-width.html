@@ -5,74 +5,38 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="{{ web_brand }} працює на захищеній платформі PLAIK. Платформа готова до підключення каталогу та магазинних модулів.">
+    <meta name="description" content="{{ theme_strings.meta_description }}">
     <meta name="theme-color" content="#0b1739">
     {% if web_url %}<link rel="canonical" href="{{ web_url }}/">{% endif %}
     <link rel="icon" href="/favicon.ico" sizes="any">
     <meta property="og:type" content="website">
     <meta property="og:title" content="{{ page.title }}">
-    <meta property="og:description" content="Захищена модульна платформа готова до наступного етапу запуску магазину.">
+    <meta property="og:description" content="{{ theme_strings.og_description }}">
     {% if web_url %}<meta property="og:url" content="{{ web_url }}/">{% endif %}
     <title>{{ page.title }}</title>
     {{ theme_assets("css") }}
     {{ hook("displayHeader") }}
   </head>
   <body>
-    <a class="sf-skip-link" href="#main-content">До основного вмісту</a>
-    <header class="sf-header">
-      <a class="sf-brand" href="/" aria-label="{{ web_brand }}, головна">
-        <span class="sf-brand-mark" aria-hidden="true">M</span>
+    <a class="plaik-skip-link" href="#main-content">{{ theme_strings.skip_to_content }}</a>
+    <header class="plaik-header">
+      <a class="plaik-brand" href="/" aria-label="{{ web_brand }}">
+        <span class="plaik-brand-mark" aria-hidden="true">P</span>
         <span>{{ web_brand }}</span>
       </a>
-      <nav aria-label="Головна навігація">
-        <a href="#capabilities">Можливості</a>
-        <a href="#status">Статус</a>
+      <nav aria-label="{{ theme_strings.nav_label }}">
+        <a href="#capabilities">{{ theme_strings.nav_capabilities }}</a>
+        <a href="#status">{{ theme_strings.nav_status }}</a>
         {{ slot("storefront.header.search") }}
         {{ slot("storefront.header.cart") }}
       </nav>
     </header>
     <main id="main-content">
-      {% set content = hook("displayContent") %}
-      {% if content %}
-        {{ content }}
-      {% else %}
-        <section class="sf-hero" aria-labelledby="sf-hero-title">
-          <div>
-            <p class="sf-status"><span aria-hidden="true"></span> Платформа онлайн</p>
-            <p class="sf-kicker">PLAIK Platform</p>
-            <h1 id="sf-hero-title">Основа магазину готова до наповнення</h1>
-            <p class="sf-lead">
-              {{ web_brand }} працює на захищеному модульному ядрі. Наступний етап —
-              підключення каталогу, кошика, оформлення та інших магазинних модулів.
-            </p>
-            <div class="sf-actions">
-              <a class="sf-button sf-button-primary" href="#capabilities">Що вже готово</a>
-              <a class="sf-button sf-button-secondary" href="#status">Перевірити статус</a>
-            </div>
-          </div>
-          <div class="sf-visual" aria-hidden="true">
-            <span class="sf-orbit sf-orbit-one"></span>
-            <span class="sf-orbit sf-orbit-two"></span>
-            <span class="sf-core">M</span>
-          </div>
-        </section>
-        <section class="sf-section" id="capabilities" aria-labelledby="sf-capabilities-title">
-          <p class="sf-kicker">Готова інфраструктура</p>
-          <h2 id="sf-capabilities-title">Надійна база для наступного етапу</h2>
-          <div class="sf-grid">
-            <article><span>01</span><h3>Безпечне ядро</h3><p>Ізольований публічний процес, контроль доступу та fail-closed перевірки.</p></article>
-            <article><span>02</span><h3>Модульна архітектура</h3><p>Каталог і комерційні можливості підключаються окремими підписаними пакетами.</p></article>
-            <article><span>03</span><h3>Надійне розгортання</h3><p>Зміни проходять перевірки та автоматично перемикаються через blue/green deployment.</p></article>
-          </div>
-        </section>
-        <section class="sf-readiness" id="status" aria-labelledby="sf-status-title">
-          <div><p class="sf-kicker">Поточний стан</p><h2 id="sf-status-title">Платформа працює штатно</h2></div>
-          <p><span aria-hidden="true"></span> Web готовий</p>
-        </section>
-      {% endif %}
+      {{ composition }}
+      {{ hook("displayContent") }}
     </main>
-    <footer class="sf-footer">
-      <p>© {{ web_brand }} · Працює на PLAIK</p>
+    <footer class="plaik-footer">
+      <p>{{ theme_strings.footer_note }}</p>
       {{ hook("displayFooter") }}
     </footer>
   </body>

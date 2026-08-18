@@ -159,7 +159,9 @@ class WebRenderer:
         "theme_assets",
         "theme_id",
         "theme_settings",
+        "theme_strings",
         "revision_id",
+        "composition",
     }
 
     def __init__(
@@ -325,6 +327,9 @@ class WebRenderer:
                 "hook": _allow_web_callable(render_hook),
                 "slot": _allow_web_callable(render_slot),
                 "theme_assets": _allow_web_callable(render_assets),
+                "theme_settings": {},
+                "theme_strings": self._theme_strings(active.id, locale),
+                "composition": Markup(""),
             },
         )
         return RenderedWeb(
@@ -496,6 +501,7 @@ class WebRenderer:
             "slot": _allow_web_callable(render_slot),
             "theme_assets": _allow_web_callable(render_assets),
             "theme_settings": dict(revision.settings.values) if revision is not None else {},
+            "theme_strings": self._theme_strings(active.id, locale),
             "revision_id": None if revision is None else revision.revision_id,
         }
         body = "".join(
@@ -610,6 +616,14 @@ class WebRenderer:
                 continue
             return base, relative
         return None
+
+    def _theme_strings(self, theme_id: str, locale: str) -> dict[str, str]:
+        from .theme_locales import ThemeLocaleError, load_theme_strings
+
+        try:
+            return load_theme_strings(self.theme_registry.path(theme_id), locale)
+        except ThemeLocaleError as error:
+            raise WebRenderError(str(error)) from error
 
     def _render_system_fallback(
         self,

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "sections": {
+    "status-main": {
+      "type": "status",
+      "settings": {"code": "maintenance"},
+      "blocks": {},
+      "block_order": []
+    }
+  },
+  "order": ["status-main"]
+}

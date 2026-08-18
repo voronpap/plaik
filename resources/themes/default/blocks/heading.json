@@ -1,0 +1,7 @@
+{
+  "type": "heading",
+  "template": "blocks/heading.html",
+  "settings": [
+    {"id": "text", "type": "string", "max_length": 120, "default": ""}
+  ]
+}
