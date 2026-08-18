@@ -25,6 +25,9 @@
     "control.order.sidebar",
     "storefront.account.content",
     "storefront.account.nav",
+    "storefront.auto.oem",
+    "storefront.auto.vehicle",
+    "storefront.auto.vin",
     "storefront.cart.actions",
     "storefront.cart.items",
     "storefront.cart.summary",
@@ -98,7 +101,8 @@
     "contact",
     "page-body",
     "filters",
-    "buy-bar"
+    "buy-bar",
+    "fitment"
   ],
   "blocks": [
     "badge",
@@ -121,6 +125,11 @@
   ],
   "settings_schema": true,
   "presets": [
-    "default"
+    "default",
+    "minimal",
+    "fashion",
+    "electronics",
+    "auto-parts",
+    "large-catalog"
   ]
 }

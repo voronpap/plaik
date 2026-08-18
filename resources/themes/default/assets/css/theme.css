@@ -327,3 +327,7 @@
   [data-web-theme="default"] .plaik-buy-bar-sticky .plaik-button { width: 100%; }
 }
 
+[data-web-theme="default"] .plaik-fitment {
+  width: min(calc(100% - 2 * var(--plaik-space-md)), var(--plaik-content-width));
+  margin-inline: auto; padding-block: 2rem;
+}

@@ -38,36 +38,50 @@ Those capabilities belong to modules/packages. The theme defines where module UI
 
 ## 3. Base theme structure
 
-Recommended base structure:
+Theme API v1 on-disk layout used by Core discover and load:
 
 ```text
 default/
 ├── manifest.json
-├── config/
-│   ├── settings.schema.json
-│   ├── settings.json
-│   └── presets.json
+├── settings.json
+├── presets/
+│   ├── default.json
+│   ├── minimal.json
+│   ├── fashion.json
+│   ├── electronics.json
+│   ├── auto-parts.json
+│   └── large-catalog.json
 ├── templates/
-│   ├── home.json
-│   ├── product.json
-│   ├── category.json
-│   ├── search.json
-│   ├── cart.json
-│   ├── checkout.json
-│   ├── account.json
-│   ├── page.json
-│   ├── error.json
-│   └── maintenance.json
+│   ├── layouts/
+│   │   ├── full-width.html
+│   │   └── checkout.html
+│   ├── pages/
+│   │   ├── home.json
+│   │   ├── category.json
+│   │   ├── search.json
+│   │   ├── product.json
+│   │   ├── cart.json
+│   │   ├── checkout.json
+│   │   ├── account.json
+│   │   ├── page.json
+│   │   ├── contact.json
+│   │   ├── error.json
+│   │   ├── error-403.json
+│   │   ├── error-404.json
+│   │   ├── error-500.json
+│   │   └── maintenance.json
+│   ├── sections/
+│   └── blocks/
 ├── sections/
 ├── blocks/
-├── snippets/
 ├── assets/
-│   ├── css/
-│   ├── js/
-│   ├── icons/
-│   └── images/
+│   └── css/
 └── locales/
+    ├── en.json
+    └── uk.json
 ```
+
+Global design tokens live in `settings.json`. Presets live in `presets/<id>.json` and must not mutate theme source files. Page compositions live in `templates/pages/<type>.json`. Section and block schemas live next to their HTML under `sections/` and `blocks/` plus `templates/sections|blocks/`. Slot ids stay in the `storefront.*` / `control.*` namespaces. Tablet presentation is CSS; Theme API overlays remain `narrow` / `wide` only.
 
 ## 4. Templates
 

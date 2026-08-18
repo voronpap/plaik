@@ -21,6 +21,7 @@
     <a class="plaik-skip-link" href="#main-content">{{ theme_strings.skip_to_content }}</a>
     {{ composition }}
     {{ hook("displayContent") }}
+    {{ slot("storefront.seo.structured-data") }}
     {{ hook("displayFooter") }}
   </body>
 </html>
