@@ -1105,7 +1105,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
                 active = renderer.theme_manager.active(store_id)
             except KeyError:
                 active = None
-            if active is not None and active.page_templates:
+            if active is not None and renderer.uses_page_composition(active.id):
                 rendered = renderer.render_page_composition(
                     store_id=store_id,
                     locale=locale,
