@@ -146,6 +146,9 @@
   font-weight: 700;
   text-transform: uppercase;
 }
+[data-web-theme="default"] .plaik-readiness .plaik-kicker {
+  color: color-mix(in srgb, var(--plaik-color-primary) 40%, #ffffff);
+}
 
 [data-web-theme="default"] h1 {
   margin: 0;
