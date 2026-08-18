@@ -1,6 +1,6 @@
 {
   "type": "product-card",
-  "template": "sections/product-card.html",
+  "template": "blocks/product-card.html",
   "settings": [
     {
       "id": "variant",

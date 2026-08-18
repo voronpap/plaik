@@ -87,7 +87,6 @@
     "footer",
     "header",
     "navigation",
-    "product-card",
     "product-grid",
     "text",
     "hero",
@@ -121,7 +120,8 @@
     "rich-text",
     "spacer",
     "text",
-    "ui-state"
+    "ui-state",
+    "product-card"
   ],
   "settings_schema": true,
   "presets": [

@@ -10,14 +10,28 @@
     "site-header": {
       "type": "header",
       "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
-    "site-nav": {
-      "type": "navigation",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
+      "blocks": {
+        "nav-capabilities": {
+          "type": "nav-item",
+          "settings": {
+            "kind": "capabilities"
+          },
+          "blocks": {},
+          "block_order": []
+        },
+        "nav-status": {
+          "type": "nav-item",
+          "settings": {
+            "kind": "status"
+          },
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "block_order": [
+        "nav-capabilities",
+        "nav-status"
+      ]
     },
     "crumbs": {
       "type": "breadcrumbs",
@@ -30,22 +44,19 @@
       "settings": {
         "alignment": "left"
       },
-      "blocks": {},
-      "block_order": []
-    },
-    "featured": {
-      "type": "product-grid",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
-    "sample-card": {
-      "type": "product-card",
-      "settings": {
-        "variant": "standard"
+      "blocks": {
+        "sample-card": {
+          "type": "product-card",
+          "settings": {
+            "variant": "standard"
+          },
+          "blocks": {},
+          "block_order": []
+        }
       },
-      "blocks": {},
-      "block_order": []
+      "block_order": [
+        "sample-card"
+      ]
     },
     "site-footer": {
       "type": "footer",
@@ -57,11 +68,8 @@
   "order": [
     "announce",
     "site-header",
-    "site-nav",
     "crumbs",
     "hero-main",
-    "featured",
-    "sample-card",
     "site-footer"
   ]
 }

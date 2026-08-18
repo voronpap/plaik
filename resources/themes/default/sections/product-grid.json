@@ -32,6 +32,7 @@
     "storefront.search.results"
   ],
   "allowed_blocks": [
+    "product-card",
     "product-title",
     "product-image",
     "price",
