@@ -1,16 +1,11 @@
 {
   "type": "product-card",
-  "template": "sections/product-card.html",
+  "template": "blocks/product-card.html",
   "settings": [
     {
       "id": "variant",
       "type": "enum",
-      "choices": [
-        "compact",
-        "standard",
-        "detailed",
-        "horizontal"
-      ],
+      "choices": ["compact", "standard", "detailed", "horizontal"],
       "default": "standard"
     },
     {

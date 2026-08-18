@@ -18,6 +18,9 @@
       "default": true
     }
   ],
+  "allowed_blocks": ["nav-item"],
+  "max_blocks": 16,
+  "max_block_nesting_depth": 1,
   "slots": [
     "storefront.header.search",
     "storefront.header.cart",

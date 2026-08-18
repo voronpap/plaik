@@ -1,1 +1,9 @@
+{% if settings.kind == "capabilities" %}
+<a class="plaik-nav-item" href="#capabilities">{{ theme_strings.nav_capabilities }}</a>
+{% elif settings.kind == "status" %}
+<a class="plaik-nav-item" href="#status">{{ theme_strings.nav_status }}</a>
+{% elif settings.kind == "home" %}
+<a class="plaik-nav-item" href="/">{{ theme_strings.breadcrumb_home }}</a>
+{% else %}
 <a class="plaik-nav-item" href="{{ settings.href }}">{% if settings.label %}{{ settings.label }}{% endif %}</a>
+{% endif %}

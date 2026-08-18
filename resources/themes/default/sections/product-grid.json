@@ -30,6 +30,7 @@
     "storefront.home.featured"
   ],
   "allowed_blocks": [
+    "product-card",
     "product-title",
     "product-image",
     "price"

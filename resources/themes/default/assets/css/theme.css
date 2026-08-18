@@ -267,3 +267,5 @@
 @media (prefers-reduced-motion: reduce) {
   [data-web-theme="default"] * { animation: none !important; transition: none !important; }
 }
+
+[data-web-theme="default"] .plaik-header-tools { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
