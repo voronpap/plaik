@@ -188,12 +188,16 @@ class EventOutboxDispatcher:
     def dispatch(self, connection: sqlite3.Connection, *, limit: int = 100) -> int:
         delivered = 0
         for event in self.outbox.pending(connection, limit=limit):
+            envelope = event.as_envelope()
             self.bus.publish(
                 owner=event.owner,
                 contract=event.contract,
                 version=event.version,
                 payload=event.payload,
                 idempotency_key=event.idempotency_key,
+                scope=envelope.scope,
+                resource=envelope.resource,
+                correlation_id=envelope.correlation_id,
             )
             self.outbox.mark_dispatched(connection, event.id)
             connection.commit()
