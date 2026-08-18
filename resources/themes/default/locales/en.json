@@ -61,5 +61,10 @@
   "not_found_title": "Page not found",
   "not_found_body": "The requested storefront page does not exist.",
   "server_error_title": "Something went wrong",
-  "server_error_body": "The storefront could not complete this request."
+  "server_error_body": "The storefront could not complete this request.",
+  "menu": "Menu",
+  "ui_loading": "Loading",
+  "ui_error": "This action could not be completed. Try again.",
+  "ui_out_of_stock": "Currently unavailable",
+  "ui_disabled": "This action is unavailable"
 }

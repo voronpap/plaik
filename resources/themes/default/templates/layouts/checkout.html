@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="{{ locale }}" data-web-theme="default" data-plaik-layout="checkout">
+<html lang="{{ locale }}" dir="{{ text_direction | default('ltr') }}" data-web-theme="default" data-plaik-layout="checkout">
   {% set web_url = public_url | default("") %}
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="description" content="{{ theme_strings.meta_description }}">
     <title>{{ page.title }}</title>
     {{ theme_assets("css") }}

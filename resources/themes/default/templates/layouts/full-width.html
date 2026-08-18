@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="{{ locale }}" data-web-theme="default">
+<html lang="{{ locale }}" dir="{{ text_direction | default('ltr') }}" data-web-theme="default">
   {% set web_brand = brand | default("PLAIK") %}
   {% set web_url = public_url | default("") %}
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="description" content="{{ theme_strings.meta_description }}">
     <meta name="theme-color" content="#0b1739">
     {% if web_url %}<link rel="canonical" href="{{ web_url }}/">{% endif %}

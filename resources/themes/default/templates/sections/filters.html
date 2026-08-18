@@ -1,5 +1,16 @@
-<aside class="plaik-filters plaik-filters-{% if settings.drawer %}drawer{% else %}inline{% endif %}" aria-label="{{ theme_strings.filters_label }}">
+{% if settings.drawer %}
+<details class="plaik-filter-drawer">
+  <summary class="plaik-menu-toggle">{{ theme_strings.filters_label }}</summary>
+  <aside class="plaik-filters plaik-filters-drawer" aria-label="{{ theme_strings.filters_label }}">
+    {{ slot("storefront.collection.filters") }}
+    {{ slot("storefront.search.filters") }}
+    {{ slot("storefront.collection.sort") }}
+  </aside>
+</details>
+{% else %}
+<aside class="plaik-filters plaik-filters-inline" aria-label="{{ theme_strings.filters_label }}">
   {{ slot("storefront.collection.filters") }}
   {{ slot("storefront.search.filters") }}
   {{ slot("storefront.collection.sort") }}
 </aside>
+{% endif %}

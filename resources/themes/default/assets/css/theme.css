@@ -293,3 +293,37 @@
 }
 [data-web-theme="default"] .plaik-header-tools { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 [data-web-theme="default"] .plaik-ui { color: var(--plaik-color-muted); }
+[data-web-theme="default"] .plaik-menu-toggle {
+  min-height: 44px; min-width: 44px; display: inline-flex; align-items: center;
+  padding: .7rem 1rem; border: 1px solid var(--plaik-color-border); border-radius: var(--plaik-radius-md);
+  background: var(--plaik-color-surface); font-weight: 700; cursor: pointer; list-style: none;
+}
+[data-web-theme="default"] .plaik-mobile-nav { display: none; }
+[data-web-theme="default"] .plaik-header-nav-mobile { display: flex; flex-direction: column; gap: .5rem; padding: .75rem 0; }
+[data-web-theme="default"] .plaik-header-nav-mobile a { min-height: 44px; display: inline-flex; align-items: center; }
+[data-web-theme="default"] .plaik-filter-drawer > summary { margin-bottom: .75rem; }
+[data-web-theme="default"] [data-ui-state="loading"] { opacity: .7; }
+[data-web-theme="default"] [data-ui-state="error"] { color: var(--plaik-color-error); }
+[data-web-theme="default"] [data-ui-state="out-of-stock"],
+[data-web-theme="default"] [data-ui-state="disabled-with-reason"] { color: var(--plaik-color-warning); }
+[data-web-theme="default"] [dir="rtl"] .plaik-header,
+[data-web-theme="default"][dir="rtl"] .plaik-header { flex-direction: row-reverse; }
+[data-web-theme="default"] [dir="rtl"] .plaik-product { direction: rtl; }
+
+@media (min-width: 761px) {
+  [data-web-theme="default"] .plaik-filter-drawer > summary { display: none; }
+  [data-web-theme="default"] .plaik-filter-drawer { display: block; }
+}
+
+@media (max-width: 760px) {
+  [data-web-theme="default"] .plaik-header-nav-desktop { display: none; }
+  [data-web-theme="default"] .plaik-mobile-nav { display: block; }
+  [data-web-theme="default"] .plaik-product { grid-template-columns: 1fr; }
+  [data-web-theme="default"] .plaik-buy-bar-sticky .plaik-button { flex: 1 1 12rem; justify-content: center; }
+}
+
+@media (max-width: 320px) {
+  [data-web-theme="default"] .plaik-header-tools { width: 100%; }
+  [data-web-theme="default"] .plaik-buy-bar-sticky .plaik-button { width: 100%; }
+}
+

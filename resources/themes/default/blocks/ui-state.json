@@ -1,0 +1,24 @@
+{
+  "type": "ui-state",
+  "template": "blocks/ui-state.html",
+  "settings": [
+    {
+      "id": "state",
+      "type": "enum",
+      "choices": [
+        "loading",
+        "empty",
+        "error",
+        "out-of-stock",
+        "disabled-with-reason"
+      ],
+      "default": "empty"
+    },
+    {
+      "id": "reason",
+      "type": "string",
+      "max_length": 160,
+      "default": ""
+    }
+  ]
+}
