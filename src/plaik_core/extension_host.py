@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from plaik_contracts import ScopeRef
+from plaik_contracts import ScopeRef, ResourceRef
 from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
@@ -65,9 +65,10 @@ class _OwnerServices(ServiceResolver):
 
 
 class _OwnerEvents(EventPublisher):
-    def __init__(self, bus: EventBus, owner: str) -> None:
+    def __init__(self, bus: EventBus, owner: str, scope: ScopeRef) -> None:
         self._bus = bus
         self._owner = owner
+        self._scope = scope
 
     def publish(
         self,
@@ -76,6 +77,9 @@ class _OwnerEvents(EventPublisher):
         payload: Mapping[str, Any],
         *,
         idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         self._bus.publish(
             owner=self._owner,
@@ -83,6 +87,9 @@ class _OwnerEvents(EventPublisher):
             version=version,
             payload=payload,
             idempotency_key=idempotency_key,
+            scope=scope or self._scope,
+            resource=resource,
+            correlation_id=correlation_id,
         )
 
 
@@ -215,7 +222,7 @@ class ExtensionHost:
             settings=_NullSettings(),
             secrets=_OwnerSecrets(self, package_id),
             services=_OwnerServices(self._services),
-            events=_OwnerEvents(self._events, package_id),
+            events=_OwnerEvents(self._events, package_id, scope),
             jobs=_OwnerJobs(self._jobs),
             slots=_OwnerSlots(self._slots, package_id),
         )

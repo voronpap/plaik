@@ -5,19 +5,22 @@ from __future__ import annotations
 import json
 import re
 import threading
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef
 
 
 _OWNER = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _CONTRACT = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9_-]*)+$")
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
-_EVENT_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{7,255}$")
+_EVENT_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$")
 MAX_VERSION_RANGE_BYTES = 512
 MAX_EVENT_PAYLOAD_BYTES = 1024 * 1024
 MAX_EVENT_PAYLOAD_DEPTH = 16
@@ -150,6 +153,7 @@ class EventBus:
         self._declarations: dict[tuple[str, Version], EventDeclaration] = {}
         self._subscriptions: list[EventSubscription] = []
         self._idempotency: dict[tuple[str, str, str], None] = {}
+        self._last_envelope: EventEnvelope | None = None
         self._lock = threading.RLock()
 
     def declare(
@@ -205,6 +209,10 @@ class EventBus:
             self._subscriptions.append(subscription)
             return subscription
 
+    def last_envelope(self) -> EventEnvelope | None:
+        with self._lock:
+            return self._last_envelope
+
     def publish(
         self,
         *,
@@ -213,6 +221,9 @@ class EventBus:
         version: str,
         payload: Mapping[str, Any],
         idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
     ) -> int:
         owner = _validate_owner(owner)
         contract = _validate_contract_name(contract)
@@ -225,7 +236,20 @@ class EventBus:
             snapshot, subscriptions = self._prepare_publish(
                 owner, contract, parsed, payload
             )
-            return _deliver(subscriptions, snapshot)
+            envelope = _event_envelope(
+                owner=owner,
+                contract=contract,
+                version=str(parsed),
+                payload=snapshot,
+                idempotency_key=None,
+                scope=scope,
+                resource=resource,
+                correlation_id=correlation_id,
+            )
+            delivered = _deliver(subscriptions, snapshot)
+            with self._lock:
+                self._last_envelope = envelope
+            return delivered
 
         with self._lock:
             if reserved in self._idempotency:
@@ -235,12 +259,23 @@ class EventBus:
             snapshot, subscriptions = self._prepare_publish_locked(
                 owner, contract, parsed, payload
             )
+            envelope = _event_envelope(
+                owner=owner,
+                contract=contract,
+                version=str(parsed),
+                payload=snapshot,
+                idempotency_key=reserved[2],
+                scope=scope,
+                resource=resource,
+                correlation_id=correlation_id,
+            )
             self._idempotency[reserved] = None
             try:
                 delivered = _deliver(subscriptions, snapshot)
             except Exception:
                 self._idempotency.pop(reserved, None)
                 raise
+            self._last_envelope = envelope
             return delivered
 
     def _prepare_publish(
@@ -475,6 +510,34 @@ def _validate_event_idempotency_key(value: str) -> str:
     if not isinstance(value, str) or not _EVENT_IDEMPOTENCY_KEY.fullmatch(value):
         raise ValueError("invalid event idempotency key")
     return value
+
+
+def _event_envelope(
+    *,
+    owner: str,
+    contract: str,
+    version: str,
+    payload: Mapping[str, Any],
+    idempotency_key: str | None,
+    scope: ScopeRef | None,
+    resource: ResourceRef | None,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    try:
+        return EventEnvelope(
+            id=str(uuid.uuid4()),
+            owner=owner,
+            contract=contract,
+            version=version,
+            payload=dict(payload),
+            scope=scope or ScopeRef.installation(),
+            resource=resource,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+            created_at=datetime.now(UTC),
+        )
+    except Exception as error:
+        raise ExtensionContractError("event envelope is invalid") from error
 
 
 def _deliver(
