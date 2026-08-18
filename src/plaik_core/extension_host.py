@@ -77,12 +77,12 @@ class _OwnerEvents(EventPublisher):
         *,
         idempotency_key: str | None = None,
     ) -> None:
-        del idempotency_key
         self._bus.publish(
             owner=self._owner,
             contract=contract,
             version=version,
             payload=payload,
+            idempotency_key=idempotency_key,
         )
 
 

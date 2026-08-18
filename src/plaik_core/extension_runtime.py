@@ -17,12 +17,14 @@ from packaging.version import InvalidVersion, Version
 _OWNER = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _CONTRACT = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9_-]*)+$")
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+_EVENT_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{7,255}$")
 MAX_VERSION_RANGE_BYTES = 512
 MAX_EVENT_PAYLOAD_BYTES = 1024 * 1024
 MAX_EVENT_PAYLOAD_DEPTH = 16
 MAX_EVENT_PAYLOAD_KEYS = 512
 MAX_EVENT_PAYLOAD_ITEMS = 4096
 MAX_EVENT_PAYLOAD_KEY_BYTES = 128
+MAX_EVENT_IDEMPOTENCY_KEYS = 4096
 
 
 class ExtensionContractError(RuntimeError):
@@ -147,6 +149,7 @@ class EventBus:
     def __init__(self) -> None:
         self._declarations: dict[tuple[str, Version], EventDeclaration] = {}
         self._subscriptions: list[EventSubscription] = []
+        self._idempotency: dict[tuple[str, str, str], None] = {}
         self._lock = threading.RLock()
 
     def declare(
@@ -209,42 +212,76 @@ class EventBus:
         contract: str,
         version: str,
         payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
     ) -> int:
         owner = _validate_owner(owner)
         contract = _validate_contract_name(contract)
         parsed = _version(version)
-        with self._lock:
-            declaration = self._declarations.get((contract, parsed))
-            if declaration is None or not declaration.active:
-                raise ContractCompatibilityError("event contract version is not active")
-            if declaration.owner != owner:
-                raise ContractOwnershipError("only the event owner may publish it")
-            snapshot = _json_snapshot(payload)
-            if declaration.validator is not None:
-                try:
-                    snapshot = _json_snapshot(declaration.validator(snapshot))
-                except Exception:
-                    raise ExtensionContractError("event payload validation failed") from None
-            subscriptions = sorted(
-                (
-                    item
-                    for item in self._subscriptions
-                    if item.active
-                    and item.contract == contract
-                    and parsed in _specifier(item.version)
-                ),
-                key=lambda item: (item.priority, item.subscriber),
+        reserved: tuple[str, str, str] | None = None
+        if idempotency_key is not None:
+            reserved = (owner, contract, _validate_event_idempotency_key(idempotency_key))
+
+        if reserved is None:
+            snapshot, subscriptions = self._prepare_publish(
+                owner, contract, parsed, payload
             )
-        delivered = 0
-        for subscription in subscriptions:
+            return _deliver(subscriptions, snapshot)
+
+        with self._lock:
+            if reserved in self._idempotency:
+                return 0
+            if len(self._idempotency) >= MAX_EVENT_IDEMPOTENCY_KEYS:
+                raise ExtensionContractError("event idempotency capacity exceeded")
+            snapshot, subscriptions = self._prepare_publish_locked(
+                owner, contract, parsed, payload
+            )
+            self._idempotency[reserved] = None
             try:
-                subscription.handler(_json_snapshot(snapshot))
+                delivered = _deliver(subscriptions, snapshot)
             except Exception:
-                raise EventDeliveryError(
-                    f"event delivery failed for subscriber {subscription.subscriber}"
-                ) from None
-            delivered += 1
-        return delivered
+                self._idempotency.pop(reserved, None)
+                raise
+            return delivered
+
+    def _prepare_publish(
+        self,
+        owner: str,
+        contract: str,
+        parsed: Version,
+        payload: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], list[EventSubscription]]:
+        with self._lock:
+            return self._prepare_publish_locked(owner, contract, parsed, payload)
+
+    def _prepare_publish_locked(
+        self,
+        owner: str,
+        contract: str,
+        parsed: Version,
+        payload: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], list[EventSubscription]]:
+        declaration = self._declarations.get((contract, parsed))
+        if declaration is None or not declaration.active:
+            raise ContractCompatibilityError("event contract version is not active")
+        if declaration.owner != owner:
+            raise ContractOwnershipError("only the event owner may publish it")
+        snapshot = _json_snapshot(payload)
+        if declaration.validator is not None:
+            try:
+                snapshot = _json_snapshot(declaration.validator(snapshot))
+            except Exception:
+                raise ExtensionContractError("event payload validation failed") from None
+        subscriptions = sorted(
+            (
+                item
+                for item in self._subscriptions
+                if item.active
+                and item.contract == contract
+                and parsed in _specifier(item.version)
+            ),
+            key=lambda item: (item.priority, item.subscriber),
+        )
+        return snapshot, subscriptions
 
     def deactivate_owner(self, owner: str) -> int:
         return self._set_owner_active(owner, False)
@@ -432,6 +469,28 @@ def _validate_owner(value: str) -> str:
     if not isinstance(value, str) or not _OWNER.fullmatch(value):
         raise ValueError("invalid extension owner id")
     return value
+
+
+def _validate_event_idempotency_key(value: str) -> str:
+    if not isinstance(value, str) or not _EVENT_IDEMPOTENCY_KEY.fullmatch(value):
+        raise ValueError("invalid event idempotency key")
+    return value
+
+
+def _deliver(
+    subscriptions: list[EventSubscription],
+    snapshot: Mapping[str, Any],
+) -> int:
+    delivered = 0
+    for subscription in subscriptions:
+        try:
+            subscription.handler(_json_snapshot(snapshot))
+        except Exception:
+            raise EventDeliveryError(
+                f"event delivery failed for subscriber {subscription.subscriber}"
+            ) from None
+        delivered += 1
+    return delivered
 
 
 def _validate_contract_name(value: str) -> str:

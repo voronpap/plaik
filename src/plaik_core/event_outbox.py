@@ -193,6 +193,7 @@ class EventOutboxDispatcher:
                 contract=event.contract,
                 version=event.version,
                 payload=event.payload,
+                idempotency_key=event.idempotency_key,
             )
             self.outbox.mark_dispatched(connection, event.id)
             connection.commit()
