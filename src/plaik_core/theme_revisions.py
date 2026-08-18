@@ -169,6 +169,7 @@ class ThemeRevisionStore:
         revision = self.get(store_id, revision_id)
         if revision.status is not RevisionStatus.PREPARED:
             raise ThemeRevisionError("preview requires a prepared revision")
+        self._require_revision_theme(revision)
         return revision
 
     def publish(self, store_id: str, revision_id: str) -> ThemeConfigurationRevision:
@@ -178,6 +179,7 @@ class ThemeRevisionStore:
             revision = self.get(store_id, revision_id)
             if revision.status is not RevisionStatus.PREPARED:
                 raise ThemeRevisionError("publish requires a prepared revision")
+            self._require_revision_theme(revision)
             state = self._read_state(store_id)
             if state.published == revision.revision_id:
                 return revision
@@ -197,6 +199,7 @@ class ThemeRevisionStore:
             if state.previous is None:
                 raise ThemeRevisionError("no previous published revision")
             previous = self.get(store_id, state.previous)
+            self._require_revision_theme(previous)
             self._write_state(
                 store_id,
                 _StoreRevisionState(
@@ -255,11 +258,7 @@ class ThemeRevisionStore:
         *,
         slot_registry: SlotRegistry | None = None,
     ) -> ThemeConfigurationRevision:
-        manifest = self._require_theme(revision.theme_id)
-        if manifest.version != revision.theme_version:
-            raise ThemeRevisionError("revision theme version does not match")
-        if (manifest.theme_api or 1) != revision.theme_api:
-            raise ThemeRevisionError("revision Theme API version does not match")
+        manifest = self._require_revision_theme(revision)
         directory = self.theme_registry.path(manifest.id)
         catalog = load_theme_configuration_catalog(directory, manifest)
         settings = revision.settings
@@ -319,6 +318,16 @@ class ThemeRevisionStore:
             raise ThemeRevisionError("theme configuration requires Theme API v1")
         return theme
 
+    def _require_revision_theme(
+        self, revision: ThemeConfigurationRevision
+    ) -> ThemeManifest:
+        manifest = self._require_theme(revision.theme_id)
+        if manifest.version != revision.theme_version:
+            raise ThemeRevisionError("revision theme version does not match")
+        if (manifest.theme_api or 1) != revision.theme_api:
+            raise ThemeRevisionError("revision Theme API version does not match")
+        return manifest
+
     def _state_path(self, store_id: str) -> Path:
         return self.path / store_id / "state.json"
 
@@ -370,8 +379,8 @@ def load_theme_configuration_catalog(
             schema = ThemeSettingsSchema.model_validate(payload)
         except (ThemeCompositionError, ValidationError) as error:
             raise ThemeRevisionError("theme settings schema is invalid") from error
-    elif (directory / "settings.json").exists():
-        raise ThemeRevisionError("undeclared configuration file")
+    else:
+        _reject_undeclared_path(directory / "settings.json")
     presets: dict[str, ThemePreset] = {}
     for preset_id in manifest.presets:
         try:
@@ -434,16 +443,19 @@ def _load_json(directory: Path, relative: Path, *, max_bytes: int) -> dict:
     return payload
 
 
+def _reject_undeclared_path(path: Path) -> None:
+    try:
+        Path(path).lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ThemeRevisionError("undeclared configuration file") from error
+    raise ThemeRevisionError("undeclared configuration file")
+
+
 def _reject_unexpected_configuration(directory: Path) -> None:
     for relative in (Path("settings.json"), Path("presets")):
-        path = Path(directory) / relative
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise ThemeRevisionError("undeclared configuration file") from error
-        raise ThemeRevisionError("undeclared configuration file")
+        _reject_undeclared_path(Path(directory) / relative)
 
 
 def _reject_undeclared_presets(directory: Path, declared: set[str]) -> None:

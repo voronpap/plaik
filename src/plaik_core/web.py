@@ -382,6 +382,11 @@ class WebRenderer:
             revision = self.revision_store.published(store_id)
         if revision is not None and revision.theme_id != active.id:
             revision = None
+        elif revision is not None and (
+            revision.theme_version != active.version
+            or revision.theme_api != (active.theme_api or 1)
+        ):
+            raise WebRenderError("revision theme version does not match")
         try:
             resolved = PageTemplateResolver(
                 self.theme_registry, self.slot_registry
