@@ -1,12 +1,30 @@
 {
   "schema_version": 1,
   "sections": {
+    "site-header": {
+      "type": "header",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
     "status-main": {
       "type": "status",
-      "settings": {"code": "error"},
+      "settings": {
+        "code": "error"
+      },
+      "blocks": {},
+      "block_order": []
+    },
+    "site-footer": {
+      "type": "footer",
+      "settings": {},
       "blocks": {},
       "block_order": []
     }
   },
-  "order": ["status-main"]
+  "order": [
+    "site-header",
+    "status-main",
+    "site-footer"
+  ]
 }

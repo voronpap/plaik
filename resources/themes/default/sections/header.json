@@ -1,0 +1,31 @@
+{
+  "type": "header",
+  "template": "sections/header.html",
+  "settings": [
+    {
+      "id": "sticky",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "id": "boxed",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "id": "show_search",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "allowed_blocks": ["nav-item"],
+  "max_blocks": 16,
+  "max_block_nesting_depth": 1,
+  "slots": [
+    "storefront.header.search",
+    "storefront.header.cart",
+    "storefront.header.account",
+    "storefront.header.wishlist",
+    "storefront.header.compare"
+  ]
+}

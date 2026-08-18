@@ -1,0 +1,3 @@
+{% if settings.enabled %}
+<p class="plaik-announcement" role="status">{% if settings.message %}{{ settings.message }}{% else %}{{ theme_strings.announcement }}{% endif %}</p>
+{% endif %}

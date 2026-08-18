@@ -1,0 +1,3 @@
+<nav class="plaik-navigation" aria-label="{% if settings.label %}{{ settings.label }}{% else %}{{ theme_strings.nav_label }}{% endif %}">
+  {% for block in blocks %}{{ block }}{% endfor %}
+</nav>

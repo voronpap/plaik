@@ -1,12 +1,64 @@
 {
   "schema_version": 1,
   "sections": {
+    "announce": {
+      "type": "announcement",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
+    "site-header": {
+      "type": "header",
+      "settings": {},
+      "blocks": {
+        "nav-capabilities": {
+          "type": "nav-item",
+          "settings": {"kind": "capabilities"},
+          "blocks": {},
+          "block_order": []
+        },
+        "nav-status": {
+          "type": "nav-item",
+          "settings": {"kind": "status"},
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "block_order": ["nav-capabilities", "nav-status"]
+    },
+    "crumbs": {
+      "type": "breadcrumbs",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
     "hero-main": {
       "type": "hero",
-      "settings": {"alignment": "left"},
+      "settings": {
+        "alignment": "left"
+      },
+      "blocks": {
+        "sample-card": {
+          "type": "product-card",
+          "settings": {"variant": "standard"},
+          "blocks": {},
+          "block_order": []
+        }
+      },
+      "block_order": ["sample-card"]
+    },
+    "site-footer": {
+      "type": "footer",
+      "settings": {},
       "blocks": {},
       "block_order": []
     }
   },
-  "order": ["hero-main"]
+  "order": [
+    "announce",
+    "site-header",
+    "crumbs",
+    "hero-main",
+    "site-footer"
+  ]
 }

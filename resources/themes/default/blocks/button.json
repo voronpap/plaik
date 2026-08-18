@@ -1,0 +1,18 @@
+{
+  "type": "button",
+  "template": "blocks/button.html",
+  "settings": [
+    {
+      "id": "label",
+      "type": "string",
+      "max_length": 80,
+      "default": ""
+    },
+    {
+      "id": "href",
+      "type": "string",
+      "max_length": 200,
+      "default": "#"
+    }
+  ]
+}

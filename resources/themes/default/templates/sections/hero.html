@@ -1,3 +1,4 @@
+<main id="main-content">
 <section class="plaik-hero plaik-hero-{{ settings.alignment }}" aria-labelledby="plaik-hero-title">
   <div>
     <p class="plaik-status"><span aria-hidden="true"></span> {{ theme_strings.hero_status }}</p>
@@ -31,4 +32,9 @@
   </div>
   <p><span aria-hidden="true"></span> {{ theme_strings.readiness_note }}</p>
 </section>
-{% for block in blocks %}{{ block }}{% endfor %}
+<section class="plaik-product-grid plaik-cols-d4" aria-label="{{ theme_strings.product_grid_label }}">
+  {{ slot("storefront.home.featured") }}
+  {% for block in blocks %}{{ block }}{% endfor %}
+  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.empty_catalog }}</p>
+</section>
+</main>

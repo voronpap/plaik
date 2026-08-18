@@ -1,0 +1,24 @@
+{
+  "type": "nav-item",
+  "template": "blocks/nav-item.html",
+  "settings": [
+    {
+      "id": "kind",
+      "type": "enum",
+      "choices": ["custom", "capabilities", "status", "home"],
+      "default": "custom"
+    },
+    {
+      "id": "label",
+      "type": "string",
+      "max_length": 80,
+      "default": ""
+    },
+    {
+      "id": "href",
+      "type": "string",
+      "max_length": 200,
+      "default": "#"
+    }
+  ]
+}

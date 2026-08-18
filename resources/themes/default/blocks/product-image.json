@@ -1,9 +1,9 @@
 {
-  "type": "heading",
-  "template": "blocks/heading.html",
+  "type": "product-image",
+  "template": "blocks/product-image.html",
   "settings": [
     {
-      "id": "text",
+      "id": "alt",
       "type": "string",
       "max_length": 120,
       "default": ""

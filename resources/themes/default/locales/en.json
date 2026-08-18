@@ -26,5 +26,15 @@
   "error_title": "This page is unavailable",
   "error_body": "The requested storefront page could not be shown.",
   "maintenance_title": "Storefront under maintenance",
-  "maintenance_body": "The storefront is temporarily unavailable. Please try again later."
+  "maintenance_body": "The storefront is temporarily unavailable. Please try again later.",
+  "announcement": "Catalog and commerce modules can be connected next.",
+  "breadcrumbs_label": "Breadcrumb",
+  "breadcrumb_home": "Home",
+  "product_card_placeholder": "Product",
+  "product_card_price": "Price on request",
+  "product_card_compare": "Previous",
+  "product_grid_label": "Products",
+  "empty_catalog": "No catalog module is installed yet.",
+  "image_placeholder": "Image",
+  "button_label": "Continue"
 }

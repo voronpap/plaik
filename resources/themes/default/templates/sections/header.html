@@ -1,0 +1,18 @@
+<header class="plaik-header{% if settings.sticky %} plaik-header-sticky{% endif %}{% if settings.boxed %} plaik-header-boxed{% endif %}">
+  <a class="plaik-brand" href="/" aria-label="{{ brand | default('PLAIK') }}">
+    <span class="plaik-brand-mark" aria-hidden="true">P</span>
+    <span>{{ brand | default('PLAIK') }}</span>
+  </a>
+  {% if blocks %}
+  <nav class="plaik-header-nav" aria-label="{{ theme_strings.nav_label }}">
+    {% for block in blocks %}{{ block }}{% endfor %}
+  </nav>
+  {% endif %}
+  <div class="plaik-header-tools">
+    {% if settings.show_search %}{{ slot("storefront.header.search") }}{% endif %}
+    {{ slot("storefront.header.account") }}
+    {{ slot("storefront.header.wishlist") }}
+    {{ slot("storefront.header.compare") }}
+    {{ slot("storefront.header.cart") }}
+  </div>
+</header>

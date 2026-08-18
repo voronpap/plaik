@@ -1,0 +1,18 @@
+{
+  "type": "text",
+  "template": "sections/text.html",
+  "settings": [
+    {
+      "id": "heading",
+      "type": "string",
+      "max_length": 120,
+      "default": ""
+    },
+    {
+      "id": "body",
+      "type": "string",
+      "max_length": 500,
+      "default": ""
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "type": "icon",
+  "template": "blocks/icon.html",
+  "settings": [
+    {
+      "id": "name",
+      "type": "string",
+      "max_length": 32,
+      "default": "check"
+    }
+  ]
+}
