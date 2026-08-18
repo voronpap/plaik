@@ -16,6 +16,11 @@
       "id": "show_search",
       "type": "boolean",
       "default": true
+    },
+    {
+      "id": "show_nav",
+      "type": "boolean",
+      "default": true
     }
   ],
   "slots": [

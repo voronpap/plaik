@@ -1,0 +1,15 @@
+{
+  "type": "buy-bar",
+  "template": "sections/buy-bar.html",
+  "settings": [
+    {
+      "id": "sticky",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "slots": [
+    "storefront.product.buy-bar",
+    "storefront.product.add-to-cart"
+  ]
+}

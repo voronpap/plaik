@@ -7,7 +7,8 @@
   "parent": null,
   "theme_api": 1,
   "layouts": [
-    "full-width"
+    "full-width",
+    "checkout"
   ],
   "assets": {
     "css": [
@@ -22,8 +23,19 @@
   ],
   "slots": [
     "control.order.sidebar",
+    "storefront.account.content",
+    "storefront.account.nav",
+    "storefront.cart.actions",
+    "storefront.cart.items",
     "storefront.cart.summary",
+    "storefront.checkout.customer",
+    "storefront.checkout.payment",
+    "storefront.checkout.review",
     "storefront.checkout.shipping",
+    "storefront.collection.filters",
+    "storefront.collection.products",
+    "storefront.collection.sort",
+    "storefront.contact.form",
     "storefront.footer.columns",
     "storefront.footer.newsletter",
     "storefront.header.account",
@@ -32,18 +44,38 @@
     "storefront.header.search",
     "storefront.header.wishlist",
     "storefront.home.featured",
+    "storefront.page.content",
     "storefront.product.add-to-cart",
     "storefront.product.after-price",
+    "storefront.product.availability",
+    "storefront.product.buy-bar",
     "storefront.product.compare",
+    "storefront.product.gallery",
     "storefront.product.purchase",
     "storefront.product.quick-view",
     "storefront.product.rating",
     "storefront.product.reviews",
-    "storefront.product.wishlist"
+    "storefront.product.variants",
+    "storefront.product.wishlist",
+    "storefront.search.filters",
+    "storefront.search.form",
+    "storefront.search.results",
+    "storefront.seo.structured-data"
   ],
   "page_templates": [
     "home",
+    "category",
+    "search",
+    "product",
+    "cart",
+    "checkout",
+    "account",
+    "page",
+    "contact",
     "error",
+    "error-403",
+    "error-404",
+    "error-500",
     "maintenance"
   ],
   "sections": [
@@ -56,7 +88,17 @@
     "product-grid",
     "text",
     "hero",
-    "status"
+    "status",
+    "product",
+    "collection",
+    "search-results",
+    "cart",
+    "checkout",
+    "account",
+    "contact",
+    "page-body",
+    "filters",
+    "buy-bar"
   ],
   "blocks": [
     "badge",

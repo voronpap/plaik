@@ -1,0 +1,6 @@
+<section id="main-content" class="plaik-collection plaik-collection-{{ settings.mode }}" aria-label="{{ theme_strings.collection_label }}">
+  <div class="plaik-filters">{{ slot("storefront.collection.filters") }}</div>
+  <div class="plaik-sort">{{ slot("storefront.collection.sort") }}</div>
+  {{ slot("storefront.collection.products") }}
+  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.empty_catalog }}</p>
+</section>

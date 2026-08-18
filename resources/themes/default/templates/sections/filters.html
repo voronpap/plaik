@@ -1,0 +1,5 @@
+<aside class="plaik-filters plaik-filters-{% if settings.drawer %}drawer{% else %}inline{% endif %}" aria-label="{{ theme_strings.filters_label }}">
+  {{ slot("storefront.collection.filters") }}
+  {{ slot("storefront.search.filters") }}
+  {{ slot("storefront.collection.sort") }}
+</aside>

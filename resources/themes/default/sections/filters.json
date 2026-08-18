@@ -1,0 +1,16 @@
+{
+  "type": "filters",
+  "template": "sections/filters.html",
+  "settings": [
+    {
+      "id": "drawer",
+      "type": "boolean",
+      "default": false
+    }
+  ],
+  "slots": [
+    "storefront.collection.filters",
+    "storefront.search.filters",
+    "storefront.collection.sort"
+  ]
+}

@@ -1,0 +1,6 @@
+<section id="main-content" class="plaik-account" aria-labelledby="plaik-account-title">
+  <h1 id="plaik-account-title">{{ theme_strings.account_title }}</h1>
+  <nav class="plaik-account-nav" aria-label="{{ theme_strings.account_nav }}">{{ slot("storefront.account.nav") }}</nav>
+  {{ slot("storefront.account.content") }}
+  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.account_shell }}</p>
+</section>

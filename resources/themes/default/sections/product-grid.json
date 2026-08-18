@@ -27,7 +27,9 @@
     }
   ],
   "slots": [
-    "storefront.home.featured"
+    "storefront.home.featured",
+    "storefront.collection.products",
+    "storefront.search.results"
   ],
   "allowed_blocks": [
     "product-title",

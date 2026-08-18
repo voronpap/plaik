@@ -1,0 +1,20 @@
+{
+  "type": "collection",
+  "template": "sections/collection.html",
+  "settings": [
+    {
+      "id": "mode",
+      "type": "enum",
+      "choices": [
+        "grid",
+        "list"
+      ],
+      "default": "grid"
+    }
+  ],
+  "slots": [
+    "storefront.collection.filters",
+    "storefront.collection.sort",
+    "storefront.collection.products"
+  ]
+}

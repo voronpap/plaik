@@ -25,11 +25,9 @@
       "blocks": {},
       "block_order": []
     },
-    "status-main": {
-      "type": "status",
-      "settings": {
-        "code": "error"
-      },
+    "cart-main": {
+      "type": "cart",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -45,7 +43,7 @@
     "site-header",
     "site-nav",
     "crumbs",
-    "status-main",
+    "cart-main",
     "site-footer"
   ]
 }

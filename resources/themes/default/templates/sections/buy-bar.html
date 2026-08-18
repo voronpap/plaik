@@ -1,0 +1,5 @@
+<div class="plaik-buy-bar{% if settings.sticky %} plaik-buy-bar-sticky{% endif %}">
+  {{ slot("storefront.product.buy-bar") }}
+  {{ slot("storefront.product.add-to-cart") }}
+  <span class="plaik-button plaik-button-primary">{{ theme_strings.product_add }}</span>
+</div>

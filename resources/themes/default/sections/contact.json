@@ -1,0 +1,8 @@
+{
+  "type": "contact",
+  "template": "sections/contact.html",
+  "settings": [],
+  "slots": [
+    "storefront.contact.form"
+  ]
+}

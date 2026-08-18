@@ -28,7 +28,7 @@
     "status-main": {
       "type": "status",
       "settings": {
-        "code": "error"
+        "code": "500"
       },
       "blocks": {},
       "block_order": []

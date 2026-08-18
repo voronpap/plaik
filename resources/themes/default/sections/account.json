@@ -1,0 +1,9 @@
+{
+  "type": "account",
+  "template": "sections/account.html",
+  "settings": [],
+  "slots": [
+    "storefront.account.nav",
+    "storefront.account.content"
+  ]
+}

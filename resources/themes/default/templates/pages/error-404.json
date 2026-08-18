@@ -28,7 +28,7 @@
     "status-main": {
       "type": "status",
       "settings": {
-        "code": "error"
+        "code": "404"
       },
       "blocks": {},
       "block_order": []

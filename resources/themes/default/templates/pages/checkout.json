@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "sections": {
+    "site-header": {
+      "type": "header",
+      "settings": {
+        "show_search": false,
+        "show_nav": false
+      },
+      "blocks": {},
+      "block_order": []
+    },
+    "checkout-main": {
+      "type": "checkout",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
+    "site-footer": {
+      "type": "footer",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    }
+  },
+  "order": [
+    "site-header",
+    "checkout-main",
+    "site-footer"
+  ]
+}

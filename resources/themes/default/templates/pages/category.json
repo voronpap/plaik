@@ -25,11 +25,17 @@
       "blocks": {},
       "block_order": []
     },
-    "status-main": {
-      "type": "status",
+    "filters-main": {
+      "type": "filters",
       "settings": {
-        "code": "error"
+        "drawer": true
       },
+      "blocks": {},
+      "block_order": []
+    },
+    "collection-main": {
+      "type": "collection",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -45,7 +51,8 @@
     "site-header",
     "site-nav",
     "crumbs",
-    "status-main",
+    "filters-main",
+    "collection-main",
     "site-footer"
   ]
 }

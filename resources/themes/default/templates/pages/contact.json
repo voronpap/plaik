@@ -25,11 +25,9 @@
       "blocks": {},
       "block_order": []
     },
-    "status-main": {
-      "type": "status",
-      "settings": {
-        "code": "error"
-      },
+    "contact-main": {
+      "type": "contact",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -45,7 +43,7 @@
     "site-header",
     "site-nav",
     "crumbs",
-    "status-main",
+    "contact-main",
     "site-footer"
   ]
 }

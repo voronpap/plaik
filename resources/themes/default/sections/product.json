@@ -1,0 +1,28 @@
+{
+  "type": "product",
+  "template": "sections/product.html",
+  "settings": [
+    {
+      "id": "layout",
+      "type": "enum",
+      "choices": [
+        "classic",
+        "wide-gallery",
+        "sticky"
+      ],
+      "default": "classic"
+    }
+  ],
+  "slots": [
+    "storefront.product.gallery",
+    "storefront.product.after-price",
+    "storefront.product.availability",
+    "storefront.product.variants",
+    "storefront.product.add-to-cart",
+    "storefront.product.buy-bar",
+    "storefront.product.rating",
+    "storefront.product.reviews",
+    "storefront.product.purchase",
+    "storefront.seo.structured-data"
+  ]
+}
