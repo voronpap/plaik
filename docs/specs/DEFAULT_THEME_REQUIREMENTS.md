@@ -945,7 +945,7 @@ A child theme may override supported presentation artifacts such as:
 
 - templates;
 - sections;
-- snippets;
+- blocks;
 - assets;
 - settings defaults.
 

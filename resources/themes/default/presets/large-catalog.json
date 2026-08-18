@@ -37,68 +37,6 @@
     "lazy_loading": true
   },
   "pages": {
-    "product": {
-      "schema_version": 1,
-      "sections": {
-        "announce": {
-          "type": "announcement",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
-        "site-header": {
-          "type": "header",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
-        "crumbs": {
-          "type": "breadcrumbs",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
-        "product-main": {
-          "type": "product",
-          "settings": {
-            "layout": "classic"
-          },
-          "blocks": {
-            "empty-state": {
-              "type": "ui-state",
-              "settings": {
-                "state": "empty"
-              },
-              "blocks": {},
-              "block_order": []
-            }
-          },
-          "block_order": [
-            "empty-state"
-          ]
-        },
-        "buy-bar-main": {
-          "type": "buy-bar",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        },
-        "site-footer": {
-          "type": "footer",
-          "settings": {},
-          "blocks": {},
-          "block_order": []
-        }
-      },
-      "order": [
-        "announce",
-        "site-header",
-        "crumbs",
-        "product-main",
-        "buy-bar-main",
-        "site-footer"
-      ]
-    },
     "category": {
       "schema_version": 1,
       "sections": {
@@ -132,7 +70,8 @@
         "collection-main": {
           "type": "collection",
           "settings": {
-            "mode": "grid"
+            "mode": "list",
+            "wide": true
           },
           "blocks": {
             "empty-state": {

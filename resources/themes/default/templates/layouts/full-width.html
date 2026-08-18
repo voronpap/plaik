@@ -15,6 +15,45 @@
     {% if web_url %}<meta property="og:url" content="{{ web_url }}/">{% endif %}
     <title>{{ page.title }}</title>
     {{ theme_assets("css") }}
+    {% if theme_settings %}
+    <style>
+      :root {
+        --plaik-color-background: {{ theme_settings.color_background }};
+        --plaik-color-surface: {{ theme_settings.color_surface }};
+        --plaik-color-text: {{ theme_settings.color_text }};
+        --plaik-color-muted: {{ theme_settings.color_muted }};
+        --plaik-color-primary: {{ theme_settings.color_primary }};
+        --plaik-color-secondary: {{ theme_settings.color_secondary }};
+        --plaik-color-accent: {{ theme_settings.color_accent }};
+        --plaik-color-success: {{ theme_settings.color_success }};
+        --plaik-color-warning: {{ theme_settings.color_warning }};
+        --plaik-color-error: {{ theme_settings.color_error }};
+        --plaik-color-border: {{ theme_settings.color_border }};
+        --plaik-font-body: {{ theme_settings.font_body }};
+        --plaik-font-heading: {{ theme_settings.font_heading }};
+        --plaik-size-base: {{ theme_settings.size_base }};
+        --plaik-line-height: {{ theme_settings.line_height }};
+        --plaik-content-width: {{ theme_settings.content_width }};
+        --plaik-wide-width: {{ theme_settings.wide_width }};
+        --plaik-space-md: {{ theme_settings.page_gutter }};
+        --plaik-radius-sm: {{ theme_settings.radius_input }};
+        --plaik-radius-md: {{ theme_settings.radius_button }};
+        --plaik-radius-lg: {{ theme_settings.radius_card }};
+        --plaik-heading-scale: {{ theme_settings.heading_scale }};
+        --plaik-weight-body: {{ theme_settings.weight_body }};
+        --plaik-weight-heading: {{ theme_settings.weight_heading }};
+        --plaik-grid-gap: {{ theme_settings.grid_gap }};
+        --plaik-section-space: {{ theme_settings.section_space }};
+        --plaik-letter-spacing: {{ theme_settings.letter_spacing }};
+        --plaik-border-width: {{ theme_settings.border_width }};
+        --plaik-shadow: {{ theme_settings.shadow }};
+        --plaik-focus-style: {{ theme_settings.focus_style }};
+        --plaik-product-ratio: {{ theme_settings.product_ratio }};
+        --plaik-category-ratio: {{ theme_settings.category_ratio }};
+        --plaik-object-fit: {{ theme_settings.object_fit }};
+      }
+    </style>
+    {% endif %}
     {{ hook("displayHeader") }}
   </head>
   <body>
