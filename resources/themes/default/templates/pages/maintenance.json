@@ -1,8 +1,20 @@
 {
   "schema_version": 1,
   "sections": {
+    "announce": {
+      "type": "announcement",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
     "site-header": {
       "type": "header",
+      "settings": {},
+      "blocks": {},
+      "block_order": []
+    },
+    "crumbs": {
+      "type": "breadcrumbs",
       "settings": {},
       "blocks": {},
       "block_order": []
@@ -23,7 +35,9 @@
     }
   },
   "order": [
+    "announce",
     "site-header",
+    "crumbs",
     "status-main",
     "site-footer"
   ]

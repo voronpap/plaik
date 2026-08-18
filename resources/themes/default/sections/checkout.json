@@ -1,0 +1,11 @@
+{
+  "type": "checkout",
+  "template": "sections/checkout.html",
+  "settings": [],
+  "slots": [
+    "storefront.checkout.customer",
+    "storefront.checkout.shipping",
+    "storefront.checkout.payment",
+    "storefront.checkout.review"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "type": "filters",
+  "template": "sections/filters.html",
+  "settings": [
+    {
+      "id": "drawer",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "id": "source",
+      "type": "enum",
+      "choices": [
+        "collection",
+        "search"
+      ],
+      "default": "collection"
+    }
+  ],
+  "slots": [
+    "storefront.collection.filters",
+    "storefront.collection.sort",
+    "storefront.search.filters"
+  ]
+}

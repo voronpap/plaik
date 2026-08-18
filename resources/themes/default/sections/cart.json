@@ -1,0 +1,10 @@
+{
+  "type": "cart",
+  "template": "sections/cart.html",
+  "settings": [],
+  "slots": [
+    "storefront.cart.items",
+    "storefront.cart.actions",
+    "storefront.cart.summary"
+  ]
+}

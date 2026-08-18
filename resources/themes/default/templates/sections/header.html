@@ -3,11 +3,11 @@
     <span class="plaik-brand-mark" aria-hidden="true">P</span>
     <span>{{ brand | default('PLAIK') }}</span>
   </a>
-  {% if blocks %}
+  {% if settings.show_nav %}{% if blocks %}
   <nav class="plaik-header-nav" aria-label="{{ theme_strings.nav_label }}">
     {% for block in blocks %}{{ block }}{% endfor %}
   </nav>
-  {% endif %}
+  {% endif %}{% endif %}
   <div class="plaik-header-tools">
     {% if settings.show_search %}{{ slot("storefront.header.search") }}{% endif %}
     {{ slot("storefront.header.account") }}

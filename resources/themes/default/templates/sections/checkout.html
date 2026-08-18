@@ -1,0 +1,9 @@
+<section id="main-content" class="plaik-checkout" aria-labelledby="plaik-checkout-title">
+  <h1 id="plaik-checkout-title">{{ theme_strings.checkout_title }}</h1>
+  <div class="plaik-checkout-customer">{{ slot("storefront.checkout.customer") }}</div>
+  <div class="plaik-checkout-shipping">{{ slot("storefront.checkout.shipping") }}</div>
+  <div class="plaik-checkout-payment">{{ slot("storefront.checkout.payment") }}</div>
+  <div class="plaik-checkout-review">{{ slot("storefront.checkout.review") }}</div>
+  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.checkout_shell }}</p>
+  <button class="plaik-button plaik-button-primary" type="button">{{ theme_strings.checkout_submit }}</button>
+</section>

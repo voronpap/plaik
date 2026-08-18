@@ -22,7 +22,7 @@
     "status-main": {
       "type": "status",
       "settings": {
-        "code": "error"
+        "code": "403"
       },
       "blocks": {},
       "block_order": []

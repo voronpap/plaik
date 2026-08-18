@@ -19,11 +19,17 @@
       "blocks": {},
       "block_order": []
     },
-    "status-main": {
-      "type": "status",
+    "product-main": {
+      "type": "product",
       "settings": {
-        "code": "error"
+        "layout": "classic"
       },
+      "blocks": {},
+      "block_order": []
+    },
+    "buy-bar-main": {
+      "type": "buy-bar",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -38,7 +44,8 @@
     "announce",
     "site-header",
     "crumbs",
-    "status-main",
+    "product-main",
+    "buy-bar-main",
     "site-footer"
   ]
 }

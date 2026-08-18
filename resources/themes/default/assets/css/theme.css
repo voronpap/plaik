@@ -268,4 +268,28 @@
   [data-web-theme="default"] * { animation: none !important; transition: none !important; }
 }
 
+[data-web-theme="default"] .plaik-product,
+[data-web-theme="default"] .plaik-collection,
+[data-web-theme="default"] .plaik-search,
+[data-web-theme="default"] .plaik-cart,
+[data-web-theme="default"] .plaik-checkout,
+[data-web-theme="default"] .plaik-account,
+[data-web-theme="default"] .plaik-contact,
+[data-web-theme="default"] .plaik-page,
+[data-web-theme="default"] .plaik-filters {
+  width: min(calc(100% - 2 * var(--plaik-space-md)), var(--plaik-content-width));
+  margin-inline: auto;
+  padding-block: 2rem;
+}
+[data-web-theme="default"] .plaik-product { display: grid; gap: 2rem; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); }
+[data-web-theme="default"] .plaik-product-wide-gallery { grid-template-columns: 1fr; }
+[data-web-theme="default"] .plaik-product-sticky .plaik-product-info { position: sticky; top: 5rem; align-self: start; }
+[data-web-theme="default"] .plaik-product-gallery { min-height: 16rem; border-radius: var(--plaik-radius-lg); background: #e7eef9; }
+[data-web-theme="default"] .plaik-buy-bar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; padding: 1rem; }
+[data-web-theme="default"] .plaik-buy-bar-sticky {
+  position: sticky; bottom: 0; z-index: 5;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  background: var(--plaik-color-surface); border-top: 1px solid var(--plaik-color-border);
+}
 [data-web-theme="default"] .plaik-header-tools { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+[data-web-theme="default"] .plaik-ui { color: var(--plaik-color-muted); }

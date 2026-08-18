@@ -1,0 +1,22 @@
+{
+  "type": "page-body",
+  "template": "sections/page-body.html",
+  "settings": [
+    {
+      "id": "heading",
+      "type": "string",
+      "max_length": 120,
+      "default": ""
+    },
+    {
+      "id": "body",
+      "type": "string",
+      "max_length": 500,
+      "default": ""
+    }
+  ],
+  "slots": [
+    "storefront.page.content",
+    "storefront.seo.structured-data"
+  ]
+}

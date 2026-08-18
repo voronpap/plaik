@@ -1,0 +1,19 @@
+<article id="main-content" class="plaik-product plaik-product-{{ settings.layout }}">
+  <div class="plaik-product-gallery">{{ slot("storefront.product.gallery") }}</div>
+  <div class="plaik-product-info">
+    <h1>{{ theme_strings.product_title }}</h1>
+    <p class="plaik-price">{{ theme_strings.product_card_price }}</p>
+    {{ slot("storefront.product.after-price") }}
+    <p class="plaik-ui" data-ui-state="empty">{{ theme_strings.empty_product }}</p>
+    {{ slot("storefront.product.availability") }}
+    {{ slot("storefront.product.variants") }}
+    {{ slot("storefront.product.purchase") }}
+    <div class="plaik-actions">
+      {{ slot("storefront.product.add-to-cart") }}
+      <span class="plaik-button plaik-button-primary">{{ theme_strings.product_add }}</span>
+    </div>
+    {{ slot("storefront.product.rating") }}
+    {{ slot("storefront.product.reviews") }}
+    {{ slot("storefront.seo.structured-data") }}
+  </div>
+</article>

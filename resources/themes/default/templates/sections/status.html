@@ -1,4 +1,4 @@
 <main id="main-content" class="plaik-status-page" aria-labelledby="plaik-status-heading">
-  <h1 id="plaik-status-heading">{% if settings.heading %}{{ settings.heading }}{% elif settings.code == "maintenance" %}{{ theme_strings.maintenance_title }}{% else %}{{ theme_strings.error_title }}{% endif %}</h1>
-  <p>{% if settings.code == "maintenance" %}{{ theme_strings.maintenance_body }}{% else %}{{ theme_strings.error_body }}{% endif %}</p>
+  <h1 id="plaik-status-heading">{% if settings.heading %}{{ settings.heading }}{% elif settings.code == "maintenance" %}{{ theme_strings.maintenance_title }}{% elif settings.code == "403" %}{{ theme_strings.forbidden_title }}{% elif settings.code == "404" %}{{ theme_strings.not_found_title }}{% elif settings.code == "500" %}{{ theme_strings.server_error_title }}{% else %}{{ theme_strings.error_title }}{% endif %}</h1>
+  <p>{% if settings.code == "maintenance" %}{{ theme_strings.maintenance_body }}{% elif settings.code == "403" %}{{ theme_strings.forbidden_body }}{% elif settings.code == "404" %}{{ theme_strings.not_found_body }}{% elif settings.code == "500" %}{{ theme_strings.server_error_body }}{% else %}{{ theme_strings.error_body }}{% endif %}</p>
 </main>

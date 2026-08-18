@@ -19,11 +19,9 @@
       "blocks": {},
       "block_order": []
     },
-    "status-main": {
-      "type": "status",
-      "settings": {
-        "code": "error"
-      },
+    "contact-main": {
+      "type": "contact",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -38,7 +36,7 @@
     "announce",
     "site-header",
     "crumbs",
-    "status-main",
+    "contact-main",
     "site-footer"
   ]
 }

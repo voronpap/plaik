@@ -5,7 +5,12 @@
     {
       "id": "kind",
       "type": "enum",
-      "choices": ["custom", "capabilities", "status", "home"],
+      "choices": [
+        "custom",
+        "capabilities",
+        "status",
+        "home"
+      ],
       "default": "custom"
     },
     {

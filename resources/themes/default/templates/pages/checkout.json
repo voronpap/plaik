@@ -1,29 +1,18 @@
 {
   "schema_version": 1,
   "sections": {
-    "announce": {
-      "type": "announcement",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
     "site-header": {
       "type": "header",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
-    "crumbs": {
-      "type": "breadcrumbs",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
-    "status-main": {
-      "type": "status",
       "settings": {
-        "code": "error"
+        "show_search": false,
+        "show_nav": false
       },
+      "blocks": {},
+      "block_order": []
+    },
+    "checkout-main": {
+      "type": "checkout",
+      "settings": {},
       "blocks": {},
       "block_order": []
     },
@@ -35,10 +24,8 @@
     }
   },
   "order": [
-    "announce",
     "site-header",
-    "crumbs",
-    "status-main",
+    "checkout-main",
     "site-footer"
   ]
 }

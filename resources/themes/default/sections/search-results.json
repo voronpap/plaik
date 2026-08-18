@@ -1,0 +1,20 @@
+{
+  "type": "search-results",
+  "template": "sections/search-results.html",
+  "settings": [
+    {
+      "id": "mode",
+      "type": "enum",
+      "choices": [
+        "grid",
+        "list"
+      ],
+      "default": "grid"
+    }
+  ],
+  "slots": [
+    "storefront.search.form",
+    "storefront.search.filters",
+    "storefront.search.results"
+  ]
+}

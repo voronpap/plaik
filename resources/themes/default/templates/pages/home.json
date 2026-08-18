@@ -13,18 +13,25 @@
       "blocks": {
         "nav-capabilities": {
           "type": "nav-item",
-          "settings": {"kind": "capabilities"},
+          "settings": {
+            "kind": "capabilities"
+          },
           "blocks": {},
           "block_order": []
         },
         "nav-status": {
           "type": "nav-item",
-          "settings": {"kind": "status"},
+          "settings": {
+            "kind": "status"
+          },
           "blocks": {},
           "block_order": []
         }
       },
-      "block_order": ["nav-capabilities", "nav-status"]
+      "block_order": [
+        "nav-capabilities",
+        "nav-status"
+      ]
     },
     "crumbs": {
       "type": "breadcrumbs",
@@ -40,12 +47,16 @@
       "blocks": {
         "sample-card": {
           "type": "product-card",
-          "settings": {"variant": "standard"},
+          "settings": {
+            "variant": "standard"
+          },
           "blocks": {},
           "block_order": []
         }
       },
-      "block_order": ["sample-card"]
+      "block_order": [
+        "sample-card"
+      ]
     },
     "site-footer": {
       "type": "footer",

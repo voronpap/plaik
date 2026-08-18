@@ -1,0 +1,6 @@
+<section id="main-content" class="plaik-search plaik-search-{{ settings.mode }}" aria-label="{{ theme_strings.search_label }}">
+  <div class="plaik-search-form">{{ slot("storefront.search.form") }}</div>
+  <div class="plaik-filters">{{ slot("storefront.search.filters") }}</div>
+  {{ slot("storefront.search.results") }}
+  <p class="plaik-empty" data-ui-state="empty">{{ theme_strings.empty_search }}</p>
+</section>
