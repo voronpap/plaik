@@ -102,15 +102,27 @@ class PackageRegistry:
     def persist_legacy_cleanup(self) -> bool:
         """Rewrite a completed 0.2.x registry so stripped keys do not remain on disk.
 
-        Callers that share the registry with TransactionalPackageManager must
-        serialize this rewrite on the extension operation lock. Unknown extras
-        still fail closed and the original file is left untouched.
+        Callers that share the registry with installer or TransactionalPackageManager
+        must serialize this rewrite on those writers' locks. Unknown extras still
+        fail closed and the original file is left untouched. The rewrite uses one
+        locked snapshot so a concurrent mutation cannot be clobbered by a stale read.
         """
 
         data = read_json(self.path, {"packages": {}})
         if not _registry_payload_has_legacy_keys(data):
             return False
-        self._write(self.records())
+        if not isinstance(data, dict) or set(data) != {"packages"}:
+            raise PackageLifecycleError("package registry is invalid")
+        raw_records = data["packages"]
+        if not isinstance(raw_records, dict):
+            raise PackageLifecycleError("package registry is invalid")
+        records = {
+            package_id: PackageRecord.model_validate(_legacy_record_payload(record))
+            for package_id, record in raw_records.items()
+        }
+        if any(package_id != record.manifest.id for package_id, record in records.items()):
+            raise PackageLifecycleError("package registry identity is invalid")
+        self._write(records)
         return True
 
     def install_many(self, manifests: list[PackageManifest]) -> list[PackageRecord]:
