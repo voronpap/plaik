@@ -191,6 +191,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         render_slots=render_slots,
         job_queue=job_queue,
         connection_store=connection_store,
+        health_issues=health_issues,
     )
     session_pepper_reference = SecretReference(
         provider="local",
