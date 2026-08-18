@@ -6,11 +6,20 @@
       "id": "drawer",
       "type": "boolean",
       "default": false
+    },
+    {
+      "id": "source",
+      "type": "enum",
+      "choices": [
+        "collection",
+        "search"
+      ],
+      "default": "collection"
     }
   ],
   "slots": [
     "storefront.collection.filters",
-    "storefront.search.filters",
-    "storefront.collection.sort"
+    "storefront.collection.sort",
+    "storefront.search.filters"
   ]
 }

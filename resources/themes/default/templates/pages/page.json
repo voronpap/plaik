@@ -13,12 +13,6 @@
       "blocks": {},
       "block_order": []
     },
-    "site-nav": {
-      "type": "navigation",
-      "settings": {},
-      "blocks": {},
-      "block_order": []
-    },
     "crumbs": {
       "type": "breadcrumbs",
       "settings": {},
@@ -41,7 +35,6 @@
   "order": [
     "announce",
     "site-header",
-    "site-nav",
     "crumbs",
     "page-main",
     "site-footer"
