@@ -384,7 +384,12 @@ class WebRenderer:
             except ThemeRevisionError as error:
                 raise WebRenderError(str(error)) from error
         elif self.revision_store is not None:
-            revision = self.revision_store.published(store_id)
+            try:
+                revision = self.revision_store.published(store_id)
+            except ThemeRevisionError as error:
+                raise WebRenderError(str(error)) from error
+            except OSError:
+                raise WebRenderError("published revision is unavailable") from None
         if revision is not None and revision.theme_id != active.id:
             revision = None
         elif revision is not None and (

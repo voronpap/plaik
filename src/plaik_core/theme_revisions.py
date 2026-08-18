@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import stat
 from contextlib import contextmanager
@@ -46,6 +47,8 @@ from .themes import ThemeRegistry, _validate_store_id
 
 MAX_SETTINGS_SCHEMA_BYTES = MAX_DEFINITION_BYTES
 MAX_PRESET_BYTES = MAX_PAGE_TEMPLATE_BYTES
+_PUBLIC_READABLE_FILE_MODE = 0o640
+_PUBLIC_READABLE_DIR_MODE = 0o2750
 
 
 class ThemeRevisionError(ValueError):
@@ -347,20 +350,38 @@ class ThemeRevisionStore:
             raise ThemeRevisionError("revision index is invalid") from error
 
     def _write_state(self, store_id: str, state: _StoreRevisionState) -> None:
-        write_json_atomic(self._state_path(store_id), state.model_dump(mode="json"))
+        self._ensure_store_layout(store_id)
+        write_json_atomic(
+            self._state_path(store_id),
+            state.model_dump(mode="json"),
+            mode=_PUBLIC_READABLE_FILE_MODE,
+        )
 
     def _write_revision(
         self, store_id: str, revision: ThemeConfigurationRevision
     ) -> None:
         path = self._revision_path(store_id, revision.revision_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_store_layout(store_id)
         if path.exists():
             existing = self.get(store_id, revision.revision_id)
             if existing.status is RevisionStatus.PREPARED:
                 raise ThemeRevisionError("prepared revisions are immutable")
             if _status_rank(revision.status) < _status_rank(existing.status):
                 raise ThemeRevisionError("revision status cannot move backwards")
-        write_json_atomic(path, revision.model_dump(mode="json"))
+        write_json_atomic(
+            path,
+            revision.model_dump(mode="json"),
+            mode=_PUBLIC_READABLE_FILE_MODE,
+        )
+
+    def _ensure_store_layout(self, store_id: str) -> None:
+        revisions = self.path / store_id / "revisions"
+        revisions.mkdir(parents=True, exist_ok=True)
+        for directory in (self.path, self.path / store_id, revisions):
+            try:
+                os.chmod(directory, _PUBLIC_READABLE_DIR_MODE)
+            except OSError:
+                continue
 
 
 def load_theme_configuration_catalog(

@@ -1059,6 +1059,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
             runtime.modules_dir,
             (runtime.installed_packages_dir,),
         ),
+        revision_store=core.state.theme_revision_store,
     )
     application = FastAPI(
         title="PLAIK Web",

@@ -77,6 +77,7 @@ from .connection_store import ConnectionStore
 from .extension_host import ExtensionHost
 from .health_issues import HealthIssueRegistry
 from .storage import exclusive_file_lock, read_json
+from .theme_revisions import ThemeRevisionStore
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
 
 
@@ -141,6 +142,11 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         enabled_package_ids=enabled_theme_package_ids,
     )
     theme_manager = ThemeManager(theme_registry, ActiveThemeStore(runtime.active_themes_path))
+    runtime.theme_revisions_path.mkdir(parents=True, exist_ok=True)
+    theme_revision_store = ThemeRevisionStore(
+        runtime.theme_revisions_path,
+        theme_registry=theme_registry,
+    )
     system_requirements = SystemRequirements(runtime)
     configuration_store = InstallerConfigurationStore(runtime.installer_config_path)
     identity_store_json = IdentityStore(runtime.identity_registry_path)
@@ -239,6 +245,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     application.state.install_store = install_store
     application.state.theme_registry = theme_registry
     application.state.theme_manager = theme_manager
+    application.state.theme_revision_store = theme_revision_store
     application.state.package_registry = package_registry
     application.state.system_requirements = system_requirements
     application.state.configuration_store = configuration_store

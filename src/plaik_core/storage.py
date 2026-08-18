@@ -68,7 +68,7 @@ def read_json(path: Path, default: Any) -> Any:
         os.close(descriptor)
 
 
-def write_json_atomic(path: Path, value: Any) -> None:
+def write_json_atomic(path: Path, value: Any, *, mode: int | None = None) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(
@@ -83,6 +83,8 @@ def write_json_atomic(path: Path, value: Any) -> None:
             if os.fstat(stream.fileno()).st_size > MAX_JSON_STATE_BYTES:
                 raise OSError("JSON state exceeds the size limit")
             os.fsync(stream.fileno())
+            if mode is not None:
+                os.fchmod(stream.fileno(), mode)
         expected = temporary_path.lstat()
         os.replace(temporary_path, target)
         try:
