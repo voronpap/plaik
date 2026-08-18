@@ -9,10 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from plaik_contracts import ScopeRef, ResourceRef
+from plaik_contracts import HealthIssue, ScopeRef, ResourceRef
 from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
+    HealthReporter,
     JobScheduler,
     SecretReader,
     SecretValue,
@@ -23,6 +24,7 @@ from plaik_sdk import (
 
 from .connection_store import ConnectionStore, ConnectionStoreError
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
+from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import DurableJobQueue
 from .packages import PackageRecord, PackageStatus
@@ -138,6 +140,21 @@ class _OwnerSlots(SlotContributor):
         )
 
 
+class _OwnerHealth(HealthReporter):
+    def __init__(self, registry: HealthIssueRegistry, owner: str) -> None:
+        self._registry = registry
+        self._owner = owner
+
+    def report(self, issue: HealthIssue) -> None:
+        if not isinstance(issue, HealthIssue):
+            raise TypeError("health issue must be a HealthIssue")
+        if issue.owner != self._owner:
+            raise ExtensionHostError(
+                "health issue owner must match the reporting package"
+            )
+        self._registry.report(issue)
+
+
 class ExtensionHost:
     """Build and retain one ExtensionRuntime per enabled module or integration."""
 
@@ -150,6 +167,7 @@ class ExtensionHost:
         render_slots: RenderSlotRegistry,
         job_queue: DurableJobQueue,
         connection_store: ConnectionStore,
+        health_issues: HealthIssueRegistry,
         secret_providers: SecretProviderRegistry | None = None,
     ) -> None:
         self._packages_root = Path(packages_root)
@@ -158,6 +176,7 @@ class ExtensionHost:
         self._slots = render_slots
         self._jobs = job_queue
         self._connections = connection_store
+        self._health = health_issues
         self._secrets = secret_providers
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
@@ -225,6 +244,7 @@ class ExtensionHost:
             events=_OwnerEvents(self._events, package_id, scope),
             jobs=_OwnerJobs(self._jobs),
             slots=_OwnerSlots(self._slots, package_id),
+            health=_OwnerHealth(self._health, package_id),
         )
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
