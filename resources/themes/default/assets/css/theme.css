@@ -25,6 +25,11 @@
   --plaik-weight-heading: 700;
 }
 
+[data-web-theme="default"],
+[data-web-theme="default"] * {
+  box-sizing: border-box;
+}
+
 [data-web-theme="default"] body {
   margin: 0;
   background: var(--plaik-color-background);
@@ -177,7 +182,7 @@
 
 [data-web-theme="default"] .plaik-readiness { display: flex; align-items: center; justify-content: space-between; gap: 2rem; margin-bottom: 3rem; padding: clamp(1.5rem, 4vw, 3rem); border-radius: 1.25rem; color: white; background: var(--plaik-color-text); scroll-margin-top: 2rem; }
 [data-web-theme="default"] .plaik-readiness h2 { margin-bottom: 0; }
-[data-web-theme="default"] .plaik-readiness > p { display: flex; align-items: center; gap: .65rem; white-space: nowrap; }
+[data-web-theme="default"] .plaik-readiness > p { display: flex; align-items: center; gap: .65rem; }
 [data-web-theme="default"] .plaik-footer {
   display: flex; flex-wrap: wrap; min-height: 5rem; align-items: center;
   gap: 1rem; border-top: 1px solid var(--plaik-color-border);

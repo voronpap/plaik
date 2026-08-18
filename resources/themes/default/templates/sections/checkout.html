@@ -1,4 +1,4 @@
-<section id="main-content" class="plaik-checkout" aria-labelledby="plaik-checkout-title">
+<main id="main-content" class="plaik-checkout" aria-labelledby="plaik-checkout-title" tabindex="-1">
   <h1 id="plaik-checkout-title">{{ theme_strings.checkout_title }}</h1>
   <div class="plaik-checkout-customer">{{ slot("storefront.checkout.customer") }}</div>
   <div class="plaik-checkout-shipping">{{ slot("storefront.checkout.shipping") }}</div>
@@ -6,4 +6,4 @@
   <div class="plaik-checkout-review">{{ slot("storefront.checkout.review") }}</div>
   {% for block in blocks %}{{ block }}{% endfor %}
   <button class="plaik-button plaik-button-primary" type="button">{{ theme_strings.checkout_submit }}</button>
-</section>
+</main>
