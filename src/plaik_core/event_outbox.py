@@ -576,7 +576,24 @@ class DelegatingDurableEvents:
                 delivered += fallback.recover_subscribers(limit=limit)
             except Exception as error:
                 leftover_error = error
-        delivered += live.recover_subscribers(limit=limit)
-        if leftover_error is not None:
-            raise leftover_error
+        live_error: Exception | None = None
+        try:
+            delivered += live.recover_subscribers(limit=limit)
+        except Exception as error:
+            live_error = error
+        _reraise_drain_errors(leftover_error, live_error)
         return delivered
+
+
+def _reraise_drain_errors(
+    leftover_error: Exception | None,
+    live_error: Exception | None,
+) -> None:
+    """Prefer leftover identity when leftover and live drains both fail."""
+
+    if leftover_error is not None:
+        if live_error is not None:
+            raise leftover_error from live_error
+        raise leftover_error
+    if live_error is not None:
+        raise live_error
