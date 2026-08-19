@@ -311,6 +311,10 @@ class _OwnerJobs(JobScheduler):
         with self._host._lock:
             if self._host._runtime_generations.get(self._owner) != self._generation:
                 raise ExtensionHostError("job scheduler is no longer bound")
+            if not job_type.startswith(f"{self._owner}."):
+                raise ExtensionHostError(
+                    "job type must use its package-owned namespace"
+                )
             record = self._host._jobs.enqueue(
                 job_type,
                 payload,
@@ -482,6 +486,8 @@ class ExtensionHost:
                 registry.activate_owner(package_id)
             else:
                 registry.deactivate_owner(package_id)
+        if not active:
+            self._jobs.cancel_owner(package_id)
 
     def _unbind_health(self, package_id: str) -> None:
         self._runtime_generations.pop(package_id, None)
