@@ -21,13 +21,28 @@ from .extension_runtime import _json_snapshot
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
+def _load_outbox_payload(raw: Any) -> Any:
+    """Return JSONB payload unchanged unless it is still encoded text.
+
+    Non-object payloads stay as-is so as_envelope can fail closed without
+    crashing claim_pending.
+    """
+
+    if isinstance(raw, (str, bytes, bytearray)):
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return raw
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class PostgreSQLOutboxEvent:
     id: str
     owner: str
     contract: str
     version: str
-    payload: dict[str, Any]
+    payload: Any
     idempotency_key: str | None
     attempt_count: int
     scope_json: Any = None
@@ -36,7 +51,7 @@ class PostgreSQLOutboxEvent:
     created_at: datetime | None = None
 
     def as_envelope(self) -> EventEnvelope:
-        if self.created_at is None:
+        if self.created_at is None or type(self.payload) is not dict:
             raise OutboxEnvelopeError("outbox envelope is invalid")
         try:
             return envelope_from_row(
@@ -154,7 +169,7 @@ class PostgreSQLEventOutbox:
                 owner=str(row[1]),
                 contract=str(row[2]),
                 version=str(row[3]),
-                payload=row[4] if isinstance(row[4], dict) else json.loads(row[4]),
+                payload=_load_outbox_payload(row[4]),
                 idempotency_key=row[5],
                 attempt_count=int(row[6]),
                 scope_json=row[7],
