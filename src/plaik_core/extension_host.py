@@ -149,20 +149,24 @@ class _NullSettings(SettingsReader):
 
 
 class _OwnerSecrets(SecretReader):
-    def __init__(self, host: ExtensionHost, owner: str) -> None:
+    def __init__(self, host: ExtensionHost, owner: str, generation: int) -> None:
         self._host = host
         self._owner = owner
+        self._generation = generation
 
     def get(self, key: str) -> SecretValue:
-        try:
-            connection = self._host._connections.get(self._owner, key)
-        except ConnectionStoreError as error:
-            raise SecretNotFoundError(
-                f"secret is not granted to this package: {key}"
-            ) from error
-        if self._host._secrets is None:
-            raise SecretNotFoundError("secret providers are unavailable")
-        return self._host._secrets.resolve(connection.secret)
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("secret reader is no longer bound")
+            try:
+                connection = self._host._connections.get(self._owner, key)
+            except ConnectionStoreError as error:
+                raise SecretNotFoundError(
+                    f"secret is not granted to this package: {key}"
+                ) from error
+            if self._host._secrets is None:
+                raise SecretNotFoundError("secret providers are unavailable")
+            return self._host._secrets.resolve(connection.secret)
 
 
 class _OwnerServices(ServiceResolver):
@@ -400,7 +404,7 @@ class ExtensionHost:
             store_id=store_id,
             locale=locale,
             settings=_NullSettings(),
-            secrets=_OwnerSecrets(self, package_id),
+            secrets=_OwnerSecrets(self, package_id, generation),
             services=_OwnerServices(self._services),
             events=_OwnerEvents(self, package_id, scope, generation),
             jobs=_OwnerJobs(self, package_id, generation),
