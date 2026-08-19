@@ -15,7 +15,8 @@ class HealthIssueRegistry:
 
     The registry keeps a global bound. Overflow evicts the oldest issue of the
     owner that currently holds the most entries, so a noisy package cannot drop
-    a quieter owner's last remaining issue.
+    a quieter owner's last remaining issue. If several owners share that
+    maximum, the oldest issue among those tied owners is evicted.
     """
 
     def __init__(self, *, limit: int = MAX_HEALTH_ISSUES) -> None:
