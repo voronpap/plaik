@@ -14,13 +14,12 @@ from typing import Any
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef
+from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef, validate_event_idempotency_key
 
 
 _OWNER = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _CONTRACT = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9_-]*)+$")
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
-_EVENT_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$")
 MAX_VERSION_RANGE_BYTES = 512
 MAX_EVENT_PAYLOAD_BYTES = 1024 * 1024
 MAX_EVENT_PAYLOAD_DEPTH = 16
@@ -230,7 +229,7 @@ class EventBus:
         parsed = _version(version)
         reserved: tuple[str, str, str] | None = None
         if idempotency_key is not None:
-            reserved = (owner, contract, _validate_event_idempotency_key(idempotency_key))
+            reserved = (owner, contract, validate_event_idempotency_key(idempotency_key))
 
         if reserved is None:
             snapshot, subscriptions = self._prepare_publish(
@@ -503,12 +502,6 @@ def _validate_owned_contract(owner: str, contract: str) -> tuple[str, str]:
 def _validate_owner(value: str) -> str:
     if not isinstance(value, str) or not _OWNER.fullmatch(value):
         raise ValueError("invalid extension owner id")
-    return value
-
-
-def _validate_event_idempotency_key(value: str) -> str:
-    if not isinstance(value, str) or not _EVENT_IDEMPOTENCY_KEY.fullmatch(value):
-        raise ValueError("invalid event idempotency key")
     return value
 
 
