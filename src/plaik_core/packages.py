@@ -53,6 +53,21 @@ def _registry_payload_has_legacy_keys(data: object) -> bool:
     )
 
 
+def _parse_registry_document(data: object) -> dict[str, PackageRecord]:
+    if not isinstance(data, dict) or set(data) != {"packages"}:
+        raise PackageLifecycleError("package registry is invalid")
+    raw_records = data["packages"]
+    if not isinstance(raw_records, dict):
+        raise PackageLifecycleError("package registry is invalid")
+    records = {
+        package_id: PackageRecord.model_validate(_legacy_record_payload(record))
+        for package_id, record in raw_records.items()
+    }
+    if any(package_id != record.manifest.id for package_id, record in records.items()):
+        raise PackageLifecycleError("package registry identity is invalid")
+    return records
+
+
 def canonical_registry_document(
     records: Mapping[str, PackageRecord],
 ) -> dict[str, dict[str, object]]:
@@ -108,11 +123,7 @@ class PackageRegistry:
             yield
 
     def records(self) -> dict[str, PackageRecord]:
-        data = read_json(self.path, {"packages": {}})
-        return {
-            package_id: PackageRecord.model_validate(_legacy_record_payload(record))
-            for package_id, record in data.get("packages", {}).items()
-        }
+        return _parse_registry_document(read_json(self.path, {"packages": {}}))
 
     def persist_legacy_cleanup(self) -> bool:
         """Rewrite a completed 0.2.x registry so stripped keys do not remain on disk.
@@ -126,19 +137,9 @@ class PackageRegistry:
 
         with self._mutation_lock():
             data = read_json(self.path, {"packages": {}})
+            records = _parse_registry_document(data)
             if not _registry_payload_has_legacy_keys(data):
                 return False
-            if not isinstance(data, dict) or set(data) != {"packages"}:
-                raise PackageLifecycleError("package registry is invalid")
-            raw_records = data["packages"]
-            if not isinstance(raw_records, dict):
-                raise PackageLifecycleError("package registry is invalid")
-            records = {
-                package_id: PackageRecord.model_validate(_legacy_record_payload(record))
-                for package_id, record in raw_records.items()
-            }
-            if any(package_id != record.manifest.id for package_id, record in records.items()):
-                raise PackageLifecycleError("package registry identity is invalid")
             self._write(records)
             return True
 

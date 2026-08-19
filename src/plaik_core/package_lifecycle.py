@@ -30,10 +30,11 @@ from .package_artifacts import (
     VerifiedPackageArtifact,
 )
 from .packages import (
+    PackageLifecycleError,
     PackageRecord,
     PackageStatus,
     RESERVED_PACKAGE_IDS,
-    _legacy_record_payload,
+    _parse_registry_document,
     _registry_payload_has_legacy_keys,
     canonical_registry_document,
 )
@@ -819,20 +820,12 @@ class TransactionalPackageManager:
 
     def _read_records(self) -> dict[str, PackageRecord]:
         data = read_json(self.registry_path, {"packages": {}})
-        if not isinstance(data, dict) or set(data) != {"packages"}:
-            raise TransactionalPackageError("package registry is invalid")
-        raw_records = data["packages"]
-        if not isinstance(raw_records, dict):
-            raise TransactionalPackageError("package registry is invalid")
         try:
-            records = {
-                package_id: PackageRecord.model_validate(_legacy_record_payload(raw))
-                for package_id, raw in raw_records.items()
-            }
+            records = _parse_registry_document(data)
+        except PackageLifecycleError as error:
+            raise TransactionalPackageError(str(error)) from error
         except Exception as error:
             raise TransactionalPackageError("package registry is invalid") from error
-        if any(package_id != record.manifest.id for package_id, record in records.items()):
-            raise TransactionalPackageError("package registry identity is invalid")
         if _registry_payload_has_legacy_keys(data):
             self._write_records(records)
         return records
