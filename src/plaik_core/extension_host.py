@@ -16,6 +16,7 @@ from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
     HealthReporter,
+    JobHandler,
     JobScheduler,
     SecretReader,
     SecretValue,
@@ -28,7 +29,7 @@ from .connection_store import ConnectionStore, ConnectionStoreError
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
-from .jobs import DurableJobQueue
+from .jobs import DurableJobQueue, _owner_job_prefix, _validate_job_type
 from .packages import PackageRecord, PackageStatus
 from .secret_store import SecretNotFoundError, SecretProviderRegistry
 from .settings_store import SettingsStore, SettingsStoreError
@@ -340,7 +341,23 @@ class _OwnerJobs(JobScheduler):
                 maximum_attempts=maximum_attempts,
                 scheduled_at=scheduled_at,
             )
-            return record.id
+            drain = self._host._job_drain
+        if drain is not None:
+            drain()
+        return record.id
+
+    def register(self, job_type: str, handler: JobHandler) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("job scheduler is no longer bound")
+            job_type = _validate_job_type(job_type)
+            if not job_type.startswith(f"{self._owner}."):
+                raise ExtensionHostError(
+                    "job type must use its package-owned namespace"
+                )
+            if not callable(handler):
+                raise TypeError("job handler must be callable")
+            self._host._job_handlers[job_type] = handler
 
 
 class _OwnerSlots(SlotContributor):
@@ -414,6 +431,8 @@ class ExtensionHost:
         self._publication = event_publication or event_bus
         self._slots = render_slots
         self._jobs = job_queue
+        self._job_handlers: dict[str, JobHandler] = {}
+        self._job_drain = None
         self._connections = connection_store
         self._health = health_issues
         self._secrets = secret_providers
@@ -426,6 +445,13 @@ class ExtensionHost:
 
     def set_secret_providers(self, providers: SecretProviderRegistry | None) -> None:
         self._secrets = providers
+
+    def set_job_drain(self, drain: Any | None) -> None:
+        self._job_drain = drain
+
+    @property
+    def job_handlers(self) -> dict[str, JobHandler]:
+        return self._job_handlers
 
     def bind_configuration(self, configuration: InstallerConfiguration) -> ScopeRef:
         return ScopeRef.store(
@@ -497,8 +523,18 @@ class ExtensionHost:
                     self._set_owner_registries_active(package_id, False)
         for package_id in tuple(self._registered):
             if package_id not in records:
+                self._drop_job_handlers(package_id)
                 self._registered.discard(package_id)
         return enabled_ids
+
+    def _drop_job_handlers(self, package_id: str) -> None:
+        prefix = _owner_job_prefix(package_id)
+        for job_type in [
+            job_type
+            for job_type in self._job_handlers
+            if job_type.startswith(prefix)
+        ]:
+            del self._job_handlers[job_type]
 
     def _set_owner_registries_active(self, package_id: str, active: bool) -> None:
         for registry in (self._services, self._events, self._slots):

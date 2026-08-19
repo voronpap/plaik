@@ -47,7 +47,7 @@ from .installer_config import (
     SQLiteDatabase,
 )
 from .migrations import MigrationError, MigrationRunner
-from .jobs import DurableJobQueue
+from .jobs import DurableJobQueue, JobDrainPump, JobRunner
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .event_outbox import DelegatingDurableEvents, SqliteDurableEvents
 from .operation_journal import OperationJournal, OperationStatus
@@ -231,6 +231,9 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         health_issues=health_issues,
         settings_store=settings_store,
     )
+    job_runner = JobRunner(job_queue, extension_host.job_handlers)
+    job_pump = JobDrainPump(job_runner)
+    extension_host.set_job_drain(job_pump.drain)
     session_pepper_reference = SecretReference(
         provider="local",
         key="platform/session-pepper",
@@ -295,6 +298,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     application.state.identity_store_json = identity_store_json
     application.state.cache = runtime_cache
     application.state.job_queue = job_queue
+    application.state.job_runner = job_runner
     application.state.service_registry = service_registry
     application.state.event_bus = event_bus
     application.state.event_outbox = durable_events
@@ -323,14 +327,19 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         host.set_secret_providers(application.state.secret_providers)
         records = package_registry.records()
         durable_events.defer_dispatch()
+        job_pump.deferred = True
         try:
-            configuration = configuration_store.require()
-        except Exception:
-            host.drop_unenabled(records)
-            durable_events.enable_live_dispatch()
-            return
-        host.sync_enabled(records, configuration)
-        durable_events.recover_subscribers()
+            try:
+                configuration = configuration_store.require()
+            except Exception:
+                host.drop_unenabled(records)
+                durable_events.enable_live_dispatch()
+                return
+            host.sync_enabled(records, configuration)
+            durable_events.recover_subscribers()
+        finally:
+            job_pump.deferred = False
+            job_pump.drain()
 
     application.state.sync_extension_host = sync_extension_host
 

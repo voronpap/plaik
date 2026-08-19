@@ -153,22 +153,10 @@ def _copy_state(source: FastAPI, destination: FastAPI) -> None:
 
 
 def _sync_extension_host(core: FastAPI) -> None:
-    host = getattr(core.state, "extension_host", None)
-    if host is None:
+    sync = getattr(core.state, "sync_extension_host", None)
+    if sync is None:
         return
-    records = core.state.package_registry.records()
-    try:
-        configuration = core.state.configuration_store.require()
-    except Exception:
-        host.drop_unenabled(records)
-        return
-    host.set_secret_providers(core.state.secret_providers)
-    outbox = getattr(core.state, "event_outbox", None)
-    if outbox is not None:
-        outbox.defer_dispatch()
-    host.sync_enabled(records, configuration)
-    if outbox is not None:
-        outbox.recover_subscribers()
+    sync()
 
 
 def _copy_routes(source: FastAPI, destination: FastAPI, prefixes: tuple[str, ...]) -> None:

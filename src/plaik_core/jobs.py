@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -461,7 +462,7 @@ class JobRunner:
         handlers: Mapping[str, JobHandler],
     ) -> None:
         self.queue = queue
-        self.handlers = dict(handlers)
+        self.handlers = handlers
         for job_type, handler in self.handlers.items():
             _validate_job_type(job_type)
             if not callable(handler):
@@ -486,10 +487,11 @@ class JobRunner:
             return self.queue.records().get(job.id)
         handler = self.handlers.get(live.type)
         if handler is None:
-            return self.queue.fail(
+            return self._complete(
                 live.id,
                 worker_id,
                 fencing_token=live.fencing_token,
+                succeeded=False,
                 error_code="job.handler_missing",
                 now=now,
             )
@@ -508,19 +510,78 @@ class JobRunner:
             handler(context)
         except Exception as error:
             safe_code = f"job.{type(error).__name__.casefold()}"[:128]
-            return self.queue.fail(
+            return self._complete(
                 live.id,
                 worker_id,
                 fencing_token=live.fencing_token,
+                succeeded=False,
                 error_code=safe_code,
                 now=now,
             )
-        return self.queue.succeed(
+        return self._complete(
             live.id,
             worker_id,
             fencing_token=live.fencing_token,
+            succeeded=True,
             now=now,
         )
+
+    def _complete(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        succeeded: bool,
+        error_code: str | None = None,
+        now: datetime | None = None,
+    ) -> JobRecord | None:
+        try:
+            if succeeded:
+                return self.queue.succeed(
+                    job_id,
+                    worker_id,
+                    fencing_token=fencing_token,
+                    now=now,
+                )
+            if error_code is None:
+                raise JobQueueError("failed job is missing an error code")
+            return self.queue.fail(
+                job_id,
+                worker_id,
+                fencing_token=fencing_token,
+                error_code=error_code,
+                now=now,
+            )
+        except JobQueueError:
+            return self.queue.records().get(job_id)
+
+
+class JobDrainPump:
+    """Serialize JSON job drain and skip same-thread re-entry from handlers."""
+
+    def __init__(self, runner: JobRunner, *, worker_id: str = "plaik-core") -> None:
+        self._runner = runner
+        self._worker_id = _validate_worker_id(worker_id)
+        self.deferred = True
+        self._lock = threading.Lock()
+        self._thread: int | None = None
+
+    def drain(self) -> None:
+        if self.deferred:
+            return
+        me = threading.get_ident()
+        if self._thread == me:
+            return
+        with self._lock:
+            if self._thread == me:
+                return
+            self._thread = me
+            try:
+                while self._runner.run_once(self._worker_id) is not None:
+                    pass
+            finally:
+                self._thread = None
 
 
 def _safe_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
