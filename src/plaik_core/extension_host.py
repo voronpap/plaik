@@ -153,10 +153,13 @@ def _settings_field_name(key: str, used: set[str]) -> str:
         name = "setting_" + "".join(
             character if character.isalnum() else "_" for character in key
         )
-    if name in used:
-        name = f"{name}_{len(used)}"
-    used.add(name)
-    return name
+    candidate = name
+    suffix = 1
+    while candidate in used:
+        candidate = f"{name}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
 
 
 def _package_settings_schema(
