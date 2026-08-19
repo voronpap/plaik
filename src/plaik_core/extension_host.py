@@ -170,11 +170,16 @@ class _OwnerSecrets(SecretReader):
 
 
 class _OwnerServices(ServiceResolver):
-    def __init__(self, registry: ServiceRegistry) -> None:
-        self._registry = registry
+    def __init__(self, host: ExtensionHost, owner: str, generation: int) -> None:
+        self._host = host
+        self._owner = owner
+        self._generation = generation
 
     def resolve(self, contract: str, version: str = "*") -> Any:
-        return self._registry.resolve(contract, version)
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("service resolver is no longer bound")
+            return self._host._services.resolve(contract, version)
 
 
 class _OwnerEvents(EventPublisher):
@@ -417,7 +422,7 @@ class ExtensionHost:
             locale=locale,
             settings=_NullSettings(),
             secrets=_OwnerSecrets(self, package_id, generation),
-            services=_OwnerServices(self._services),
+            services=_OwnerServices(self, package_id, generation),
             events=_OwnerEvents(self, package_id, scope, generation),
             jobs=_OwnerJobs(self, package_id, generation),
             slots=_OwnerSlots(self, package_id, generation),
