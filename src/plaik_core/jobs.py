@@ -575,9 +575,18 @@ class DelegatingJobQueue:
             else:
                 if leftover is not None:
                     return leftover
-        claimed = live.claim(worker_id, lease=lease, now=now)
+        live_error: Exception | None = None
+        claimed = None
+        try:
+            claimed = live.claim(worker_id, lease=lease, now=now)
+        except Exception as error:
+            live_error = error
         if leftover_error is not None and claimed is None:
+            if live_error is not None:
+                raise leftover_error from live_error
             raise leftover_error
+        if live_error is not None:
+            raise live_error
         return claimed
 
     def succeed(
@@ -645,14 +654,23 @@ class DelegatingJobQueue:
             else:
                 if leftover is not None:
                     return leftover
-        live_lease = live.leased(
-            job_id,
-            worker_id,
-            fencing_token=fencing_token,
-            now=now,
-        )
+        live_error: Exception | None = None
+        live_lease = None
+        try:
+            live_lease = live.leased(
+                job_id,
+                worker_id,
+                fencing_token=fencing_token,
+                now=now,
+            )
+        except Exception as error:
+            live_error = error
         if leftover_error is not None and live_lease is None:
+            if live_error is not None:
+                raise leftover_error from live_error
             raise leftover_error
+        if live_error is not None:
+            raise live_error
         return live_lease
 
     def purge_terminal(self, *, before: datetime, limit: int = 100) -> int:
