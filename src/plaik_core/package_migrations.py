@@ -62,6 +62,7 @@ _PACKAGE_FORBIDDEN_TOKENS = frozenset(
         "SUPERUSER",
     }
 )
+_PACKAGE_RESERVED_RELATIONS = frozenset({"PLAIK_SETTINGS_REGISTRY"})
 _PACKAGE_TRANSACTION_CONTROL = re.compile(
     r"^(?:BEGIN\b|START\s+TRANSACTION\b|COMMIT\b|END\b|ROLLBACK\b|ABORT\b|"
     r"SAVEPOINT\b|RELEASE\s+(?:SAVEPOINT\s+)?|PREPARE\s+TRANSACTION\b)"
@@ -426,6 +427,12 @@ def validate_package_postgresql_statement(
         raise MigrationError(
             "PostgreSQL package migration command is forbidden: "
             + ",".join(sorted(forbidden))
+        )
+    reserved = tokens & _PACKAGE_RESERVED_RELATIONS
+    if reserved:
+        raise MigrationError(
+            "PostgreSQL package migration must not reference "
+            + ",".join(sorted(name.lower() for name in reserved))
         )
     # Reject explicit references to protected schemas / other package schemas.
     protected = (META_SCHEMA.upper(), CORE_SCHEMA.upper(), "PUBLIC")
