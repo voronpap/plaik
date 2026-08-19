@@ -74,14 +74,19 @@ class OutboxEnqueueLocked(RuntimeError):
     """Enqueue refused to wait for another transaction's row lock."""
 
 
+_LOCK_NOT_AVAILABLE = "55P03"
+_ENQUEUE_LOCK_TIMEOUT = "1ms"
+_ENQUEUE_SAVEPOINT = "plaik_outbox_enqueue"
+
+
 def _is_lock_not_available(error: BaseException) -> bool:
     for attr in ("sqlstate", "pgcode"):
         value = getattr(error, attr, None)
-        if isinstance(value, str) and value.upper() == "55P03":
+        if isinstance(value, str) and value.upper() == _LOCK_NOT_AVAILABLE:
             return True
     diagnostic = getattr(error, "diag", None)
     state = getattr(diagnostic, "sqlstate", None)
-    return isinstance(state, str) and state.upper() == "55P03"
+    return isinstance(state, str) and state.upper() == _LOCK_NOT_AVAILABLE
 
 
 class PostgreSQLEventOutbox:
@@ -126,7 +131,9 @@ class PostgreSQLEventOutbox:
             envelope.payload, sort_keys=True, separators=(",", ":")
         )
         with connection.cursor() as cursor:
-            cursor.execute("SET LOCAL lock_timeout = '0'")
+            # 0 disables lock_timeout in PostgreSQL; 1ms is the fail-closed bound.
+            cursor.execute(f"SET LOCAL lock_timeout = '{_ENQUEUE_LOCK_TIMEOUT}'")
+            cursor.execute(f"SAVEPOINT {_ENQUEUE_SAVEPOINT}")
             try:
                 cursor.execute(
                     """
@@ -158,6 +165,7 @@ class PostgreSQLEventOutbox:
                     error
                 ):
                     raise
+                cursor.execute(f"ROLLBACK TO SAVEPOINT {_ENQUEUE_SAVEPOINT}")
                 cursor.execute(
                     """
                     SELECT id FROM plaik_core.plaik_event_outbox
