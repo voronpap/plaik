@@ -201,6 +201,10 @@ class CoreSettings:
         return self.data_dir / "jobs.json"
 
     @property
+    def event_outbox_path(self) -> Path:
+        return self.data_dir / "event-outbox.sqlite"
+
+    @property
     def settings_registry_path(self) -> Path:
         return self.data_dir / "settings.json"
 

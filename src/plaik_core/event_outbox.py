@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -319,3 +321,70 @@ class EventOutboxDispatcher:
             if quarantined == 0:
                 break
         return delivered
+
+
+class SqliteDurableEvents:
+    """Persist then dispatch: SQLite outbox is the EventPublisher linearization point."""
+
+    def __init__(self, path: Path, bus: EventBus) -> None:
+        self.path = Path(path)
+        self.bus = bus
+        self.outbox = SQLiteEventOutbox()
+        self.dispatcher = EventOutboxDispatcher(self.outbox, bus)
+        self._lock = threading.Lock()
+
+    def publish(
+        self,
+        *,
+        owner: str,
+        contract: str,
+        version: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
+    ) -> int:
+        with self._lock:
+            connection = self._open()
+            try:
+                self.outbox.enqueue(
+                    connection,
+                    owner=owner,
+                    contract=contract,
+                    version=version,
+                    payload=payload,
+                    idempotency_key=idempotency_key,
+                    scope=scope,
+                    resource=resource,
+                    correlation_id=correlation_id,
+                )
+                connection.commit()
+                return self.dispatcher.dispatch(connection)
+            finally:
+                connection.close()
+
+    def drain(self, *, limit: int = 100) -> int:
+        """Deliver pending rows after crash between commit and ack."""
+
+        with self._lock:
+            connection = self._open()
+            try:
+                return self.dispatcher.dispatch(connection, limit=limit)
+            finally:
+                connection.close()
+
+    def pending_count(self) -> int:
+        with self._lock:
+            connection = self._open()
+            try:
+                return len(self.outbox.pending(connection))
+            finally:
+                connection.close()
+
+    def _open(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path, timeout=30)
+        self.outbox.ensure_schema(connection)
+        connection.commit()
+        return connection

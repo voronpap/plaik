@@ -284,7 +284,7 @@ class _OwnerEvents(EventPublisher):
                 canonical_resource = _canonical_resource(
                     resource, self._owner, self._scope
                 )
-            self._host._events.publish(
+            self._host._publication.publish(
                 owner=self._owner,
                 contract=contract,
                 version=version,
@@ -385,6 +385,7 @@ class ExtensionHost:
         packages_root: Path,
         service_registry: ServiceRegistry,
         event_bus: EventBus,
+        event_publication: Any | None = None,
         render_slots: RenderSlotRegistry,
         job_queue: DurableJobQueue,
         connection_store: ConnectionStore,
@@ -395,6 +396,7 @@ class ExtensionHost:
         self._packages_root = Path(packages_root)
         self._services = service_registry
         self._events = event_bus
+        self._publication = event_publication or event_bus
         self._slots = render_slots
         self._jobs = job_queue
         self._connections = connection_store

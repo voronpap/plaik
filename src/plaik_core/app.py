@@ -49,6 +49,7 @@ from .installer_config import (
 from .migrations import MigrationError, MigrationRunner
 from .jobs import DurableJobQueue
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
+from .event_outbox import SqliteDurableEvents
 from .operation_journal import OperationJournal, OperationStatus
 from .operational_safety import MaintenanceController
 from .package_declarations import PackagePermissionCatalog
@@ -182,6 +183,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     job_queue = DurableJobQueue(runtime.jobs_registry_path)
     service_registry = ServiceRegistry()
     event_bus = EventBus()
+    durable_events = SqliteDurableEvents(runtime.event_outbox_path, event_bus)
     render_slots = RenderSlotRegistry()
     permission_catalog = PackagePermissionCatalog(
         runtime.package_permission_catalog_path
@@ -204,6 +206,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         packages_root=runtime.installed_packages_dir,
         service_registry=service_registry,
         event_bus=event_bus,
+        event_publication=durable_events,
         render_slots=render_slots,
         job_queue=job_queue,
         connection_store=connection_store,
@@ -276,6 +279,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     application.state.job_queue = job_queue
     application.state.service_registry = service_registry
     application.state.event_bus = event_bus
+    application.state.event_outbox = durable_events
     application.state.render_slots = render_slots
     application.state.permission_catalog = permission_catalog
     application.state.connection_store = connection_store
@@ -304,8 +308,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             configuration = configuration_store.require()
         except Exception:
             host.drop_unenabled(records)
+            durable_events.drain()
             return
         host.sync_enabled(records, configuration)
+        durable_events.drain()
 
     application.state.sync_extension_host = sync_extension_host
 
