@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 import sys
@@ -21,13 +22,16 @@ from .backup import (
 )
 from .checkpoint_anchor import checkpoint_verified_journal
 from .config import CoreSettings
+from .installer import INSTALL_SEQUENCE, InstallState, InstallStateStore
 from .installer_config import (
     DatabaseBackend,
     InstallerConfiguration,
     InstallerConfigurationStore,
+    PostgreSQLDatabase,
     SQLiteDatabase,
 )
 from .integrity import (
+    CheckpointProvider,
     FileCheckpointStore,
     IntegrityCheckpointError,
     JournalKind,
@@ -39,7 +43,15 @@ from .operation_journal import (
 )
 from .package_artifacts import Ed25519SignatureVerifier
 from .releases import ReleaseDescriptor, ReleaseError, ReleaseManager
-from .secret_store import LocalFileSecretProvider, SecretStoreError
+from .postgresql import PostgreSQLAdapter
+from .postgresql_integrity import PostgreSQLCheckpointStore
+from .postgresql_security import PostgreSQLAuditLog, PostgreSQLOperationJournal
+from .secret_store import (
+    EnvironmentSecretProvider,
+    LocalFileSecretProvider,
+    SecretProviderRegistry,
+    SecretStoreError,
+)
 from plaik_contracts import SecretReference
 from .signing_keys import SigningKeyStoreError, load_ed25519_public_keys
 
@@ -132,19 +144,69 @@ def _release_manager(runtime: CoreSettings) -> ReleaseManager:
     )
 
 
+def _cli_secret_providers(runtime: CoreSettings) -> SecretProviderRegistry:
+    if os.environ.get("PLAIK_PUBLIC_SECRETS") == "1":
+        from .public_secrets import PublishedRuntimeSecretProvider
+
+        local_secrets = PublishedRuntimeSecretProvider(runtime.secrets_dir)
+    else:
+        local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
+    return SecretProviderRegistry((EnvironmentSecretProvider(), local_secrets))
+
+
+def _postgresql_security_backend_ready(runtime: CoreSettings) -> bool:
+    state = InstallStateStore(runtime.install_state_path).read()
+    if INSTALL_SEQUENCE.index(state) < INSTALL_SEQUENCE.index(
+        InstallState.DATABASE_READY
+    ):
+        return False
+    try:
+        configured = InstallerConfigurationStore(
+            runtime.installer_config_path
+        ).require()
+    except Exception:
+        return False
+    return isinstance(configured.database, PostgreSQLDatabase)
+
+
 def _security_services(
     runtime: CoreSettings,
-) -> tuple[AuditLog, OperationJournal, FileCheckpointStore]:
-    provider = LocalFileSecretProvider(runtime.secrets_dir)
+) -> tuple[AuditLog, OperationJournal, CheckpointProvider]:
+    providers = _cli_secret_providers(runtime)
+    audit_key = providers.resolve(_AUDIT_KEY).get_secret_value().encode("utf-8")
+    operation_key = providers.resolve(_OPERATION_KEY).get_secret_value().encode("utf-8")
+    checkpoint_key = providers.resolve(_CHECKPOINT_KEY).get_secret_value().encode(
+        "utf-8"
+    )
+    if _postgresql_security_backend_ready(runtime):
+        configured = InstallerConfigurationStore(
+            runtime.installer_config_path
+        ).require()
+        adapter = PostgreSQLAdapter(configured, providers)
+        audit = PostgreSQLAuditLog(adapter.runtime_connect, integrity_key=audit_key)
+        operations = PostgreSQLOperationJournal(
+            adapter.runtime_connect,
+            integrity_key=operation_key,
+        )
+        audit.adopt_legacy_file_if_empty(runtime.audit_log_path)
+        operations.adopt_legacy_file_if_empty(runtime.operation_journal_path)
+        return (
+            audit,
+            operations,
+            PostgreSQLCheckpointStore(
+                adapter.checkpoint_connect,
+                integrity_key=checkpoint_key,
+            ),
+        )
     return (
-        AuditLog(runtime.audit_log_path, integrity_key=_secret_bytes(provider, _AUDIT_KEY)),
+        AuditLog(runtime.audit_log_path, integrity_key=audit_key),
         OperationJournal(
             runtime.operation_journal_path,
-            integrity_key=_secret_bytes(provider, _OPERATION_KEY),
+            integrity_key=operation_key,
         ),
         FileCheckpointStore(
             runtime.integrity_checkpoint_path,
-            integrity_key=_secret_bytes(provider, _CHECKPOINT_KEY),
+            integrity_key=checkpoint_key,
         ),
     )
 
@@ -153,7 +215,7 @@ def _anchor(
     configuration: InstallerConfiguration,
     audit: AuditLog,
     operations: OperationJournal,
-    checkpoints: FileCheckpointStore,
+    checkpoints: CheckpointProvider,
 ) -> int:
     expected_epoch = checkpoints.current_recovery_epoch(configuration.installation_id)
     checkpoint_verified_journal(
@@ -271,7 +333,7 @@ def _record_failure(
     configuration: InstallerConfiguration,
     audit: AuditLog,
     operations: OperationJournal,
-    checkpoints: FileCheckpointStore,
+    checkpoints: CheckpointProvider,
     operation_id: str,
     actor_id: str,
     action: str,
