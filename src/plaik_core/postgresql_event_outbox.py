@@ -22,17 +22,13 @@ _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
 def _load_outbox_payload(raw: Any) -> Any:
-    """Return JSONB payload unchanged unless it is still encoded text.
+    """Pass through driver-decoded JSONB without a second json.loads.
 
-    Non-object payloads stay as-is so as_envelope can fail closed without
-    crashing claim_pending.
+    psycopg 3 already turns JSONB objects into dicts and JSONB strings into
+    str. Parsing a str again would promote a JSONB string scalar that happens
+    to contain object-shaped text into a mapping and dispatch it.
     """
 
-    if isinstance(raw, (str, bytes, bytearray)):
-        try:
-            return json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return raw
     return raw
 
 
