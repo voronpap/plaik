@@ -198,7 +198,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 return events
         return sqlite_events
 
-    durable_events = DelegatingDurableEvents(resolve_durable_events)
+    durable_events = DelegatingDurableEvents(
+        resolve_durable_events,
+        fallback=sqlite_events,
+    )
     render_slots = RenderSlotRegistry()
     permission_catalog = PackagePermissionCatalog(
         runtime.package_permission_catalog_path
