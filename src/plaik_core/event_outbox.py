@@ -366,12 +366,13 @@ class SqliteDurableEvents:
         scope: ScopeRef | None = None,
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
-    ) -> bool:
+    ) -> None:
         """Enqueue and commit under the caller's authorization lock.
 
-        Return True if the caller must ``finish_dispatch()``. Host generation
-        fencing must hold until this method returns so a stale publisher cannot
-        commit after unbind. Do not hold that lock across ``finish_dispatch``.
+        Host generation fencing must hold until this method returns so a stale
+        publisher cannot commit after unbind. Do not claim or drain here:
+        wait-for-dispatch while holding that lock deadlocks a handler that
+        re-enters the host. The caller must ``drain()`` after releasing it.
         """
 
         with self._idle:
@@ -391,15 +392,6 @@ class SqliteDurableEvents:
                 connection.commit()
             finally:
                 connection.close()
-            return self._claim_dispatch_locked()
-
-    def finish_dispatch(self, claimed: bool, *, limit: int = 100) -> int:
-        if not claimed:
-            return 0
-        try:
-            return self._drain_claimed(limit=limit)
-        finally:
-            self._release_dispatch()
 
     def publish(
         self,
@@ -413,18 +405,17 @@ class SqliteDurableEvents:
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> int:
-        return self.finish_dispatch(
-            self.persist(
-                owner=owner,
-                contract=contract,
-                version=version,
-                payload=payload,
-                idempotency_key=idempotency_key,
-                scope=scope,
-                resource=resource,
-                correlation_id=correlation_id,
-            )
+        self.persist(
+            owner=owner,
+            contract=contract,
+            version=version,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            scope=scope,
+            resource=resource,
+            correlation_id=correlation_id,
         )
+        return self.drain()
 
     def drain(self, *, limit: int = 100) -> int:
         """Deliver pending rows after crash between commit and ack."""

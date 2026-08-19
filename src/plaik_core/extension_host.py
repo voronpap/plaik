@@ -273,8 +273,7 @@ class _OwnerEvents(EventPublisher):
         correlation_id: str | None = None,
     ) -> None:
         persist = getattr(self._host._publication, "persist", None)
-        finish_dispatch = getattr(self._host._publication, "finish_dispatch", None)
-        claimed = False
+        drain = getattr(self._host._publication, "drain", None)
         with self._host._lock:
             if self._host._runtime_generations.get(self._owner) != self._generation:
                 raise ExtensionHostError("event publisher is no longer bound")
@@ -287,7 +286,7 @@ class _OwnerEvents(EventPublisher):
                 canonical_resource = _canonical_resource(
                     resource, self._owner, self._scope
                 )
-            if persist is None or finish_dispatch is None:
+            if persist is None or drain is None:
                 self._host._publication.publish(
                     owner=self._owner,
                     contract=contract,
@@ -299,7 +298,7 @@ class _OwnerEvents(EventPublisher):
                     correlation_id=correlation_id,
                 )
                 return
-            claimed = persist(
+            persist(
                 owner=self._owner,
                 contract=contract,
                 version=version,
@@ -309,7 +308,7 @@ class _OwnerEvents(EventPublisher):
                 resource=canonical_resource,
                 correlation_id=correlation_id,
             )
-        finish_dispatch(claimed)
+        drain()
 
 
 class _OwnerJobs(JobScheduler):
