@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import stat
+import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
@@ -447,14 +450,86 @@ class PostgreSQLOperationJournal(OperationJournal):
         )
 
 
-def _jsonl_snapshot(path: Path) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    if not text:
+def _read_regular_file_bytes(path: Path, error_cls: type[Exception]) -> bytes | None:
+    """Read a regular file once without following a symlink."""
+
+    if not hasattr(os, "O_NOFOLLOW") and path.is_symlink():
+        raise error_cls("legacy journal path is unsafe")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise error_cls("legacy journal path cannot be opened safely") from None
+    try:
+        initial = os.fstat(descriptor)
+        if not stat.S_ISREG(initial.st_mode):
+            raise error_cls("legacy journal path is not a regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except OSError:
+            raise error_cls("legacy journal changed while it was read") from None
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(
+            getattr(initial, name) != getattr(after, name) for name in fields
+        ) or any(getattr(after, name) != getattr(current, name) for name in fields):
+            raise error_cls("legacy journal changed while it was read")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def _jsonl_records(payload: bytes) -> list[str]:
+    """Split JSONL on ``\\n`` only; Unicode separators stay inside a record."""
+
+    if not payload:
         return []
-    return [
-        line if line.endswith("\n") else f"{line}\n"
-        for line in text.splitlines(keepends=True)
-    ]
+    text = payload.decode("utf-8")
+    records: list[str] = []
+    start = 0
+    while True:
+        index = text.find("\n", start)
+        if index < 0:
+            rest = text[start:]
+            if rest:
+                records.append(f"{rest}\n")
+            break
+        records.append(text[start : index + 1])
+        start = index + 1
+    return records
+
+
+def _verify_jsonl_snapshot(
+    payload: bytes,
+    *,
+    integrity_key: bytes,
+    file_journal_cls: type[AuditLog] | type[OperationJournal],
+):
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
+    name = handle.name
+    try:
+        handle.write(payload)
+        handle.close()
+        os.chmod(name, 0o600)
+        return file_journal_cls(Path(name), integrity_key=integrity_key).verify()
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
 
 
 def _adopt_legacy_file_if_empty(
@@ -467,34 +542,46 @@ def _adopt_legacy_file_if_empty(
     integrity_error_cls: type[Exception],
     journal_label: str,
 ) -> None:
-    if not path.exists():
+    try:
+        payload = _read_regular_file_bytes(path, integrity_error_cls)
+    except integrity_error_cls:
+        raise
+    except Exception:
+        raise integrity_error_cls(
+            f"legacy {journal_label} journal cannot be verified"
+        ) from None
+    if payload is None or not payload:
         return
     try:
-        expected = file_journal_cls(path, integrity_key=integrity_key).verify()
-    except Exception as error:
-        if isinstance(error, integrity_error_cls):
-            raise
+        expected = _verify_jsonl_snapshot(
+            payload,
+            integrity_key=integrity_key,
+            file_journal_cls=file_journal_cls,
+        )
+    except integrity_error_cls:
+        raise
+    except Exception:
         raise integrity_error_cls(
             f"legacy {journal_label} journal cannot be verified"
         ) from None
     if expected.event_count == 0:
         return
     try:
-        payload = _jsonl_snapshot(path)
-    except Exception:
+        records = _jsonl_records(payload)
+    except UnicodeError:
         raise integrity_error_cls(
             f"legacy {journal_label} journal cannot be verified"
         ) from None
-    if len(payload) != expected.event_count:
+    if len(records) != expected.event_count:
         raise integrity_error_cls(
-            f"legacy {journal_label} journal changed during cutover"
+            f"legacy {journal_label} journal cannot be verified"
         )
     with exclusive_lock():
         try:
-            imported = lines.import_lines_if_empty(payload)
-        except Exception as error:
-            if isinstance(error, integrity_error_cls):
-                raise
+            imported = lines.import_lines_if_empty(records)
+        except integrity_error_cls:
+            raise
+        except Exception:
             raise integrity_error_cls(
                 f"legacy {journal_label} journal cannot be imported"
             ) from None
