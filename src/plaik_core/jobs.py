@@ -461,7 +461,7 @@ class JobRunner:
         handlers: Mapping[str, JobHandler],
     ) -> None:
         self.queue = queue
-        self.handlers = dict(handlers)
+        self.handlers = handlers
         for job_type, handler in self.handlers.items():
             _validate_job_type(job_type)
             if not callable(handler):
