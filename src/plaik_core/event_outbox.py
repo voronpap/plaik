@@ -384,48 +384,70 @@ class SqliteDurableEvents:
                 connection.commit()
             finally:
                 connection.close()
-            should_drain = self._dispatch_after_enqueue
-        if not should_drain:
-            return 0
-        return self.drain()
+            if not self._claim_dispatch_locked():
+                return 0
+        try:
+            return self._drain_claimed(limit=100)
+        finally:
+            self._release_dispatch()
 
     def drain(self, *, limit: int = 100) -> int:
         """Deliver pending rows after crash between commit and ack."""
 
-        me = threading.get_ident()
         with self._idle:
-            if self._dispatching and self._dispatch_thread == me:
+            if not self._claim_dispatch_locked():
                 return 0
-            while self._dispatching:
-                self._idle.wait()
-            self._dispatching = True
-            self._dispatch_thread = me
         try:
-            delivered = 0
-            remaining = limit
-            while remaining > 0:
-                connection = self._open()
-                try:
-                    batch = self.dispatcher.dispatch(connection, limit=remaining)
-                finally:
-                    connection.close()
-                if batch == 0:
-                    break
-                delivered += batch
-                remaining -= batch
-            return delivered
+            return self._drain_claimed(limit=limit)
         finally:
-            with self._idle:
-                self._dispatching = False
-                self._dispatch_thread = None
-                self._idle.notify_all()
+            self._release_dispatch()
 
     def recover_subscribers(self, *, limit: int = 100) -> int:
         with self._idle:
             while self._dispatching and self._dispatch_thread != threading.get_ident():
                 self._idle.wait()
             self._dispatch_after_enqueue = True
-        return self.drain(limit=limit)
+            if not self._claim_dispatch_locked():
+                return 0
+        try:
+            return self._drain_claimed(limit=limit)
+        finally:
+            self._release_dispatch()
+
+    def _claim_dispatch_locked(self) -> bool:
+        me = threading.get_ident()
+        if self._dispatching and self._dispatch_thread == me:
+            return False
+        while self._dispatching:
+            self._idle.wait()
+            if not self._dispatch_after_enqueue and not self._dispatching:
+                return False
+        if not self._dispatch_after_enqueue:
+            return False
+        self._dispatching = True
+        self._dispatch_thread = me
+        return True
+
+    def _release_dispatch(self) -> None:
+        with self._idle:
+            self._dispatching = False
+            self._dispatch_thread = None
+            self._idle.notify_all()
+
+    def _drain_claimed(self, *, limit: int) -> int:
+        delivered = 0
+        remaining = limit
+        while remaining > 0:
+            connection = self._open()
+            try:
+                batch = self.dispatcher.dispatch(connection, limit=remaining)
+            finally:
+                connection.close()
+            if batch == 0:
+                break
+            delivered += batch
+            remaining -= batch
+        return delivered
 
     def pending_count(self) -> int:
         with self._lock:
