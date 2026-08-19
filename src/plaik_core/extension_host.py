@@ -56,11 +56,17 @@ def _canonical_scope(provided: object) -> ScopeRef:
     if type(provided) is not ScopeRef:
         raise ExtensionHostError(error)
     try:
+        installation_id = provided.installation_id
+        group_id = provided.group_id
+        store_id = provided.store_id
+    except AttributeError:
+        raise ExtensionHostError(error) from None
+    try:
         return ScopeRef.model_validate(
             {
-                "installation_id": _require_exact_str(provided.installation_id, error),
-                "group_id": _optional_exact_str(provided.group_id, error),
-                "store_id": _optional_exact_str(provided.store_id, error),
+                "installation_id": _require_exact_str(installation_id, error),
+                "group_id": _optional_exact_str(group_id, error),
+                "store_id": _optional_exact_str(store_id, error),
             }
         )
     except (ValidationError, TypeError, ValueError):
@@ -77,48 +83,63 @@ def _require_bound_scope(bound: ScopeRef, provided: object) -> ScopeRef:
 
 
 def _canonical_resource(provided: object, owner: str, bound: ScopeRef) -> ResourceRef:
-    if type(provided) is not ResourceRef:
-        raise ExtensionHostError("resource owner must match the publishing package")
-    if type(provided.owner) is not str or provided.owner != owner:
-        raise ExtensionHostError("resource owner must match the publishing package")
-    scope = _require_bound_scope(bound, provided.scope)
     error = "resource owner must match the publishing package"
+    if type(provided) is not ResourceRef:
+        raise ExtensionHostError(error)
     try:
-        return ResourceRef.model_validate(
+        owner_value = provided.owner
+        kind_value = provided.kind
+        id_value = provided.id
+        scope_value = provided.scope
+    except AttributeError:
+        raise ExtensionHostError(error) from None
+    scope = _require_bound_scope(bound, scope_value)
+    try:
+        canonical = ResourceRef.model_validate(
             {
-                "owner": provided.owner,
-                "kind": _require_exact_str(provided.kind, error),
-                "id": _require_exact_str(provided.id, error),
+                "owner": _require_exact_str(owner_value, error),
+                "kind": _require_exact_str(kind_value, error),
+                "id": _require_exact_str(id_value, error),
                 "scope": scope,
             }
         )
     except (ValidationError, TypeError, ValueError):
         raise ExtensionHostError(error) from None
+    if canonical.owner != owner:
+        raise ExtensionHostError(error)
+    return canonical
 
 
 def _canonical_health_issue(provided: object, owner: str, bound: ScopeRef) -> HealthIssue:
     if type(provided) is not HealthIssue:
         raise TypeError("health issue must be a HealthIssue")
-    if type(provided.owner) is not str or provided.owner != owner:
-        raise ExtensionHostError(
-            "health issue owner must match the reporting package"
-        )
-    scope = _require_bound_scope(bound, provided.scope)
-    if type(provided.severity) is not HealthSeverity:
-        raise TypeError("health issue must be a HealthIssue")
     error = "health issue owner must match the reporting package"
     try:
-        return HealthIssue.model_validate(
+        owner_value = provided.owner
+        code_value = provided.code
+        severity_value = provided.severity
+        scope_value = provided.scope
+        message_value = provided.message
+    except AttributeError:
+        raise TypeError("health issue must be a HealthIssue") from None
+    if type(severity_value) is not HealthSeverity:
+        raise TypeError("health issue must be a HealthIssue")
+    scope = _require_bound_scope(bound, scope_value)
+    try:
+        canonical = HealthIssue.model_validate(
             {
-                "owner": provided.owner,
-                "code": _require_exact_str(provided.code, error),
-                "severity": provided.severity,
+                "owner": _require_exact_str(owner_value, error),
+                "code": _require_exact_str(code_value, error),
+                "severity": severity_value,
                 "scope": scope,
-                "message": _require_exact_str(provided.message, error),
+                "message": _require_exact_str(message_value, error),
             }
         )
     except (ValidationError, TypeError, ValueError):
         raise ExtensionHostError(error) from None
+    if canonical.owner != owner:
+        raise ExtensionHostError(error)
+    return canonical
 
 
 class _NullSettings(SettingsReader):
