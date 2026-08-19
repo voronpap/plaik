@@ -29,7 +29,7 @@ from .connection_store import ConnectionStore, ConnectionStoreError
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
-from .jobs import DurableJobQueue, _owner_job_prefix, _validate_job_type
+from .jobs import JobQueue, _owner_job_prefix, _validate_job_type
 from .packages import PackageRecord, PackageStatus
 from .secret_store import SecretNotFoundError, SecretProviderRegistry
 from .settings_store import SettingsStore, SettingsStoreError
@@ -419,7 +419,7 @@ class ExtensionHost:
         event_bus: EventBus,
         event_publication: Any | None = None,
         render_slots: RenderSlotRegistry,
-        job_queue: DurableJobQueue,
+        job_queue: JobQueue,
         connection_store: ConnectionStore,
         health_issues: HealthIssueRegistry,
         secret_providers: SecretProviderRegistry | None = None,
