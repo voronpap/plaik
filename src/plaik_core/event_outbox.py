@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Mapping
@@ -10,10 +11,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef
 
 from .envelope import dump_resource, dump_scope, envelope_from_row
 from .extension_runtime import EventBus, _json_snapshot
+
+
+_QUARANTINE_REASON = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+
+
+class OutboxEnvelopeError(ValueError):
+    """A SQLite outbox row is not a valid EventEnvelope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,18 +40,21 @@ class OutboxEvent:
     correlation_id: str | None = None
 
     def as_envelope(self) -> EventEnvelope:
-        return envelope_from_row(
-            event_id=self.id,
-            owner=self.owner,
-            contract=self.contract,
-            version=self.version,
-            payload=self.payload,
-            scope_raw=self.scope_json,
-            resource_raw=self.resource_json,
-            idempotency_key=self.idempotency_key,
-            correlation_id=self.correlation_id,
-            created_at=self.created_at,
-        )
+        try:
+            return envelope_from_row(
+                event_id=self.id,
+                owner=self.owner,
+                contract=self.contract,
+                version=self.version,
+                payload=self.payload,
+                scope_raw=self.scope_json,
+                resource_raw=self.resource_json,
+                idempotency_key=self.idempotency_key,
+                correlation_id=self.correlation_id,
+                created_at=self.created_at,
+            )
+        except (ValidationError, TypeError, ValueError) as error:
+            raise OutboxEnvelopeError("outbox envelope is invalid") from error
 
 
 class SQLiteEventOutbox:
@@ -73,6 +86,8 @@ class SQLiteEventOutbox:
             ("scope_json", "TEXT"),
             ("resource_json", "TEXT"),
             ("correlation_id", "TEXT"),
+            ("quarantined_at", "TEXT"),
+            ("quarantine_reason", "TEXT"),
         ):
             try:
                 connection.execute(
@@ -101,6 +116,26 @@ class SQLiteEventOutbox:
         persisted_scope = dump_scope(scope or ScopeRef.installation())
         persisted_resource = dump_resource(resource)
         try:
+            envelope = envelope_from_row(
+                event_id=event_id,
+                owner=owner,
+                contract=contract,
+                version=version,
+                payload=snapshot,
+                scope_raw=persisted_scope,
+                resource_raw=persisted_resource,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+                created_at=created_at,
+            )
+        except (ValidationError, TypeError, ValueError) as error:
+            raise OutboxEnvelopeError("outbox envelope is invalid") from error
+        persisted_scope = dump_scope(envelope.scope)
+        persisted_resource = dump_resource(envelope.resource)
+        payload_json = json.dumps(
+            envelope.payload, sort_keys=True, separators=(",", ":")
+        )
+        try:
             connection.execute(
                 """
                 INSERT INTO plaik_event_outbox
@@ -109,16 +144,16 @@ class SQLiteEventOutbox:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    event_id,
-                    owner,
-                    contract,
-                    version,
-                    json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
-                    idempotency_key,
-                    created_at,
+                    envelope.id,
+                    envelope.owner,
+                    envelope.contract,
+                    envelope.version,
+                    payload_json,
+                    envelope.idempotency_key,
+                    envelope.created_at.isoformat(),
                     persisted_scope,
                     persisted_resource,
-                    correlation_id,
+                    envelope.correlation_id,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -134,50 +169,104 @@ class SQLiteEventOutbox:
             if row is None:
                 raise
             return str(row[0])
-        return event_id
+        return envelope.id
 
     def pending(
         self, connection: sqlite3.Connection, *, limit: int = 100
     ) -> tuple[OutboxEvent, ...]:
         if not 1 <= limit <= 1000:
             raise ValueError("outbox dispatch limit must be between 1 and 1000")
+        events: list[OutboxEvent] = []
+        for row in self._pending_rows(connection, limit=limit):
+            event = self._event_from_row(row)
+            if event is not None:
+                events.append(event)
+        return tuple(events)
+
+    def _pending_rows(
+        self, connection: sqlite3.Connection, *, limit: int
+    ) -> tuple[tuple[Any, ...], ...]:
         rows = connection.execute(
             """
             SELECT id, owner, contract, version, payload_json, idempotency_key,
                    created_at, scope_json, resource_json, correlation_id
             FROM plaik_event_outbox
-            WHERE dispatched_at IS NULL
+            WHERE dispatched_at IS NULL AND quarantined_at IS NULL
             ORDER BY created_at, id
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return tuple(
-            OutboxEvent(
-                id=str(row[0]),
-                owner=str(row[1]),
-                contract=str(row[2]),
-                version=str(row[3]),
-                payload=json.loads(row[4]),
-                idempotency_key=row[5],
-                created_at=str(row[6]),
-                scope_json=row[7],
-                resource_json=row[8],
-                correlation_id=row[9],
-            )
-            for row in rows
+        return tuple(rows)
+
+    def quarantined(
+        self, connection: sqlite3.Connection, *, limit: int = 100
+    ) -> tuple[tuple[str, str], ...]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("outbox dispatch limit must be between 1 and 1000")
+        rows = connection.execute(
+            """
+            SELECT id, quarantine_reason
+            FROM plaik_event_outbox
+            WHERE quarantined_at IS NOT NULL
+            ORDER BY quarantined_at, id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return tuple((str(row[0]), str(row[1] or "invalid_envelope")) for row in rows)
+
+    def quarantine(
+        self, connection: sqlite3.Connection, event_id: str, *, reason: str
+    ) -> None:
+        if not _QUARANTINE_REASON.fullmatch(reason):
+            raise ValueError("outbox quarantine reason is invalid")
+        cursor = connection.execute(
+            """
+            UPDATE plaik_event_outbox
+            SET quarantined_at = ?, quarantine_reason = ?
+            WHERE id = ? AND dispatched_at IS NULL AND quarantined_at IS NULL
+            """,
+            (datetime.now(UTC).isoformat(), reason, event_id),
         )
+        if cursor.rowcount != 1:
+            raise RuntimeError("outbox event is not pending")
 
     def mark_dispatched(self, connection: sqlite3.Connection, event_id: str) -> None:
         cursor = connection.execute(
             """
             UPDATE plaik_event_outbox SET dispatched_at = ?
-            WHERE id = ? AND dispatched_at IS NULL
+            WHERE id = ? AND dispatched_at IS NULL AND quarantined_at IS NULL
             """,
             (datetime.now(UTC).isoformat(), event_id),
         )
         if cursor.rowcount != 1:
             raise RuntimeError("outbox event is not pending")
+
+    def _event_from_row(self, row: tuple[Any, ...]) -> OutboxEvent | None:
+        try:
+            payload = json.loads(row[4], parse_constant=_reject_json_constant)
+            json.dumps(payload, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return OutboxEvent(
+            id=str(row[0]),
+            owner=str(row[1]),
+            contract=str(row[2]),
+            version=str(row[3]),
+            payload=payload,
+            idempotency_key=row[5],
+            created_at=str(row[6]),
+            scope_json=row[7],
+            resource_json=row[8],
+            correlation_id=row[9],
+        )
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"nonstandard JSON constant: {value}")
 
 
 class EventOutboxDispatcher:
@@ -186,20 +275,47 @@ class EventOutboxDispatcher:
         self.bus = bus
 
     def dispatch(self, connection: sqlite3.Connection, *, limit: int = 100) -> int:
+        if not 1 <= limit <= 1000:
+            raise ValueError("outbox dispatch limit must be between 1 and 1000")
         delivered = 0
-        for event in self.outbox.pending(connection, limit=limit):
-            envelope = event.as_envelope()
-            self.bus.publish(
-                owner=event.owner,
-                contract=event.contract,
-                version=event.version,
-                payload=event.payload,
-                idempotency_key=event.idempotency_key,
-                scope=envelope.scope,
-                resource=envelope.resource,
-                correlation_id=envelope.correlation_id,
-            )
-            self.outbox.mark_dispatched(connection, event.id)
-            connection.commit()
-            delivered += 1
+        while delivered < limit:
+            rows = self.outbox._pending_rows(connection, limit=limit)
+            if not rows:
+                break
+            quarantined = 0
+            for row in rows:
+                event = self.outbox._event_from_row(row)
+                if event is None:
+                    self.outbox.quarantine(
+                        connection, str(row[0]), reason="invalid_payload_json"
+                    )
+                    connection.commit()
+                    quarantined += 1
+                    continue
+                try:
+                    envelope = event.as_envelope()
+                except OutboxEnvelopeError:
+                    self.outbox.quarantine(
+                        connection, event.id, reason="invalid_envelope"
+                    )
+                    connection.commit()
+                    quarantined += 1
+                    continue
+                self.bus.publish(
+                    owner=envelope.owner,
+                    contract=envelope.contract,
+                    version=envelope.version,
+                    payload=envelope.payload,
+                    idempotency_key=envelope.idempotency_key,
+                    scope=envelope.scope,
+                    resource=envelope.resource,
+                    correlation_id=envelope.correlation_id,
+                )
+                self.outbox.mark_dispatched(connection, event.id)
+                connection.commit()
+                delivered += 1
+                if delivered >= limit:
+                    break
+            if quarantined == 0:
+                break
         return delivered
