@@ -405,12 +405,11 @@ def _references_protected_schema(statement: str) -> str | None:
 
 _UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _HEX_DIGIT = frozenset("0123456789abcdefABCDEF")
-_UESCAPE_TAIL = re.compile(r"\s+UESCAPE\s+'((?:''|[^'])*)'", re.IGNORECASE)
 _PACKAGE_FORBIDDEN_LEAD = frozenset({"DO", "CALL", "EXECUTE", "PREPARE"})
 
 
-def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
-    """Return the index after a comment or non-identifier literal, else None."""
+def _skip_sql_comment(statement: str, index: int) -> int | None:
+    """Return the index after a comment, else None."""
 
     length = len(statement)
     pair = statement[index : index + 2]
@@ -432,16 +431,25 @@ def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
         if depth:
             raise ValueError("migration statement contains an unterminated comment")
         return end
-    if statement[index] == "'":
-        end = index + 1
-        while end < length:
-            if statement[end] == "'":
-                if end + 1 < length and statement[end + 1] == "'":
-                    end += 2
-                    continue
-                return end + 1
-            end += 1
-        raise ValueError("migration statement contains an unterminated quote")
+    return None
+
+
+def _skip_sql_comments_and_space(statement: str, index: int) -> int:
+    length = len(statement)
+    while index < length:
+        if statement[index].isspace():
+            index += 1
+            continue
+        skipped = _skip_sql_comment(statement, index)
+        if skipped is None:
+            return index
+        index = skipped
+    return index
+
+
+def _skip_sql_non_sql_literal(statement: str, index: int) -> int | None:
+    """Skip backtick or bracket quoted forms that are not PostgreSQL SQL."""
+
     if statement[index] == "`":
         end = statement.find("`", index + 1)
         if end < 0:
@@ -453,6 +461,24 @@ def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
             raise ValueError("migration statement contains an unterminated identifier")
         return end + 1
     return None
+
+
+def _parse_single_quoted_string(statement: str, index: int) -> tuple[str, int]:
+    """Return the decoded string and index after the closing quote."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    while end < length:
+        if statement[end] == "'":
+            if end + 1 < length and statement[end + 1] == "'":
+                decoded.append("'")
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        decoded.append(statement[end])
+        end += 1
+    raise ValueError("migration statement contains an unterminated quote")
 
 
 def _decode_unicode_escaped_text(body: str, *, escape: str) -> str:
@@ -502,18 +528,27 @@ def _parse_double_quoted_identifier(statement: str, index: int) -> tuple[str, in
 def _postgresql_identifiers(statement: str) -> frozenset[str]:
     """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
 
-    String literals, comments, and bracket/backtick forms are skipped. Dollar
-    quotes are scanned as nested SQL so ``DO`` / function bodies cannot hide a
-    reserved relation. PostgreSQL ``"name"`` and ``U&"na\\0072me"`` forms are
-    visible.
+    String literals after ``AS`` (function/procedure bodies) are scanned as
+    nested SQL. Other string literals, comments, and bracket/backtick forms
+    are skipped. Dollar quotes are scanned as nested SQL. Unicode-escaped
+    identifiers accept comments between the quotes and ``UESCAPE``.
     """
 
     names: set[str] = set()
     index = 0
     length = len(statement)
+    last_keyword: str | None = None
     while index < length:
-        skipped = _skip_sql_comment_or_literal(statement, index)
+        if statement[index].isspace():
+            index += 1
+            continue
+        skipped = _skip_sql_comment(statement, index)
         if skipped is not None:
+            index = skipped
+            continue
+        skipped = _skip_sql_non_sql_literal(statement, index)
+        if skipped is not None:
+            last_keyword = None
             index = skipped
             continue
         delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
@@ -525,6 +560,7 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
                 raise ValueError("migration statement contains an unterminated dollar quote")
             names.update(_postgresql_identifiers(statement[start:end]))
             index = end + len(delimiter)
+            last_keyword = None
             continue
         if (
             index + 2 < length
@@ -534,27 +570,49 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
         ):
             body, index = _parse_double_quoted_identifier(statement, index + 2)
             escape = "\\"
-            tail = _UESCAPE_TAIL.match(statement, index)
-            if tail is not None:
-                marker = tail.group(1).replace("''", "'")
-                if len(marker) != 1:
-                    raise ValueError("invalid unicode identifier escape")
-                escape = marker
-                index = tail.end()
+            after = _skip_sql_comments_and_space(statement, index)
+            keyword = _UNQUOTED_IDENT.match(statement, after)
+            if keyword is not None and keyword.group(0).upper() == "UESCAPE":
+                quote_at = _skip_sql_comments_and_space(statement, keyword.end())
+                if quote_at < length and statement[quote_at] == "'":
+                    marker, index = _parse_single_quoted_string(statement, quote_at)
+                    if len(marker) != 1:
+                        raise ValueError("invalid unicode identifier escape")
+                    escape = marker
             ident = _decode_unicode_escaped_text(body, escape=escape)
             if ident:
                 names.add(ident.upper())
+            last_keyword = None
             continue
         if statement[index] == '"':
             ident, index = _parse_double_quoted_identifier(statement, index)
             if ident:
                 names.add(ident.upper())
+            last_keyword = None
+            continue
+        if (
+            last_keyword == "AS"
+            and statement[index] in {"E", "e"}
+            and index + 1 < length
+            and statement[index + 1] == "'"
+        ):
+            body, index = _parse_single_quoted_string(statement, index + 1)
+            names.update(_postgresql_identifiers(body))
+            last_keyword = None
+            continue
+        if statement[index] == "'":
+            body, index = _parse_single_quoted_string(statement, index)
+            if last_keyword == "AS":
+                names.update(_postgresql_identifiers(body))
+            last_keyword = None
             continue
         match = _UNQUOTED_IDENT.match(statement, index)
         if match:
-            names.add(match.group(0).upper())
+            last_keyword = match.group(0).upper()
+            names.add(last_keyword)
             index = match.end()
             continue
+        last_keyword = None
         index += 1
     return frozenset(names)
 
