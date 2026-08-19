@@ -183,7 +183,11 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     job_queue = DurableJobQueue(runtime.jobs_registry_path)
     service_registry = ServiceRegistry()
     event_bus = EventBus()
-    durable_events = SqliteDurableEvents(runtime.event_outbox_path, event_bus)
+    durable_events = SqliteDurableEvents(
+        runtime.event_outbox_path,
+        event_bus,
+        dispatch_after_enqueue=False,
+    )
     render_slots = RenderSlotRegistry()
     permission_catalog = PackagePermissionCatalog(
         runtime.package_permission_catalog_path
@@ -304,14 +308,15 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         host: ExtensionHost = application.state.extension_host
         host.set_secret_providers(application.state.secret_providers)
         records = package_registry.records()
+        durable_events.defer_dispatch()
         try:
             configuration = configuration_store.require()
         except Exception:
             host.drop_unenabled(records)
-            durable_events.drain()
+            durable_events.enable_live_dispatch()
             return
         host.sync_enabled(records, configuration)
-        durable_events.drain()
+        durable_events.recover_subscribers()
 
     application.state.sync_extension_host = sync_extension_host
 

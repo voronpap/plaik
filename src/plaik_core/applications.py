@@ -163,7 +163,12 @@ def _sync_extension_host(core: FastAPI) -> None:
         host.drop_unenabled(records)
         return
     host.set_secret_providers(core.state.secret_providers)
+    outbox = getattr(core.state, "event_outbox", None)
+    if outbox is not None:
+        outbox.defer_dispatch()
     host.sync_enabled(records, configuration)
+    if outbox is not None:
+        outbox.recover_subscribers()
 
 
 def _copy_routes(source: FastAPI, destination: FastAPI, prefixes: tuple[str, ...]) -> None:

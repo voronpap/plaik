@@ -324,14 +324,30 @@ class EventOutboxDispatcher:
 
 
 class SqliteDurableEvents:
-    """Persist then dispatch: SQLite outbox is the EventPublisher linearization point."""
+    """Persist then dispatch: SQLite commit is the EventPublisher linearization point."""
 
-    def __init__(self, path: Path, bus: EventBus) -> None:
+    def __init__(
+        self,
+        path: Path,
+        bus: EventBus,
+        *,
+        dispatch_after_enqueue: bool = True,
+    ) -> None:
         self.path = Path(path)
         self.bus = bus
         self.outbox = SQLiteEventOutbox()
         self.dispatcher = EventOutboxDispatcher(self.outbox, bus)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._dispatch_after_enqueue = dispatch_after_enqueue
+        self._dispatching = False
+
+    def defer_dispatch(self) -> None:
+        """Hold rows until subscribers from the current host sync exist."""
+
+        self._dispatch_after_enqueue = False
+
+    def enable_live_dispatch(self) -> None:
+        self._dispatch_after_enqueue = True
 
     def publish(
         self,
@@ -360,19 +376,40 @@ class SqliteDurableEvents:
                     correlation_id=correlation_id,
                 )
                 connection.commit()
-                return self.dispatcher.dispatch(connection)
             finally:
                 connection.close()
+        if not self._dispatch_after_enqueue:
+            return 0
+        return self.drain()
 
     def drain(self, *, limit: int = 100) -> int:
         """Deliver pending rows after crash between commit and ack."""
 
         with self._lock:
-            connection = self._open()
+            if self._dispatching:
+                return 0
+            self._dispatching = True
             try:
-                return self.dispatcher.dispatch(connection, limit=limit)
+                delivered = 0
+                remaining = limit
+                while remaining > 0:
+                    connection = self._open()
+                    try:
+                        batch = self.dispatcher.dispatch(connection, limit=remaining)
+                    finally:
+                        connection.close()
+                    if batch == 0:
+                        break
+                    delivered += batch
+                    remaining -= batch
+                return delivered
             finally:
-                connection.close()
+                self._dispatching = False
+
+    def recover_subscribers(self, *, limit: int = 100) -> int:
+        delivered = self.drain(limit=limit)
+        self.enable_live_dispatch()
+        return delivered
 
     def pending_count(self) -> int:
         with self._lock:
