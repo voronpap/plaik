@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,9 +72,10 @@ class SettingsStore:
     store scopes in that order and validates the final value with Pydantic.
     Mutations serialize the complete registry read-modify-write. External audit
     sinks run after commit and outside that lock; sink failures do not roll back
-    the persisted mutation. The live store is the JSON file. PostgreSQL Core
-    table ``plaik_settings_registry`` is the reserved Core durable shape of the
-    same registry, not package-owned product settings.
+    the persisted mutation. SQLite and reference installs use the JSON file as
+    the live store. PostgreSQL installs use Core table
+    ``plaik_settings_registry`` as the live store; the JSON file is only a
+    one-shot seed, not a second canonical copy.
     """
 
     REGISTRY_VERSION = 1
@@ -110,8 +112,7 @@ class SettingsStore:
         if unknown:
             raise SettingsStoreError(f"unknown settings for {namespace}: {unknown}")
 
-        with exclusive_file_lock(self.path):
-            registry = self._read_registry()
+        with self._registry_transaction() as registry:
             scopes = registry["scopes"]
             scope_namespaces = scopes.setdefault(context.key, {})
             previous_override = scope_namespaces.get(namespace, {})
@@ -136,7 +137,6 @@ class SettingsStore:
             self._assert_secret_references(validated, supplied)
 
             scope_namespaces[namespace] = canonical
-            write_json_atomic(self.path, registry)
 
         self._audit(
             action="set",
@@ -156,8 +156,7 @@ class SettingsStore:
         """Remove exact-scope overrides so values inherit from the parent/default."""
 
         schema = self._schema(namespace)
-        with exclusive_file_lock(self.path):
-            registry = self._read_registry()
+        with self._registry_transaction() as registry:
             scopes = registry["scopes"]
             scope_namespaces = scopes.get(context.key, {})
             override = scope_namespaces.get(namespace, {})
@@ -188,8 +187,6 @@ class SettingsStore:
                 scope_namespaces.pop(namespace, None)
             if not scope_namespaces:
                 scopes.pop(context.key, None)
-
-            write_json_atomic(self.path, registry)
 
         self._audit(
             action="clear",
@@ -267,19 +264,30 @@ class SettingsStore:
             raise TypeError(f"settings schema must be a BaseModel: {namespace}")
         self.schemas[namespace] = schema
 
+    @contextmanager
+    def _registry_transaction(self) -> Iterator[dict[str, Any]]:
+        with exclusive_file_lock(self.path):
+            registry = self._read_registry()
+            yield registry
+            write_json_atomic(self.path, registry)
+
     def _read_registry(self) -> dict[str, Any]:
         registry = read_json(
             self.path,
             {"version": self.REGISTRY_VERSION, "scopes": {}},
         )
+        return self._require_registry(registry)
+
+    @classmethod
+    def _require_registry(cls, registry: Any) -> dict[str, Any]:
         if not isinstance(registry, dict):
             raise SettingsStoreError("settings registry must be an object")
-        if registry.get("version") != self.REGISTRY_VERSION:
+        if registry.get("version") != cls.REGISTRY_VERSION:
             raise SettingsStoreError("unsupported settings registry version")
         scopes = registry.get("scopes")
         if not isinstance(scopes, dict):
             raise SettingsStoreError("settings registry scopes must be an object")
-        return registry
+        return {"version": cls.REGISTRY_VERSION, "scopes": scopes}
 
     @staticmethod
     def _validate(

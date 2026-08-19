@@ -77,6 +77,7 @@ from .connection_store import ConnectionStore
 from .extension_host import ExtensionHost
 from .health_issues import HealthIssueRegistry
 from .settings_store import SettingsStore, settings_events_to_audit_sink
+from .postgresql_settings_store import PostgreSQLSettingsStore
 from .storage import exclusive_file_lock, read_json
 from .theme_revisions import ThemeRevisionStore
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
@@ -185,7 +186,18 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     )
     connection_store = ConnectionStore(runtime.connections_path)
     health_issues = HealthIssueRegistry()
-    settings_store = SettingsStore(runtime.settings_registry_path, {})
+    json_settings_store = SettingsStore(runtime.settings_registry_path, {})
+    pg_settings_holder: dict[str, PostgreSQLSettingsStore | None] = {"store": None}
+
+    def resolve_settings_store() -> SettingsStore:
+        if not postgresql_security_backend_ready():
+            return json_settings_store
+        store = pg_settings_holder["store"]
+        if store is None:
+            raise RuntimeError("PostgreSQL settings store is unavailable")
+        return store
+
+    settings_store = DelegatingStore(resolve_settings_store)
     extension_host = ExtensionHost(
         packages_root=runtime.installed_packages_dir,
         service_registry=service_registry,
@@ -310,8 +322,8 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             and cached_audit is not None
             and cached_operations is not None
         ):
-            if application.state.settings_store.audit_sink is None:
-                application.state.settings_store.audit_sink = (
+            if json_settings_store.audit_sink is None:
+                json_settings_store.audit_sink = (
                     settings_events_to_audit_sink(cached_audit.append)
                 )
             return cached_session, cached_audit, cached_operations
@@ -390,8 +402,8 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         application.state.session_store = sessions
         application.state.audit_log = audit
         application.state.operation_journal = operations
-        if application.state.settings_store.audit_sink is None:
-            application.state.settings_store.audit_sink = settings_events_to_audit_sink(
+        if json_settings_store.audit_sink is None:
+            json_settings_store.audit_sink = settings_events_to_audit_sink(
                 audit.append
             )
         sync_extension_host()
@@ -582,6 +594,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             raise RuntimeError("secret providers are unavailable")
         return PostgreSQLAdapter(configured, providers)
 
+    pg_settings_holder["store"] = PostgreSQLSettingsStore(
+        lambda: postgresql_adapter().runtime_connect(),
+        json_settings_store,
+    )
     application.state.postgresql_adapter = postgresql_adapter
     application.state.package_owner_connect = None
 
