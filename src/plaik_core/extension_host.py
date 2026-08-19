@@ -9,7 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from plaik_contracts import HealthIssue, ScopeRef, ResourceRef
+from pydantic import ValidationError
+
+from plaik_contracts import HealthIssue, HealthSeverity, ResourceRef, ScopeRef
 from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
@@ -35,11 +37,88 @@ class ExtensionHostError(RuntimeError):
     """An enabled package could not be given an ExtensionRuntime."""
 
 
-def _require_bound_scope(bound: ScopeRef, provided: object) -> None:
+def _require_exact_str(value: object, error: str) -> str:
+    if type(value) is not str:
+        raise ExtensionHostError(error)
+    return value
+
+
+def _optional_exact_str(value: object, error: str) -> str | None:
+    if value is None:
+        return None
+    return _require_exact_str(value, error)
+
+
+def _canonical_scope(provided: object) -> ScopeRef:
+    """Rebuild ScopeRef from primitive fields; reject subclasses and constructed junk."""
+
+    error = "scope is outside the bound runtime identity"
+    if type(provided) is not ScopeRef:
+        raise ExtensionHostError(error)
+    try:
+        return ScopeRef.model_validate(
+            {
+                "installation_id": _require_exact_str(provided.installation_id, error),
+                "group_id": _optional_exact_str(provided.group_id, error),
+                "store_id": _optional_exact_str(provided.store_id, error),
+            }
+        )
+    except (ValidationError, TypeError, ValueError):
+        raise ExtensionHostError(error) from None
+
+
+def _require_bound_scope(bound: ScopeRef, provided: object) -> ScopeRef:
     """Reject a scope outside the bound installation → group → store identity."""
 
-    if not isinstance(provided, ScopeRef) or provided not in bound.inheritance_chain():
+    canonical = _canonical_scope(provided)
+    if canonical not in bound.inheritance_chain():
         raise ExtensionHostError("scope is outside the bound runtime identity")
+    return canonical
+
+
+def _canonical_resource(provided: object, owner: str, bound: ScopeRef) -> ResourceRef:
+    if type(provided) is not ResourceRef:
+        raise ExtensionHostError("resource owner must match the publishing package")
+    if type(provided.owner) is not str or provided.owner != owner:
+        raise ExtensionHostError("resource owner must match the publishing package")
+    scope = _require_bound_scope(bound, provided.scope)
+    error = "resource owner must match the publishing package"
+    try:
+        return ResourceRef.model_validate(
+            {
+                "owner": provided.owner,
+                "kind": _require_exact_str(provided.kind, error),
+                "id": _require_exact_str(provided.id, error),
+                "scope": scope,
+            }
+        )
+    except (ValidationError, TypeError, ValueError):
+        raise ExtensionHostError(error) from None
+
+
+def _canonical_health_issue(provided: object, owner: str, bound: ScopeRef) -> HealthIssue:
+    if type(provided) is not HealthIssue:
+        raise TypeError("health issue must be a HealthIssue")
+    if type(provided.owner) is not str or provided.owner != owner:
+        raise ExtensionHostError(
+            "health issue owner must match the reporting package"
+        )
+    scope = _require_bound_scope(bound, provided.scope)
+    if type(provided.severity) is not HealthSeverity:
+        raise TypeError("health issue must be a HealthIssue")
+    error = "health issue owner must match the reporting package"
+    try:
+        return HealthIssue.model_validate(
+            {
+                "owner": provided.owner,
+                "code": _require_exact_str(provided.code, error),
+                "severity": provided.severity,
+                "scope": scope,
+                "message": _require_exact_str(provided.message, error),
+            }
+        )
+    except (ValidationError, TypeError, ValueError):
+        raise ExtensionHostError(error) from None
 
 
 class _NullSettings(SettingsReader):
@@ -90,14 +169,15 @@ class _OwnerEvents(EventPublisher):
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> None:
-        resolved_scope = self._scope if scope is None else scope
-        _require_bound_scope(self._scope, resolved_scope)
+        if scope is None:
+            resolved_scope = self._scope
+        else:
+            resolved_scope = _require_bound_scope(self._scope, scope)
+        canonical_resource = None
         if resource is not None:
-            if resource.owner != self._owner:
-                raise ExtensionHostError(
-                    "resource owner must match the publishing package"
-                )
-            _require_bound_scope(self._scope, resource.scope)
+            canonical_resource = _canonical_resource(
+                resource, self._owner, self._scope
+            )
         self._bus.publish(
             owner=self._owner,
             contract=contract,
@@ -105,7 +185,7 @@ class _OwnerEvents(EventPublisher):
             payload=payload,
             idempotency_key=idempotency_key,
             scope=resolved_scope,
-            resource=resource,
+            resource=canonical_resource,
             correlation_id=correlation_id,
         )
 
@@ -162,14 +242,7 @@ class _OwnerHealth(HealthReporter):
         self._scope = scope
 
     def report(self, issue: HealthIssue) -> None:
-        if not isinstance(issue, HealthIssue):
-            raise TypeError("health issue must be a HealthIssue")
-        if issue.owner != self._owner:
-            raise ExtensionHostError(
-                "health issue owner must match the reporting package"
-            )
-        _require_bound_scope(self._scope, issue.scope)
-        self._registry.report(issue)
+        self._registry.report(_canonical_health_issue(issue, self._owner, self._scope))
 
 
 class ExtensionHost:
