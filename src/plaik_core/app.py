@@ -76,6 +76,7 @@ from .service_control import (
 from .connection_store import ConnectionStore
 from .extension_host import ExtensionHost
 from .health_issues import HealthIssueRegistry
+from .settings_store import SettingsStore
 from .storage import exclusive_file_lock, read_json
 from .theme_revisions import ThemeRevisionStore
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
@@ -184,6 +185,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     )
     connection_store = ConnectionStore(runtime.connections_path)
     health_issues = HealthIssueRegistry()
+    settings_store = SettingsStore(runtime.settings_registry_path, {})
     extension_host = ExtensionHost(
         packages_root=runtime.installed_packages_dir,
         service_registry=service_registry,
@@ -192,6 +194,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         job_queue=job_queue,
         connection_store=connection_store,
         health_issues=health_issues,
+        settings_store=settings_store,
     )
     session_pepper_reference = SecretReference(
         provider="local",
@@ -263,6 +266,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     application.state.permission_catalog = permission_catalog
     application.state.connection_store = connection_store
     application.state.health_issues = health_issues
+    application.state.settings_store = settings_store
     application.state.extension_host = extension_host
     application.state.secret_providers = None
     application.state.session_store = None
