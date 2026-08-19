@@ -1306,24 +1306,25 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     )
                 if request.target == InstallState.THEME_READY:
                     default_theme = theme_registry.require_default()
-                    records = package_registry.records()
-                    if "default" not in records:
-                        package_registry.install_many(
-                            [
-                                PackageManifest.model_validate(
-                                    {
-                                        "id": default_theme.id,
-                                        "type": "theme",
-                                        "version": default_theme.version,
-                                        "name": default_theme.name,
-                                        "core": default_theme.core,
-                                    }
-                                )
-                            ]
-                        )
+                    with exclusive_file_lock(runtime.extension_operation_lock_path):
                         records = package_registry.records()
-                    if records["default"].status != PackageStatus.ENABLED:
-                        package_registry.enable("default")
+                        if "default" not in records:
+                            package_registry.install_many(
+                                [
+                                    PackageManifest.model_validate(
+                                        {
+                                            "id": default_theme.id,
+                                            "type": "theme",
+                                            "version": default_theme.version,
+                                            "name": default_theme.name,
+                                            "core": default_theme.core,
+                                        }
+                                    )
+                                ]
+                            )
+                            records = package_registry.records()
+                        if records["default"].status != PackageStatus.ENABLED:
+                            package_registry.enable("default")
                     configuration = configuration_store.require()
                     theme_manager.activate(
                         "default",

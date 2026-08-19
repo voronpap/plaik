@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -29,10 +30,11 @@ from .package_artifacts import (
     VerifiedPackageArtifact,
 )
 from .packages import (
+    PackageLifecycleError,
     PackageRecord,
     PackageStatus,
     RESERVED_PACKAGE_IDS,
-    _legacy_record_payload,
+    _parse_registry_document,
     _registry_payload_has_legacy_keys,
     canonical_registry_document,
 )
@@ -134,6 +136,14 @@ class TransactionalPackageManager:
         self.migration_applier = migration_applier
         self.state_validator = state_validator
 
+    @contextmanager
+    def _lifecycle_locks(self) -> Iterator[None]:
+        """Serialize filesystem/intent work then packages.json. Never reverse."""
+
+        with exclusive_file_lock(self.lock_target):
+            with exclusive_file_lock(self.registry_path):
+                yield
+
     def install(
         self,
         operation_id: str,
@@ -162,7 +172,7 @@ class TransactionalPackageManager:
         operation_id = _validate_operation_id(operation_id)
         package_id = _validate_package_id(package_id)
         target = f"package/{package_id}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(operation_id, action="package.uninstall", target=target)
@@ -225,12 +235,12 @@ class TransactionalPackageManager:
     def recover(self) -> tuple[str, ...]:
         """Recover every durable intent and return the affected operation IDs."""
 
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             return self._recover_locked()
 
     def records(self) -> dict[str, PackageRecord]:
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             return self._read_records()
@@ -246,7 +256,7 @@ class TransactionalPackageManager:
         package_id = artifact.manifest.id
         target = f"package/{package_id}/{artifact.artifact_sha256}"
         journal_action = f"package.{action}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(operation_id, action=journal_action, target=target)
@@ -389,7 +399,7 @@ class TransactionalPackageManager:
         operation_id = _validate_operation_id(operation_id)
         package_id = _validate_package_id(package_id)
         target = f"package/{package_id}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(
@@ -810,20 +820,12 @@ class TransactionalPackageManager:
 
     def _read_records(self) -> dict[str, PackageRecord]:
         data = read_json(self.registry_path, {"packages": {}})
-        if not isinstance(data, dict) or set(data) != {"packages"}:
-            raise TransactionalPackageError("package registry is invalid")
-        raw_records = data["packages"]
-        if not isinstance(raw_records, dict):
-            raise TransactionalPackageError("package registry is invalid")
         try:
-            records = {
-                package_id: PackageRecord.model_validate(_legacy_record_payload(raw))
-                for package_id, raw in raw_records.items()
-            }
+            records = _parse_registry_document(data)
+        except PackageLifecycleError as error:
+            raise TransactionalPackageError(str(error)) from error
         except Exception as error:
             raise TransactionalPackageError("package registry is invalid") from error
-        if any(package_id != record.manifest.id for package_id, record in records.items()):
-            raise TransactionalPackageError("package registry identity is invalid")
         if _registry_payload_has_legacy_keys(data):
             self._write_records(records)
         return records
