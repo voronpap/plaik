@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -33,6 +34,11 @@ _LOCK_NOT_AVAILABLE = "55P03"
 _UNIQUE_VIOLATION = "23505"
 _ENQUEUE_LOCK_TIMEOUT = "1ms"
 _ENQUEUE_SAVEPOINT = "plaik_job_enqueue"
+JOB_QUEUE_ENQUEUE_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"plaik-v2:job-queue:enqueue:v1").digest()[:8],
+    byteorder="big",
+    signed=True,
+)
 _COLUMNS = (
     "id, type, idempotency_key, payload_json, status, attempts, "
     "maximum_attempts, scheduled_at, created_at, updated_at, "
@@ -144,6 +150,12 @@ class PostgreSQLJobQueue:
         encoded = _payload_json(safe_payload)
         with self._transaction() as connection:
             with connection.cursor() as cursor:
+                # Wait for the enqueue lock before lock_timeout; 1ms would
+                # otherwise fail concurrent inserts instead of serializing them.
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (JOB_QUEUE_ENQUEUE_LOCK_KEY,),
+                )
                 cursor.execute(f"SET LOCAL lock_timeout = '{_ENQUEUE_LOCK_TIMEOUT}'")
                 cursor.execute(f"SAVEPOINT {_ENQUEUE_SAVEPOINT}")
                 try:
