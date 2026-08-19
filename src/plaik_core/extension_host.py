@@ -335,7 +335,7 @@ class ExtensionHost:
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
             for package_id in tuple(self._health_generations):
-                if package_id not in enabled_ids:
+                if package_id not in enabled_ids or package_id not in self._runtimes:
                     self._unbind_health(package_id)
             for package_id in tuple(self._registered):
                 if package_id not in records:
@@ -343,15 +343,19 @@ class ExtensionHost:
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
-                    runtime = self._build_runtime(package_id, scope, configuration.locale)
+                    committed = False
                     try:
+                        runtime = self._build_runtime(
+                            package_id, scope, configuration.locale
+                        )
                         if package_id not in self._registered:
                             self._try_register(package_id, runtime)
                             self._registered.add(package_id)
                         self._runtimes[package_id] = runtime
-                    except Exception:
-                        self._unbind_health(package_id)
-                        raise
+                        committed = True
+                    finally:
+                        if not committed:
+                            self._unbind_health(package_id)
                 bound.append(runtime)
         return tuple(bound)
 
