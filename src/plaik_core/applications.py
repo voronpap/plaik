@@ -8,8 +8,9 @@ import threading
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse
@@ -19,6 +20,7 @@ from . import __version__
 from .app import create_app as create_core_app
 from .audit import AuditOutcome
 from .config import CoreSettings
+from .context import StoreContext
 from .installer import InstallState
 from .installer_config import InstallerConfigurationStore
 from .pairing import PairingStore, mount_pairing_activate
@@ -43,6 +45,7 @@ from .package_lifecycle import (
     TransactionalPackageManager,
 )
 from .packages import PackageStatus
+from .settings_store import SettingsStoreError
 from .signing_keys import SigningKeyStoreError
 from .storage import exclusive_file_lock
 from .web import WebRenderError, WebRenderer
@@ -95,6 +98,26 @@ class EmergencyPackageRequest(BaseModel):
     incident_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
     package_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
     expected_generation: int = Field(ge=1)
+
+
+_SETTINGS_NAMESPACE = r"^[a-z0-9][a-z0-9._-]{0,127}$"
+_SETTINGS_LEVEL = Literal["installation", "group", "store"]
+
+
+class SettingsMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    namespace: str = Field(pattern=_SETTINGS_NAMESPACE, max_length=128)
+    level: _SETTINGS_LEVEL = "store"
+    values: dict[str, Any]
+
+
+class SettingsClearRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    namespace: str = Field(pattern=_SETTINGS_NAMESPACE, max_length=128)
+    level: _SETTINGS_LEVEL = "store"
+    fields: list[str] | None = None
 
 
 class PackageCommitEvidencePending(RuntimeError):
@@ -488,6 +511,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         mutate_theme = auth.require_mutation("core.theme.manage")
         mutate_packages = auth.require_mutation("core.package.manage")
         mutate_operations = auth.require_mutation("core.operations.manage")
+        mutate_settings = auth.require_mutation("core.settings.manage")
         operational_safety = core.state.maintenance_safety_service()
 
         def require_operational_write() -> None:
@@ -499,6 +523,48 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     detail="privileged writes are frozen by maintenance",
                     headers={"Cache-Control": "no-store"},
                 ) from None
+
+        def admin_settings_context(level: _SETTINGS_LEVEL):
+            configuration = application.state.configuration_store.require()
+            if level == "installation":
+                return StoreContext.installation(configuration.installation_id)
+            if level == "group":
+                return StoreContext.group(
+                    configuration.group_id, configuration.installation_id
+                )
+            return StoreContext.store(
+                configuration.group_id,
+                configuration.store_id,
+                configuration.installation_id,
+            )
+
+        def settings_resolution_payload(namespace: str, resolved) -> dict:
+            return {
+                "namespace": namespace,
+                "scope": resolved.chain[-1] if resolved.chain else None,
+                "values": resolved.values.model_dump(mode="json"),
+                "sources": dict(resolved.sources),
+            }
+
+        def settings_http_error(
+            error: SettingsStoreError, *, mutating: bool
+        ) -> HTTPException:
+            message = str(error)
+            if message.startswith("unknown settings namespace"):
+                return HTTPException(
+                    status_code=404,
+                    detail="settings namespace is unknown",
+                    headers={"Cache-Control": "no-store"},
+                )
+            return HTTPException(
+                status_code=409,
+                detail=(
+                    "settings mutation failed"
+                    if mutating
+                    else "settings could not be read"
+                ),
+                headers={"Cache-Control": "no-store"},
+            )
 
         @application.get("/api/admin/maintenance")
         def maintenance_status(principal=Depends(read_platform)) -> dict:
@@ -682,6 +748,62 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 ) from None
             core.state.anchor_journals()
             return selected.model_dump(mode="json")
+
+        @application.get("/api/admin/settings")
+        def read_settings(
+            principal=Depends(read_platform),
+            namespace: str = Query(pattern=_SETTINGS_NAMESPACE, max_length=128),
+            level: _SETTINGS_LEVEL = "store",
+        ) -> dict:
+            del principal
+            store = application.state.settings_store
+            context = admin_settings_context(level)
+            try:
+                resolved = store.resolve(context, namespace)
+            except SettingsStoreError as error:
+                raise settings_http_error(error, mutating=False) from None
+            return settings_resolution_payload(namespace, resolved)
+
+        @application.put("/api/admin/settings")
+        def mutate_settings_values(
+            payload: SettingsMutationRequest,
+            principal=Depends(mutate_settings),
+        ) -> dict:
+            require_operational_write()
+            store = application.state.settings_store
+            context = admin_settings_context(payload.level)
+            try:
+                resolved = store.set(
+                    context,
+                    payload.namespace,
+                    payload.values,
+                    actor_id=principal.user_id,
+                )
+            except SettingsStoreError as error:
+                raise settings_http_error(error, mutating=True) from None
+            core.state.anchor_journals()
+            return settings_resolution_payload(payload.namespace, resolved)
+
+        @application.post("/api/admin/settings/clear")
+        def clear_settings_values(
+            payload: SettingsClearRequest,
+            principal=Depends(mutate_settings),
+        ) -> dict:
+            require_operational_write()
+            store = application.state.settings_store
+            context = admin_settings_context(payload.level)
+            fields = set(payload.fields) if payload.fields is not None else None
+            try:
+                resolved = store.clear(
+                    context,
+                    payload.namespace,
+                    fields,
+                    actor_id=principal.user_id,
+                )
+            except SettingsStoreError as error:
+                raise settings_http_error(error, mutating=True) from None
+            core.state.anchor_journals()
+            return settings_resolution_payload(payload.namespace, resolved)
 
         def package_result(result: PackageLifecycleResult) -> dict:
             return {

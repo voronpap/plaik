@@ -29,6 +29,7 @@ class SettingsAuditEvent(BaseModel):
     scope: str
     changed_fields: tuple[str, ...]
     secret_fields: tuple[str, ...] = ()
+    actor_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,19 @@ class SettingsResolution:
 AuditSink = Callable[[SettingsAuditEvent], None]
 
 
+def _optional_settings_actor_id(actor_id: str | None) -> str | None:
+    """Keep an absent principal as None. Never invent a synthetic actor."""
+
+    if actor_id is None:
+        return None
+    if type(actor_id) is not str:
+        raise SettingsStoreError("settings audit actor_id must be a string")
+    normalized = actor_id.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
 def settings_events_to_audit_sink(append: Callable[..., object]) -> AuditSink:
     """Adapt value-free settings events onto the platform audit journal."""
 
@@ -54,7 +68,7 @@ def settings_events_to_audit_sink(append: Callable[..., object]) -> AuditSink:
         if event.secret_fields:
             metadata["reference_fields"] = list(event.secret_fields)
         append(
-            actor_id=None,
+            actor_id=_optional_settings_actor_id(event.actor_id),
             action=f"settings.{event.action}",
             target_type="platform.settings",
             target_id=event.namespace,
@@ -100,9 +114,12 @@ class SettingsStore:
         context: StoreContext,
         namespace: str,
         values: Mapping[str, Any] | BaseModel,
+        *,
+        actor_id: str | None = None,
     ) -> SettingsResolution:
         """Set only the supplied fields as overrides at the exact context."""
 
+        actor_id = _optional_settings_actor_id(actor_id)
         schema = self._schema(namespace)
         supplied = self._supplied_values(values)
         if not supplied:
@@ -144,6 +161,7 @@ class SettingsStore:
             context=context,
             changed_fields=tuple(sorted(supplied)),
             validated=validated,
+            actor_id=actor_id,
         )
         return self.resolve(context, namespace)
 
@@ -152,9 +170,12 @@ class SettingsStore:
         context: StoreContext,
         namespace: str,
         fields: set[str] | None = None,
+        *,
+        actor_id: str | None = None,
     ) -> SettingsResolution:
         """Remove exact-scope overrides so values inherit from the parent/default."""
 
+        actor_id = _optional_settings_actor_id(actor_id)
         schema = self._schema(namespace)
         with self._registry_transaction() as registry:
             scopes = registry["scopes"]
@@ -194,6 +215,7 @@ class SettingsStore:
             context=context,
             changed_fields=tuple(sorted(changed)),
             validated=validated,
+            actor_id=actor_id,
         )
         return self.resolve(context, namespace)
 
@@ -376,6 +398,7 @@ class SettingsStore:
         context: StoreContext,
         changed_fields: tuple[str, ...],
         validated: BaseModel,
+        actor_id: str | None = None,
     ) -> None:
         if self.audit_sink is None:
             return
@@ -399,5 +422,6 @@ class SettingsStore:
                 scope=context.key,
                 changed_fields=changed_fields,
                 secret_fields=secret_fields,
+                actor_id=_optional_settings_actor_id(actor_id),
             )
         )
