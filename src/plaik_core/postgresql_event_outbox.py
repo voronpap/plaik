@@ -21,13 +21,24 @@ from .extension_runtime import _json_snapshot
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
+def _load_outbox_payload(raw: Any) -> Any:
+    """Pass through driver-decoded JSONB without a second json.loads.
+
+    psycopg 3 already turns JSONB objects into dicts and JSONB strings into
+    str. Parsing a str again would promote a JSONB string scalar that happens
+    to contain object-shaped text into a mapping and dispatch it.
+    """
+
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class PostgreSQLOutboxEvent:
     id: str
     owner: str
     contract: str
     version: str
-    payload: dict[str, Any]
+    payload: Any
     idempotency_key: str | None
     attempt_count: int
     scope_json: Any = None
@@ -36,20 +47,27 @@ class PostgreSQLOutboxEvent:
     created_at: datetime | None = None
 
     def as_envelope(self) -> EventEnvelope:
-        if self.created_at is None:
-            raise ValueError("outbox event is missing created_at")
-        return envelope_from_row(
-            event_id=self.id,
-            owner=self.owner,
-            contract=self.contract,
-            version=self.version,
-            payload=self.payload,
-            scope_raw=self.scope_json,
-            resource_raw=self.resource_json,
-            idempotency_key=self.idempotency_key,
-            correlation_id=self.correlation_id,
-            created_at=self.created_at,
-        )
+        if self.created_at is None or type(self.payload) is not dict:
+            raise OutboxEnvelopeError("outbox envelope is invalid")
+        if self.scope_json is not None and type(self.scope_json) is not dict:
+            raise OutboxEnvelopeError("outbox envelope is invalid")
+        if self.resource_json is not None and type(self.resource_json) is not dict:
+            raise OutboxEnvelopeError("outbox envelope is invalid")
+        try:
+            return envelope_from_row(
+                event_id=self.id,
+                owner=self.owner,
+                contract=self.contract,
+                version=self.version,
+                payload=self.payload,
+                scope_raw=self.scope_json,
+                resource_raw=self.resource_json,
+                idempotency_key=self.idempotency_key,
+                correlation_id=self.correlation_id,
+                created_at=self.created_at,
+            )
+        except (ValidationError, TypeError, ValueError):
+            raise OutboxEnvelopeError("outbox envelope is invalid") from None
 
 
 class PostgreSQLEventOutbox:
@@ -151,7 +169,7 @@ class PostgreSQLEventOutbox:
                 owner=str(row[1]),
                 contract=str(row[2]),
                 version=str(row[3]),
-                payload=row[4] if isinstance(row[4], dict) else json.loads(row[4]),
+                payload=_load_outbox_payload(row[4]),
                 idempotency_key=row[5],
                 attempt_count=int(row[6]),
                 scope_json=row[7],
