@@ -152,6 +152,20 @@ def _copy_state(source: FastAPI, destination: FastAPI) -> None:
     destination.state.core_composition = composition
 
 
+def _sync_extension_host(core: FastAPI) -> None:
+    host = getattr(core.state, "extension_host", None)
+    if host is None:
+        return
+    records = core.state.package_registry.records()
+    try:
+        configuration = core.state.configuration_store.require()
+    except Exception:
+        host.drop_unenabled(records)
+        return
+    host.set_secret_providers(core.state.secret_providers)
+    host.sync_enabled(records, configuration)
+
+
 def _copy_routes(source: FastAPI, destination: FastAPI, prefixes: tuple[str, ...]) -> None:
     for route in source.router.routes:
         paths = [getattr(route, "path", "")]
@@ -553,6 +567,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         payload.package_id, active=False
                     )
                     core.state.cache.invalidate_namespace(payload.package_id)
+                    _sync_extension_host(core)
                     event = audit.append(
                         actor_id=principal.user_id,
                         action="emergency.package.quarantine",
@@ -717,17 +732,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 for registry in runtime_registries:
                     registry.deactivate_owner(result.package_id)
                 catalog.retain_package(result.package_id)
-            host = getattr(core.state, "extension_host", None)
-            if host is not None:
-                try:
-                    configuration = core.state.configuration_store.require()
-                except Exception:
-                    configuration = None
-                if configuration is not None:
-                    host.set_secret_providers(core.state.secret_providers)
-                    host.sync_enabled(records, configuration)
-                else:
-                    host.drop_unenabled(records)
+            _sync_extension_host(core)
             if result.action in {"update", "disable", "uninstall"}:
                 core.state.cache.invalidate_namespace(result.package_id)
             try:
