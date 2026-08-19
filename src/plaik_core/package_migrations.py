@@ -573,6 +573,12 @@ def _try_parse_sql_string_literal(statement: str, index: int) -> tuple[str, int]
     ):
         return _parse_e_string(statement, index + 1)
     if (
+        index + 1 < length
+        and statement[index] in {"N", "n"}
+        and statement[index + 1] == "'"
+    ):
+        return _parse_single_quoted_string(statement, index + 1)
+    if (
         index + 2 < length
         and statement[index] in {"U", "u"}
         and statement[index + 1] == "&"
@@ -653,7 +659,7 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
     """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
 
     String literals after ``AS`` (function/procedure bodies) are scanned as
-    nested SQL, including adjacent concatenated literals and ``E'...'``
+    nested SQL, including adjacent concatenated literals, ``N'...'``, and ``E'...'``
     escape sequences. Other string literals, comments, and bracket/backtick
     forms are skipped. Dollar quotes are scanned as nested SQL.
     Unicode-escaped identifiers accept comments between the quotes and
