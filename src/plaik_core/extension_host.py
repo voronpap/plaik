@@ -272,6 +272,8 @@ class _OwnerEvents(EventPublisher):
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> None:
+        persist = getattr(self._host._publication, "persist", None)
+        drain = getattr(self._host._publication, "drain", None)
         with self._host._lock:
             if self._host._runtime_generations.get(self._owner) != self._generation:
                 raise ExtensionHostError("event publisher is no longer bound")
@@ -284,7 +286,19 @@ class _OwnerEvents(EventPublisher):
                 canonical_resource = _canonical_resource(
                     resource, self._owner, self._scope
                 )
-            self._host._events.publish(
+            if persist is None or drain is None:
+                self._host._publication.publish(
+                    owner=self._owner,
+                    contract=contract,
+                    version=version,
+                    payload=payload,
+                    idempotency_key=idempotency_key,
+                    scope=resolved_scope,
+                    resource=canonical_resource,
+                    correlation_id=correlation_id,
+                )
+                return
+            persist(
                 owner=self._owner,
                 contract=contract,
                 version=version,
@@ -294,6 +308,7 @@ class _OwnerEvents(EventPublisher):
                 resource=canonical_resource,
                 correlation_id=correlation_id,
             )
+        drain()
 
 
 class _OwnerJobs(JobScheduler):
@@ -385,6 +400,7 @@ class ExtensionHost:
         packages_root: Path,
         service_registry: ServiceRegistry,
         event_bus: EventBus,
+        event_publication: Any | None = None,
         render_slots: RenderSlotRegistry,
         job_queue: DurableJobQueue,
         connection_store: ConnectionStore,
@@ -395,6 +411,7 @@ class ExtensionHost:
         self._packages_root = Path(packages_root)
         self._services = service_registry
         self._events = event_bus
+        self._publication = event_publication or event_bus
         self._slots = render_slots
         self._jobs = job_queue
         self._connections = connection_store

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -319,3 +321,171 @@ class EventOutboxDispatcher:
             if quarantined == 0:
                 break
         return delivered
+
+
+class SqliteDurableEvents:
+    """Persist then dispatch: SQLite commit is the EventPublisher linearization point."""
+
+    def __init__(
+        self,
+        path: Path,
+        bus: EventBus,
+        *,
+        dispatch_after_enqueue: bool = True,
+    ) -> None:
+        self.path = Path(path)
+        self.bus = bus
+        self.outbox = SQLiteEventOutbox()
+        self.dispatcher = EventOutboxDispatcher(self.outbox, bus)
+        self._lock = threading.RLock()
+        self._idle = threading.Condition(self._lock)
+        self._dispatch_after_enqueue = dispatch_after_enqueue
+        self._dispatching = False
+        self._dispatch_thread: int | None = None
+
+    def defer_dispatch(self) -> None:
+        """Hold rows until subscribers from the current host sync exist."""
+
+        with self._idle:
+            self._dispatch_after_enqueue = False
+            while self._dispatching and self._dispatch_thread != threading.get_ident():
+                self._idle.wait()
+
+    def enable_live_dispatch(self) -> None:
+        with self._idle:
+            self._dispatch_after_enqueue = True
+
+    def persist(
+        self,
+        *,
+        owner: str,
+        contract: str,
+        version: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        """Enqueue and commit under the caller's authorization lock.
+
+        Host generation fencing must hold until this method returns so a stale
+        publisher cannot commit after unbind. Do not claim or drain here:
+        wait-for-dispatch while holding that lock deadlocks a handler that
+        re-enters the host. The caller must ``drain()`` after releasing it.
+        """
+
+        with self._idle:
+            connection = self._open()
+            try:
+                self.outbox.enqueue(
+                    connection,
+                    owner=owner,
+                    contract=contract,
+                    version=version,
+                    payload=payload,
+                    idempotency_key=idempotency_key,
+                    scope=scope,
+                    resource=resource,
+                    correlation_id=correlation_id,
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+    def publish(
+        self,
+        *,
+        owner: str,
+        contract: str,
+        version: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
+    ) -> int:
+        self.persist(
+            owner=owner,
+            contract=contract,
+            version=version,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            scope=scope,
+            resource=resource,
+            correlation_id=correlation_id,
+        )
+        return self.drain()
+
+    def drain(self, *, limit: int = 100) -> int:
+        """Deliver pending rows after crash between commit and ack."""
+
+        with self._idle:
+            if not self._claim_dispatch_locked():
+                return 0
+        try:
+            return self._drain_claimed(limit=limit)
+        finally:
+            self._release_dispatch()
+
+    def recover_subscribers(self, *, limit: int = 100) -> int:
+        with self._idle:
+            while self._dispatching and self._dispatch_thread != threading.get_ident():
+                self._idle.wait()
+            self._dispatch_after_enqueue = True
+            if not self._claim_dispatch_locked():
+                return 0
+        try:
+            return self._drain_claimed(limit=limit)
+        finally:
+            self._release_dispatch()
+
+    def _claim_dispatch_locked(self) -> bool:
+        me = threading.get_ident()
+        if self._dispatching and self._dispatch_thread == me:
+            return False
+        while self._dispatching:
+            self._idle.wait()
+            if not self._dispatch_after_enqueue and not self._dispatching:
+                return False
+        if not self._dispatch_after_enqueue:
+            return False
+        self._dispatching = True
+        self._dispatch_thread = me
+        return True
+
+    def _release_dispatch(self) -> None:
+        with self._idle:
+            self._dispatching = False
+            self._dispatch_thread = None
+            self._idle.notify_all()
+
+    def _drain_claimed(self, *, limit: int) -> int:
+        delivered = 0
+        remaining = limit
+        while remaining > 0:
+            connection = self._open()
+            try:
+                batch = self.dispatcher.dispatch(connection, limit=remaining)
+            finally:
+                connection.close()
+            if batch == 0:
+                break
+            delivered += batch
+            remaining -= batch
+        return delivered
+
+    def pending_count(self) -> int:
+        with self._lock:
+            connection = self._open()
+            try:
+                return len(self.outbox.pending(connection))
+            finally:
+                connection.close()
+
+    def _open(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path, timeout=30)
+        self.outbox.ensure_schema(connection)
+        connection.commit()
+        return connection

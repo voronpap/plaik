@@ -269,13 +269,15 @@ class EventBus:
                 correlation_id=correlation_id,
             )
             self._idempotency[reserved] = None
-            try:
-                delivered = _deliver(subscriptions, snapshot)
-            except Exception:
+        try:
+            delivered = _deliver(subscriptions, snapshot)
+        except Exception:
+            with self._lock:
                 self._idempotency.pop(reserved, None)
-                raise
+            raise
+        with self._lock:
             self._last_envelope = envelope
-            return delivered
+        return delivered
 
     def _prepare_publish(
         self,
