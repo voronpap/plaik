@@ -442,6 +442,9 @@ class ExtensionHost:
                             and self._runtimes.get(package_id) is not runtime
                         ):
                             self._unbind_health(package_id)
+                            self._set_owner_registries_active(package_id, False)
+                if runtime is not None and self._runtimes.get(package_id) is runtime:
+                    self._set_owner_registries_active(package_id, True)
                 bound.append(runtime)
         return tuple(bound)
 
@@ -461,14 +464,24 @@ class ExtensionHost:
         ]
         for package_id in dropping:
             self._unbind_health(package_id)
+            self._set_owner_registries_active(package_id, False)
             del self._runtimes[package_id]
         for package_id in tuple(self._runtime_generations):
             if package_id not in enabled_ids or package_id not in self._runtimes:
                 self._unbind_health(package_id)
+                if package_id not in enabled_ids:
+                    self._set_owner_registries_active(package_id, False)
         for package_id in tuple(self._registered):
             if package_id not in records:
                 self._registered.discard(package_id)
         return enabled_ids
+
+    def _set_owner_registries_active(self, package_id: str, active: bool) -> None:
+        for registry in (self._services, self._events, self._slots):
+            if active:
+                registry.activate_owner(package_id)
+            else:
+                registry.deactivate_owner(package_id)
 
     def _unbind_health(self, package_id: str) -> None:
         self._runtime_generations.pop(package_id, None)
