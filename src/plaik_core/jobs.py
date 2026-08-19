@@ -19,6 +19,7 @@ from .storage import exclusive_file_lock, read_json, write_json_atomic
 
 
 _JOB_TYPE = re.compile(r"^[a-z][a-z0-9-]{1,63}\.[a-z][a-z0-9._-]{1,95}$")
+_OWNER = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{7,255}$")
 _SENSITIVE_KEYS = {
@@ -167,6 +168,33 @@ class DurableJobQueue:
             records[record.id] = record
             self._write(records)
             return record
+
+    def cancel_owner(self, owner: str, *, now: datetime | None = None) -> int:
+        """Fail queued and running jobs in the owner's job-type namespace."""
+
+        prefix = _owner_job_prefix(owner)
+        timestamp = _as_utc(now or datetime.now(UTC))
+        with exclusive_file_lock(self.path):
+            records = self._read()
+            changed = 0
+            for job_id, record in tuple(records.items()):
+                if record.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    continue
+                if not record.type.startswith(prefix):
+                    continue
+                records[job_id] = record.model_copy(
+                    update={
+                        "status": JobStatus.FAILED,
+                        "updated_at": timestamp,
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "error_code": "job.owner_inactive",
+                    }
+                )
+                changed += 1
+            if changed:
+                self._write(records)
+            return changed
 
     def claim(
         self,
@@ -537,6 +565,12 @@ def _validate_job_type(value: str) -> str:
     if not isinstance(value, str) or not _JOB_TYPE.fullmatch(value):
         raise ValueError("invalid namespaced job type")
     return value
+
+
+def _owner_job_prefix(owner: str) -> str:
+    if not isinstance(owner, str) or not _OWNER.fullmatch(owner):
+        raise ValueError("invalid extension owner id")
+    return f"{owner}."
 
 
 def _validate_worker_id(value: str) -> str:
