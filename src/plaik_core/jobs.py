@@ -547,8 +547,14 @@ class DelegatingJobQueue:
         live = self._resolve()
         changed = live.cancel_owner(owner, now=now)
         fallback = self._fallback
+        leftover_error: Exception | None = None
         if fallback is not None and fallback is not live:
-            changed += fallback.cancel_owner(owner, now=now)
+            try:
+                changed += fallback.cancel_owner(owner, now=now)
+            except Exception as error:
+                leftover_error = error
+        if leftover_error is not None:
+            raise leftover_error
         return changed
 
     def claim(
@@ -560,11 +566,19 @@ class DelegatingJobQueue:
     ) -> JobRecord | None:
         live = self._resolve()
         fallback = self._fallback
+        leftover_error: Exception | None = None
         if fallback is not None and fallback is not live:
-            leftover = fallback.claim(worker_id, lease=lease, now=now)
-            if leftover is not None:
-                return leftover
-        return live.claim(worker_id, lease=lease, now=now)
+            try:
+                leftover = fallback.claim(worker_id, lease=lease, now=now)
+            except Exception as error:
+                leftover_error = error
+            else:
+                if leftover is not None:
+                    return leftover
+        claimed = live.claim(worker_id, lease=lease, now=now)
+        if leftover_error is not None and claimed is None:
+            raise leftover_error
+        return claimed
 
     def succeed(
         self,
@@ -617,21 +631,29 @@ class DelegatingJobQueue:
     ) -> JobRecord | None:
         live = self._resolve()
         fallback = self._fallback
+        leftover_error: Exception | None = None
         if fallback is not None and fallback is not live:
-            leftover = fallback.leased(
-                job_id,
-                worker_id,
-                fencing_token=fencing_token,
-                now=now,
-            )
-            if leftover is not None:
-                return leftover
-        return live.leased(
+            try:
+                leftover = fallback.leased(
+                    job_id,
+                    worker_id,
+                    fencing_token=fencing_token,
+                    now=now,
+                )
+            except Exception as error:
+                leftover_error = error
+            else:
+                if leftover is not None:
+                    return leftover
+        live_lease = live.leased(
             job_id,
             worker_id,
             fencing_token=fencing_token,
             now=now,
         )
+        if leftover_error is not None and live_lease is None:
+            raise leftover_error
+        return live_lease
 
     def purge_terminal(self, *, before: datetime, limit: int = 100) -> int:
         live = self._resolve()
@@ -645,7 +667,11 @@ class DelegatingJobQueue:
         live = self._resolve()
         fallback = self._fallback
         if fallback is not None and fallback is not live:
-            if job_id in fallback.records() and job_id not in live.records():
+            try:
+                leftover_records = fallback.records()
+            except Exception:
+                leftover_records = {}
+            if job_id in leftover_records and job_id not in live.records():
                 return fallback
         return live
 
