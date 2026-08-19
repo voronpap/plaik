@@ -696,6 +696,9 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             last_keyword = None
             continue
         if last_keyword in _NESTED_SQL_STRING_KEYWORDS:
+            if statement[index] == "(":
+                index += 1
+                continue
             concatenated = _consume_concatenated_sql_strings(statement, index)
             if concatenated is not None:
                 body, index = concatenated
