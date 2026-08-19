@@ -49,12 +49,13 @@ from .installer_config import (
 from .migrations import MigrationError, MigrationRunner
 from .jobs import DurableJobQueue
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
-from .event_outbox import SqliteDurableEvents
+from .event_outbox import DelegatingDurableEvents, SqliteDurableEvents
 from .operation_journal import OperationJournal, OperationStatus
 from .operational_safety import MaintenanceController
 from .package_declarations import PackagePermissionCatalog
 from .packages import PackageRegistry, PackageStatus
 from .postgresql import PostgreSQLAdapter, PostgreSQLAdapterError
+from .postgresql_outbox_runtime import PostgreSQLDurableEvents
 from .postgresql_security import (
     DelegatingStore,
     PostgreSQLAuditLog,
@@ -183,11 +184,21 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     job_queue = DurableJobQueue(runtime.jobs_registry_path)
     service_registry = ServiceRegistry()
     event_bus = EventBus()
-    durable_events = SqliteDurableEvents(
+    sqlite_events = SqliteDurableEvents(
         runtime.event_outbox_path,
         event_bus,
         dispatch_after_enqueue=False,
     )
+    pg_events_holder: dict[str, PostgreSQLDurableEvents | None] = {"events": None}
+
+    def resolve_durable_events() -> SqliteDurableEvents | PostgreSQLDurableEvents:
+        if postgresql_security_backend_ready():
+            events = pg_events_holder["events"]
+            if events is not None:
+                return events
+        return sqlite_events
+
+    durable_events = DelegatingDurableEvents(resolve_durable_events)
     render_slots = RenderSlotRegistry()
     permission_catalog = PackagePermissionCatalog(
         runtime.package_permission_catalog_path
@@ -618,6 +629,11 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     pg_settings_holder["store"] = PostgreSQLSettingsStore(
         lambda: postgresql_adapter().runtime_connect(),
         json_settings_store,
+    )
+    pg_events_holder["events"] = PostgreSQLDurableEvents(
+        lambda: postgresql_adapter().runtime_connect(),
+        event_bus,
+        dispatch_after_enqueue=False,
     )
     application.state.postgresql_adapter = postgresql_adapter
     application.state.package_owner_connect = None

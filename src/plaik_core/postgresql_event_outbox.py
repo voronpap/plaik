@@ -70,6 +70,25 @@ class PostgreSQLOutboxEvent:
             raise OutboxEnvelopeError("outbox envelope is invalid") from None
 
 
+class OutboxEnqueueLocked(RuntimeError):
+    """Enqueue refused to wait for another transaction's row lock."""
+
+
+_LOCK_NOT_AVAILABLE = "55P03"
+_ENQUEUE_LOCK_TIMEOUT = "1ms"
+_ENQUEUE_SAVEPOINT = "plaik_outbox_enqueue"
+
+
+def _is_lock_not_available(error: BaseException) -> bool:
+    for attr in ("sqlstate", "pgcode"):
+        value = getattr(error, attr, None)
+        if isinstance(value, str) and value.upper() == _LOCK_NOT_AVAILABLE:
+            return True
+    diagnostic = getattr(error, "diag", None)
+    state = getattr(diagnostic, "sqlstate", None)
+    return isinstance(state, str) and state.upper() == _LOCK_NOT_AVAILABLE
+
+
 class PostgreSQLEventOutbox:
     """Store outbox rows in the caller-owned PostgreSQL transaction."""
 
@@ -112,31 +131,57 @@ class PostgreSQLEventOutbox:
             envelope.payload, sort_keys=True, separators=(",", ":")
         )
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO plaik_core.plaik_event_outbox
-                    (id, owner, contract, version, payload_json, idempotency_key,
-                     created_at, scope_json, resource_json, correlation_id)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s)
-                ON CONFLICT (owner, contract, idempotency_key)
-                    WHERE idempotency_key IS NOT NULL
-                DO UPDATE SET id = plaik_core.plaik_event_outbox.id
-                RETURNING id
-                """,
-                (
-                    envelope.id,
-                    envelope.owner,
-                    envelope.contract,
-                    envelope.version,
-                    payload_json,
-                    envelope.idempotency_key,
-                    envelope.created_at,
-                    persisted_scope,
-                    persisted_resource,
-                    envelope.correlation_id,
-                ),
-            )
-            row = cursor.fetchone()
+            # 0 disables lock_timeout in PostgreSQL; 1ms is the fail-closed bound.
+            cursor.execute(f"SET LOCAL lock_timeout = '{_ENQUEUE_LOCK_TIMEOUT}'")
+            cursor.execute(f"SAVEPOINT {_ENQUEUE_SAVEPOINT}")
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO plaik_core.plaik_event_outbox
+                        (id, owner, contract, version, payload_json, idempotency_key,
+                         created_at, scope_json, resource_json, correlation_id)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s)
+                    ON CONFLICT (owner, contract, idempotency_key)
+                        WHERE idempotency_key IS NOT NULL
+                    DO UPDATE SET id = plaik_core.plaik_event_outbox.id
+                    RETURNING id
+                    """,
+                    (
+                        envelope.id,
+                        envelope.owner,
+                        envelope.contract,
+                        envelope.version,
+                        payload_json,
+                        envelope.idempotency_key,
+                        envelope.created_at,
+                        persisted_scope,
+                        persisted_resource,
+                        envelope.correlation_id,
+                    ),
+                )
+                row = cursor.fetchone()
+            except Exception as error:
+                if envelope.idempotency_key is None or not _is_lock_not_available(
+                    error
+                ):
+                    raise
+                cursor.execute(f"ROLLBACK TO SAVEPOINT {_ENQUEUE_SAVEPOINT}")
+                cursor.execute(
+                    """
+                    SELECT id FROM plaik_core.plaik_event_outbox
+                    WHERE owner = %s AND contract = %s AND idempotency_key = %s
+                    """,
+                    (
+                        envelope.owner,
+                        envelope.contract,
+                        envelope.idempotency_key,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise OutboxEnqueueLocked(
+                        "outbox enqueue could not wait for a locked idempotency key"
+                    ) from error
         if row is None:
             raise RuntimeError("PostgreSQL outbox insert returned no identity")
         return str(row[0])

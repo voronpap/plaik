@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -489,3 +489,68 @@ class SqliteDurableEvents:
         self.outbox.ensure_schema(connection)
         connection.commit()
         return connection
+
+
+class DelegatingDurableEvents:
+    """Route persist/drain to the live backend without swapping host publication."""
+
+    def __init__(self, resolve: Callable[[], Any]) -> None:
+        self._resolve = resolve
+
+    def persist(
+        self,
+        *,
+        owner: str,
+        contract: str,
+        version: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self._resolve().persist(
+            owner=owner,
+            contract=contract,
+            version=version,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            scope=scope,
+            resource=resource,
+            correlation_id=correlation_id,
+        )
+
+    def publish(
+        self,
+        *,
+        owner: str,
+        contract: str,
+        version: str,
+        payload: Mapping[str, Any],
+        idempotency_key: str | None = None,
+        scope: ScopeRef | None = None,
+        resource: ResourceRef | None = None,
+        correlation_id: str | None = None,
+    ) -> int:
+        return self._resolve().publish(
+            owner=owner,
+            contract=contract,
+            version=version,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            scope=scope,
+            resource=resource,
+            correlation_id=correlation_id,
+        )
+
+    def drain(self, *, limit: int = 100) -> int:
+        return self._resolve().drain(limit=limit)
+
+    def defer_dispatch(self) -> None:
+        self._resolve().defer_dispatch()
+
+    def enable_live_dispatch(self) -> None:
+        self._resolve().enable_live_dispatch()
+
+    def recover_subscribers(self, *, limit: int = 100) -> int:
+        return self._resolve().recover_subscribers(limit=limit)
