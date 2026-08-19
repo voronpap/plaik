@@ -35,6 +35,13 @@ class ExtensionHostError(RuntimeError):
     """An enabled package could not be given an ExtensionRuntime."""
 
 
+def _require_bound_scope(bound: ScopeRef, provided: object) -> None:
+    """Reject a scope outside the bound installation → group → store identity."""
+
+    if not isinstance(provided, ScopeRef) or provided not in bound.inheritance_chain():
+        raise ExtensionHostError("scope is outside the bound runtime identity")
+
+
 class _NullSettings(SettingsReader):
     def get(self, key: str, default: Any = None) -> Any:
         del key
@@ -83,13 +90,21 @@ class _OwnerEvents(EventPublisher):
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> None:
+        resolved_scope = self._scope if scope is None else scope
+        _require_bound_scope(self._scope, resolved_scope)
+        if resource is not None:
+            if resource.owner != self._owner:
+                raise ExtensionHostError(
+                    "resource owner must match the publishing package"
+                )
+            _require_bound_scope(self._scope, resource.scope)
         self._bus.publish(
             owner=self._owner,
             contract=contract,
             version=version,
             payload=payload,
             idempotency_key=idempotency_key,
-            scope=scope or self._scope,
+            scope=resolved_scope,
             resource=resource,
             correlation_id=correlation_id,
         )
@@ -141,9 +156,10 @@ class _OwnerSlots(SlotContributor):
 
 
 class _OwnerHealth(HealthReporter):
-    def __init__(self, registry: HealthIssueRegistry, owner: str) -> None:
+    def __init__(self, registry: HealthIssueRegistry, owner: str, scope: ScopeRef) -> None:
         self._registry = registry
         self._owner = owner
+        self._scope = scope
 
     def report(self, issue: HealthIssue) -> None:
         if not isinstance(issue, HealthIssue):
@@ -152,6 +168,7 @@ class _OwnerHealth(HealthReporter):
             raise ExtensionHostError(
                 "health issue owner must match the reporting package"
             )
+        _require_bound_scope(self._scope, issue.scope)
         self._registry.report(issue)
 
 
@@ -245,7 +262,7 @@ class ExtensionHost:
             events=_OwnerEvents(self._events, package_id, scope),
             jobs=_OwnerJobs(self._jobs),
             slots=_OwnerSlots(self._slots, package_id),
-            health=_OwnerHealth(self._health, package_id),
+            health=_OwnerHealth(self._health, package_id, scope),
         )
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
