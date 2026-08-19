@@ -250,9 +250,10 @@ class _OwnerJobs(JobScheduler):
 
 
 class _OwnerSlots(SlotContributor):
-    def __init__(self, registry: RenderSlotRegistry, owner: str) -> None:
-        self._registry = registry
+    def __init__(self, host: ExtensionHost, owner: str, generation: int) -> None:
+        self._host = host
         self._owner = owner
+        self._generation = generation
 
     def bind(
         self,
@@ -262,13 +263,16 @@ class _OwnerSlots(SlotContributor):
         *,
         position: int = 100,
     ) -> None:
-        self._registry.bind(
-            contributor=self._owner,
-            slot=slot,
-            version=version,
-            template=template,
-            position=position,
-        )
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("slot contributor is no longer bound")
+            self._host._slots.bind(
+                contributor=self._owner,
+                slot=slot,
+                version=version,
+                template=template,
+                position=position,
+            )
 
 
 class _OwnerHealth(HealthReporter):
@@ -400,7 +404,7 @@ class ExtensionHost:
             services=_OwnerServices(self._services),
             events=_OwnerEvents(self, package_id, scope, generation),
             jobs=_OwnerJobs(self, package_id, generation),
-            slots=_OwnerSlots(self._slots, package_id),
+            slots=_OwnerSlots(self, package_id, generation),
             health=_OwnerHealth(self, package_id, scope, generation),
         )
         self._runtime_generations[package_id] = generation
