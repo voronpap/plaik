@@ -340,6 +340,12 @@ class ExtensionHost:
             configuration.installation_id,
         )
 
+    def drop_unenabled(self, records: Mapping[str, PackageRecord]) -> None:
+        """Revoke dropped runtimes without rebuilding; safe when configuration is missing."""
+
+        with self._lock:
+            self._drop_unenabled_locked(records)
+
     def sync_enabled(
         self,
         records: Mapping[str, PackageRecord],
@@ -348,21 +354,7 @@ class ExtensionHost:
         scope = self.bind_configuration(configuration)
         bound: list[ExtensionRuntime] = []
         with self._lock:
-            enabled_ids = {
-                package_id
-                for package_id, record in records.items()
-                if record.status == PackageStatus.ENABLED
-                and record.manifest.type.value in {"module", "integration"}
-            }
-            for package_id in tuple(self._runtimes):
-                if package_id not in enabled_ids:
-                    del self._runtimes[package_id]
-            for package_id in tuple(self._runtime_generations):
-                if package_id not in enabled_ids or package_id not in self._runtimes:
-                    self._unbind_health(package_id)
-            for package_id in tuple(self._registered):
-                if package_id not in records:
-                    self._registered.discard(package_id)
+            enabled_ids = self._drop_unenabled_locked(records)
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
@@ -381,6 +373,26 @@ class ExtensionHost:
                             self._unbind_health(package_id)
                 bound.append(runtime)
         return tuple(bound)
+
+    def _drop_unenabled_locked(
+        self, records: Mapping[str, PackageRecord]
+    ) -> set[str]:
+        enabled_ids = {
+            package_id
+            for package_id, record in records.items()
+            if record.status == PackageStatus.ENABLED
+            and record.manifest.type.value in {"module", "integration"}
+        }
+        for package_id in tuple(self._runtimes):
+            if package_id not in enabled_ids:
+                del self._runtimes[package_id]
+        for package_id in tuple(self._runtime_generations):
+            if package_id not in enabled_ids or package_id not in self._runtimes:
+                self._unbind_health(package_id)
+        for package_id in tuple(self._registered):
+            if package_id not in records:
+                self._registered.discard(package_id)
+        return enabled_ids
 
     def _unbind_health(self, package_id: str) -> None:
         self._runtime_generations.pop(package_id, None)

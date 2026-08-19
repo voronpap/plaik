@@ -725,7 +725,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     configuration = None
                 if configuration is not None:
                     host.set_secret_providers(core.state.secret_providers)
-                    host.sync_enabled(core.state.package_registry.records(), configuration)
+                    host.sync_enabled(records, configuration)
+                else:
+                    host.drop_unenabled(records)
             if result.action in {"update", "disable", "uninstall"}:
                 core.state.cache.invalidate_namespace(result.package_id)
             try:
