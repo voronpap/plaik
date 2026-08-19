@@ -523,8 +523,18 @@ class ExtensionHost:
                     self._set_owner_registries_active(package_id, False)
         for package_id in tuple(self._registered):
             if package_id not in records:
+                self._drop_job_handlers(package_id)
                 self._registered.discard(package_id)
         return enabled_ids
+
+    def _drop_job_handlers(self, package_id: str) -> None:
+        prefix = _owner_job_prefix(package_id)
+        for job_type in [
+            job_type
+            for job_type in self._job_handlers
+            if job_type.startswith(prefix)
+        ]:
+            del self._job_handlers[job_type]
 
     def _set_owner_registries_active(self, package_id: str, active: bool) -> None:
         for registry in (self._services, self._events, self._slots):
@@ -534,13 +544,6 @@ class ExtensionHost:
                 registry.deactivate_owner(package_id)
         if not active:
             self._jobs.cancel_owner(package_id)
-            prefix = _owner_job_prefix(package_id)
-            for job_type in [
-                job_type
-                for job_type in self._job_handlers
-                if job_type.startswith(prefix)
-            ]:
-                del self._job_handlers[job_type]
 
     def _unbind_generation(self, package_id: str) -> None:
         """Drop the runtime generation so stale handles fail closed, and forget issues."""

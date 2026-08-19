@@ -4,7 +4,6 @@ import hashlib
 import os
 import secrets
 import sqlite3
-import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -48,7 +47,7 @@ from .installer_config import (
     SQLiteDatabase,
 )
 from .migrations import MigrationError, MigrationRunner
-from .jobs import DurableJobQueue, JobRunner
+from .jobs import DurableJobQueue, JobDrainPump, JobRunner
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .event_outbox import DelegatingDurableEvents, SqliteDurableEvents
 from .operation_journal import OperationJournal, OperationStatus
@@ -233,17 +232,8 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         settings_store=settings_store,
     )
     job_runner = JobRunner(job_queue, extension_host.job_handlers)
-    job_drain_state = {"deferred": True}
-    job_drain_lock = threading.Lock()
-
-    def drain_jobs() -> None:
-        if job_drain_state["deferred"]:
-            return
-        with job_drain_lock:
-            while job_runner.run_once("plaik-core") is not None:
-                pass
-
-    extension_host.set_job_drain(drain_jobs)
+    job_pump = JobDrainPump(job_runner)
+    extension_host.set_job_drain(job_pump.drain)
     session_pepper_reference = SecretReference(
         provider="local",
         key="platform/session-pepper",
@@ -337,19 +327,19 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         host.set_secret_providers(application.state.secret_providers)
         records = package_registry.records()
         durable_events.defer_dispatch()
-        job_drain_state["deferred"] = True
+        job_pump.deferred = True
         try:
-            configuration = configuration_store.require()
-        except Exception:
-            host.drop_unenabled(records)
-            durable_events.enable_live_dispatch()
-            job_drain_state["deferred"] = False
-            drain_jobs()
-            return
-        host.sync_enabled(records, configuration)
-        durable_events.recover_subscribers()
-        job_drain_state["deferred"] = False
-        drain_jobs()
+            try:
+                configuration = configuration_store.require()
+            except Exception:
+                host.drop_unenabled(records)
+                durable_events.enable_live_dispatch()
+                return
+            host.sync_enabled(records, configuration)
+            durable_events.recover_subscribers()
+        finally:
+            job_pump.deferred = False
+            job_pump.drain()
 
     application.state.sync_extension_host = sync_extension_host
 
