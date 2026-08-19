@@ -494,8 +494,14 @@ class SqliteDurableEvents:
 class DelegatingDurableEvents:
     """Route persist/drain to the live backend without swapping host publication."""
 
-    def __init__(self, resolve: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        resolve: Callable[[], Any],
+        *,
+        fallback: Any | None = None,
+    ) -> None:
         self._resolve = resolve
+        self._fallback = fallback
 
     def persist(
         self,
@@ -547,10 +553,24 @@ class DelegatingDurableEvents:
         return self._resolve().drain(limit=limit)
 
     def defer_dispatch(self) -> None:
-        self._resolve().defer_dispatch()
+        live = self._resolve()
+        live.defer_dispatch()
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            fallback.defer_dispatch()
 
     def enable_live_dispatch(self) -> None:
-        self._resolve().enable_live_dispatch()
+        live = self._resolve()
+        live.enable_live_dispatch()
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            fallback.enable_live_dispatch()
 
     def recover_subscribers(self, *, limit: int = 100) -> int:
-        return self._resolve().recover_subscribers(limit=limit)
+        live = self._resolve()
+        fallback = self._fallback
+        delivered = 0
+        if fallback is not None and fallback is not live:
+            delivered += fallback.recover_subscribers(limit=limit)
+        delivered += live.recover_subscribers(limit=limit)
+        return delivered
