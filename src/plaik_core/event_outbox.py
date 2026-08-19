@@ -569,8 +569,14 @@ class DelegatingDurableEvents:
     def recover_subscribers(self, *, limit: int = 100) -> int:
         live = self._resolve()
         fallback = self._fallback
+        leftover_error: Exception | None = None
         delivered = 0
         if fallback is not None and fallback is not live:
-            delivered += fallback.recover_subscribers(limit=limit)
+            try:
+                delivered += fallback.recover_subscribers(limit=limit)
+            except Exception as error:
+                leftover_error = error
         delivered += live.recover_subscribers(limit=limit)
+        if leftover_error is not None:
+            raise leftover_error
         return delivered
