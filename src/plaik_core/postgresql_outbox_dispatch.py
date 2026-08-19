@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Protocol
 
 from .event_outbox import OutboxEnvelopeError
+from .extension_runtime import (
+    ContractCompatibilityError,
+    ContractOwnershipError,
+    EventBus,
+)
 from .postgresql_event_outbox import PostgreSQLEventOutbox, PostgreSQLOutboxEvent
 
 
@@ -16,6 +21,29 @@ class DurableEventSink(Protocol):
 
 class PermanentOutboxDeliveryError(RuntimeError):
     """Delivery cannot succeed without operator or contract intervention."""
+
+
+class EventBusSink:
+    """Compose PostgreSQL outbox delivery onto the in-process EventBus."""
+
+    def __init__(self, bus: EventBus) -> None:
+        self.bus = bus
+
+    def deliver(self, event: PostgreSQLOutboxEvent) -> None:
+        envelope = event.as_envelope()
+        try:
+            self.bus.publish(
+                owner=envelope.owner,
+                contract=envelope.contract,
+                version=envelope.version,
+                payload=envelope.payload,
+                idempotency_key=envelope.idempotency_key,
+                scope=envelope.scope,
+                resource=envelope.resource,
+                correlation_id=envelope.correlation_id,
+            )
+        except (ContractCompatibilityError, ContractOwnershipError) as error:
+            raise PermanentOutboxDeliveryError("event contract is not active") from error
 
 
 class PostgreSQLOutboxDispatcher:
