@@ -404,6 +404,9 @@ def _references_protected_schema(statement: str) -> str | None:
 
 
 _UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+_HEX_DIGIT = frozenset("0123456789abcdefABCDEF")
+_UESCAPE_TAIL = re.compile(r"\s+UESCAPE\s+'((?:''|[^'])*)'", re.IGNORECASE)
+_PACKAGE_FORBIDDEN_LEAD = frozenset({"DO", "CALL", "EXECUTE", "PREPARE"})
 
 
 def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
@@ -449,22 +452,60 @@ def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
         if end < 0:
             raise ValueError("migration statement contains an unterminated identifier")
         return end + 1
-    delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
-    if delimiter_match:
-        delimiter = delimiter_match.group(0)
-        end = statement.find(delimiter, index + len(delimiter))
-        if end < 0:
-            raise ValueError("migration statement contains an unterminated dollar quote")
-        return end + len(delimiter)
     return None
 
 
-def _postgresql_identifiers(statement: str) -> frozenset[str]:
-    """Unquoted and double-quoted SQL identifiers, uppercased.
+def _decode_unicode_escaped_text(body: str, *, escape: str) -> str:
+    if len(escape) != 1:
+        raise ValueError("invalid unicode identifier escape")
+    decoded: list[str] = []
+    index = 0
+    length = len(body)
+    while index < length:
+        if body[index] == escape:
+            if index + 1 < length and body[index + 1] == "+":
+                digits = body[index + 2 : index + 8]
+                if len(digits) == 6 and all(digit in _HEX_DIGIT for digit in digits):
+                    decoded.append(chr(int(digits, 16)))
+                    index += 8
+                    continue
+            else:
+                digits = body[index + 1 : index + 5]
+                if len(digits) == 4 and all(digit in _HEX_DIGIT for digit in digits):
+                    decoded.append(chr(int(digits, 16)))
+                    index += 5
+                    continue
+            raise ValueError("invalid unicode identifier escape")
+        decoded.append(body[index])
+        index += 1
+    return "".join(decoded)
 
-    String literals, comments, dollar quotes, and bracket/backtick forms are
-    skipped so a reserved relation cannot hide inside quotes-as-strings, but a
-    PostgreSQL ``"plaik_settings_registry"`` identifier is still visible.
+
+def _parse_double_quoted_identifier(statement: str, index: int) -> tuple[str, int]:
+    """Return the identifier text and index after the closing quote."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    while end < length:
+        if statement[end] == '"':
+            if end + 1 < length and statement[end + 1] == '"':
+                decoded.append('"')
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        decoded.append(statement[end])
+        end += 1
+    raise ValueError("migration statement contains an unterminated quote")
+
+
+def _postgresql_identifiers(statement: str) -> frozenset[str]:
+    """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
+
+    String literals, comments, and bracket/backtick forms are skipped. Dollar
+    quotes are scanned as nested SQL so ``DO`` / function bodies cannot hide a
+    reserved relation. PostgreSQL ``"name"`` and ``U&"na\\0072me"`` forms are
+    visible.
     """
 
     names: set[str] = set()
@@ -475,24 +516,39 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
         if skipped is not None:
             index = skipped
             continue
+        delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
+        if delimiter_match:
+            delimiter = delimiter_match.group(0)
+            start = index + len(delimiter)
+            end = statement.find(delimiter, start)
+            if end < 0:
+                raise ValueError("migration statement contains an unterminated dollar quote")
+            names.update(_postgresql_identifiers(statement[start:end]))
+            index = end + len(delimiter)
+            continue
+        if (
+            index + 2 < length
+            and statement[index] in {"U", "u"}
+            and statement[index + 1] == "&"
+            and statement[index + 2] == '"'
+        ):
+            body, index = _parse_double_quoted_identifier(statement, index + 2)
+            escape = "\\"
+            tail = _UESCAPE_TAIL.match(statement, index)
+            if tail is not None:
+                marker = tail.group(1).replace("''", "'")
+                if len(marker) != 1:
+                    raise ValueError("invalid unicode identifier escape")
+                escape = marker
+                index = tail.end()
+            ident = _decode_unicode_escaped_text(body, escape=escape)
+            if ident:
+                names.add(ident.upper())
+            continue
         if statement[index] == '"':
-            end = index + 1
-            decoded: list[str] = []
-            while end < length:
-                if statement[end] == '"':
-                    if end + 1 < length and statement[end + 1] == '"':
-                        decoded.append('"')
-                        end += 2
-                        continue
-                    ident = "".join(decoded)
-                    if ident:
-                        names.add(ident.upper())
-                    index = end + 1
-                    break
-                decoded.append(statement[end])
-                end += 1
-            else:
-                raise ValueError("migration statement contains an unterminated quote")
+            ident, index = _parse_double_quoted_identifier(statement, index)
+            if ident:
+                names.add(ident.upper())
             continue
         match = _UNQUOTED_IDENT.match(statement, index)
         if match:
@@ -516,23 +572,28 @@ def validate_package_postgresql_statement(
         raise MigrationError(
             f"PostgreSQL package migration must not reference {blocked}"
         )
-    reserved = _postgresql_identifiers(statement) & _PACKAGE_RESERVED_RELATIONS
-    if reserved:
-        raise MigrationError(
-            "PostgreSQL package migration must not reference "
-            + ",".join(sorted(name.lower() for name in reserved))
-        )
     executable = _erase_sql_literals_and_comments(statement).upper()
     if _PACKAGE_TRANSACTION_CONTROL.match(executable.lstrip()):
         raise MigrationError(
             "PostgreSQL package migration must not control transaction boundaries"
         )
-    tokens = set(re.findall(r"[A-Z_][A-Z0-9_$]*", executable))
+    lead = re.findall(r"[A-Z_][A-Z0-9_$]*", executable)
+    if lead and lead[0] in _PACKAGE_FORBIDDEN_LEAD:
+        raise MigrationError(
+            f"PostgreSQL package migration command is forbidden: {lead[0]}"
+        )
+    tokens = set(lead)
     forbidden = tokens & _PACKAGE_FORBIDDEN_TOKENS
     if forbidden:
         raise MigrationError(
             "PostgreSQL package migration command is forbidden: "
             + ",".join(sorted(forbidden))
+        )
+    reserved = _postgresql_identifiers(statement) & _PACKAGE_RESERVED_RELATIONS
+    if reserved:
+        raise MigrationError(
+            "PostgreSQL package migration must not reference "
+            + ",".join(sorted(name.lower() for name in reserved))
         )
     # Reject explicit references to protected schemas / other package schemas.
     protected = (META_SCHEMA.upper(), CORE_SCHEMA.upper(), "PUBLIC")
