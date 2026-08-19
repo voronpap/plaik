@@ -62,6 +62,7 @@ _PACKAGE_FORBIDDEN_TOKENS = frozenset(
         "SUPERUSER",
     }
 )
+_PACKAGE_RESERVED_RELATIONS = frozenset({"PLAIK_SETTINGS_REGISTRY"})
 _PACKAGE_TRANSACTION_CONTROL = re.compile(
     r"^(?:BEGIN\b|START\s+TRANSACTION\b|COMMIT\b|END\b|ROLLBACK\b|ABORT\b|"
     r"SAVEPOINT\b|RELEASE\s+(?:SAVEPOINT\s+)?|PREPARE\s+TRANSACTION\b)"
@@ -402,6 +403,346 @@ def _references_protected_schema(statement: str) -> str | None:
     return None
 
 
+_UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+_HEX_DIGIT = frozenset("0123456789abcdefABCDEF")
+_PACKAGE_FORBIDDEN_LEAD = frozenset({"DO", "CALL", "EXECUTE", "PREPARE"})
+_NESTED_SQL_STRING_KEYWORDS = frozenset({"AS", "EXECUTE", "PERFORM"})
+
+
+def _skip_sql_comment(statement: str, index: int) -> int | None:
+    """Return the index after a comment, else None."""
+
+    length = len(statement)
+    pair = statement[index : index + 2]
+    if pair == "--":
+        end = statement.find("\n", index + 2)
+        return length if end < 0 else end
+    if pair == "/*":
+        depth = 1
+        end = index + 2
+        while end < length and depth:
+            if statement[end : end + 2] == "/*":
+                depth += 1
+                end += 2
+            elif statement[end : end + 2] == "*/":
+                depth -= 1
+                end += 2
+            else:
+                end += 1
+        if depth:
+            raise ValueError("migration statement contains an unterminated comment")
+        return end
+    return None
+
+
+def _skip_sql_comments_and_space(statement: str, index: int) -> int:
+    length = len(statement)
+    while index < length:
+        if statement[index].isspace():
+            index += 1
+            continue
+        skipped = _skip_sql_comment(statement, index)
+        if skipped is None:
+            return index
+        index = skipped
+    return index
+
+
+def _skip_sql_non_sql_literal(statement: str, index: int) -> int | None:
+    """Skip backtick or bracket quoted forms that are not PostgreSQL SQL."""
+
+    if statement[index] == "`":
+        end = statement.find("`", index + 1)
+        if end < 0:
+            raise ValueError("migration statement contains an unterminated quote")
+        return end + 1
+    if statement[index] == "[":
+        end = statement.find("]", index + 1)
+        if end < 0:
+            raise ValueError("migration statement contains an unterminated identifier")
+        return end + 1
+    return None
+
+
+def _parse_single_quoted_string(statement: str, index: int) -> tuple[str, int]:
+    """Return the decoded string and index after the closing quote."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    while end < length:
+        if statement[end] == "'":
+            if end + 1 < length and statement[end + 1] == "'":
+                decoded.append("'")
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        decoded.append(statement[end])
+        end += 1
+    raise ValueError("migration statement contains an unterminated quote")
+
+
+
+def _consume_optional_uescape(statement: str, index: int) -> tuple[str, int] | None:
+    """Return (escape, index) if a UESCAPE clause follows, else None."""
+
+    after = _skip_sql_comments_and_space(statement, index)
+    keyword = _UNQUOTED_IDENT.match(statement, after)
+    if keyword is None or keyword.group(0).upper() != "UESCAPE":
+        return None
+    quote_at = _skip_sql_comments_and_space(statement, keyword.end())
+    if quote_at >= len(statement) or statement[quote_at] != "'":
+        return None
+    marker, end = _parse_single_quoted_string(statement, quote_at)
+    if len(marker) != 1:
+        raise ValueError("invalid unicode identifier escape")
+    return marker, end
+
+
+def _parse_e_string(statement: str, index: int) -> tuple[str, int]:
+    """Parse an E'...' literal, decoding PostgreSQL escape-string sequences."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    simple = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+    while end < length:
+        char = statement[end]
+        if char == "'":
+            if end + 1 < length and statement[end + 1] == "'":
+                decoded.append("'")
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        if char != "\\":
+            decoded.append(char)
+            end += 1
+            continue
+        if end + 1 >= length:
+            break
+        nxt = statement[end + 1]
+        if nxt in simple:
+            decoded.append(simple[nxt])
+            end += 2
+            continue
+        if nxt in {"x", "X"}:
+            hex_start = end + 2
+            hex_end = hex_start
+            while hex_end < length and hex_end < hex_start + 2 and statement[hex_end] in _HEX_DIGIT:
+                hex_end += 1
+            if hex_end == hex_start:
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(statement[hex_start:hex_end], 16)))
+            end = hex_end
+            continue
+        if nxt == "u":
+            digits = statement[end + 2 : end + 6]
+            if len(digits) != 4 or any(digit not in _HEX_DIGIT for digit in digits):
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(digits, 16)))
+            end += 6
+            continue
+        if nxt == "U":
+            digits = statement[end + 2 : end + 10]
+            if len(digits) != 8 or any(digit not in _HEX_DIGIT for digit in digits):
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(digits, 16)))
+            end += 10
+            continue
+        if nxt in "01234567":
+            oct_end = end + 1
+            while oct_end < length and oct_end < end + 4 and statement[oct_end] in "01234567":
+                oct_end += 1
+            decoded.append(chr(int(statement[end + 1 : oct_end], 8)))
+            end = oct_end
+            continue
+        decoded.append(nxt)
+        end += 2
+    raise ValueError("migration statement contains an unterminated quote")
+
+
+def _try_parse_sql_string_literal(statement: str, index: int) -> tuple[str, int] | None:
+    """Parse one SQL string literal at index, or return None."""
+
+    length = len(statement)
+    if index >= length:
+        return None
+    if (
+        index + 1 < length
+        and statement[index] in {"E", "e"}
+        and statement[index + 1] == "'"
+    ):
+        return _parse_e_string(statement, index + 1)
+    if (
+        index + 1 < length
+        and statement[index] in {"N", "n"}
+        and statement[index + 1] == "'"
+    ):
+        return _parse_single_quoted_string(statement, index + 1)
+    if (
+        index + 2 < length
+        and statement[index] in {"U", "u"}
+        and statement[index + 1] == "&"
+        and statement[index + 2] == "'"
+    ):
+        body, index = _parse_single_quoted_string(statement, index + 2)
+        escape = "\\"
+        taken = _consume_optional_uescape(statement, index)
+        if taken is not None:
+            escape, index = taken
+        return _decode_unicode_escaped_text(body, escape=escape), index
+    if statement[index] == "'":
+        return _parse_single_quoted_string(statement, index)
+    return None
+
+
+def _consume_concatenated_sql_strings(statement: str, index: int) -> tuple[str, int] | None:
+    """Parse PostgreSQL adjacent string literals starting at index."""
+
+    first = _try_parse_sql_string_literal(statement, index)
+    if first is None:
+        return None
+    body, index = first
+    while True:
+        after = _skip_sql_comments_and_space(statement, index)
+        nxt = _try_parse_sql_string_literal(statement, after)
+        if nxt is None:
+            return body, index
+        part, index = nxt
+        body += part
+
+
+def _decode_unicode_escaped_text(body: str, *, escape: str) -> str:
+    if len(escape) != 1:
+        raise ValueError("invalid unicode identifier escape")
+    decoded: list[str] = []
+    index = 0
+    length = len(body)
+    while index < length:
+        if body[index] == escape:
+            if index + 1 < length and body[index + 1] == "+":
+                digits = body[index + 2 : index + 8]
+                if len(digits) == 6 and all(digit in _HEX_DIGIT for digit in digits):
+                    decoded.append(chr(int(digits, 16)))
+                    index += 8
+                    continue
+            else:
+                digits = body[index + 1 : index + 5]
+                if len(digits) == 4 and all(digit in _HEX_DIGIT for digit in digits):
+                    decoded.append(chr(int(digits, 16)))
+                    index += 5
+                    continue
+            raise ValueError("invalid unicode identifier escape")
+        decoded.append(body[index])
+        index += 1
+    return "".join(decoded)
+
+
+def _parse_double_quoted_identifier(statement: str, index: int) -> tuple[str, int]:
+    """Return the identifier text and index after the closing quote."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    while end < length:
+        if statement[end] == '"':
+            if end + 1 < length and statement[end + 1] == '"':
+                decoded.append('"')
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        decoded.append(statement[end])
+        end += 1
+    raise ValueError("migration statement contains an unterminated quote")
+
+
+def _postgresql_identifiers(statement: str) -> frozenset[str]:
+    """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
+
+    String literals after ``AS``, ``EXECUTE``, or ``PERFORM`` are scanned as
+    nested SQL, including adjacent concatenated literals, ``N'...'``, and ``E'...'``
+    escape sequences. Other string literals, comments, and bracket/backtick
+    forms are skipped. Dollar quotes are scanned as nested SQL.
+    Unicode-escaped identifiers accept comments between the quotes and
+    ``UESCAPE``.
+    """
+
+    names: set[str] = set()
+    index = 0
+    length = len(statement)
+    last_keyword: str | None = None
+    while index < length:
+        if statement[index].isspace():
+            index += 1
+            continue
+        skipped = _skip_sql_comment(statement, index)
+        if skipped is not None:
+            index = skipped
+            continue
+        skipped = _skip_sql_non_sql_literal(statement, index)
+        if skipped is not None:
+            last_keyword = None
+            index = skipped
+            continue
+        delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
+        if delimiter_match:
+            delimiter = delimiter_match.group(0)
+            start = index + len(delimiter)
+            end = statement.find(delimiter, start)
+            if end < 0:
+                raise ValueError("migration statement contains an unterminated dollar quote")
+            names.update(_postgresql_identifiers(statement[start:end]))
+            index = end + len(delimiter)
+            last_keyword = None
+            continue
+        if last_keyword in _NESTED_SQL_STRING_KEYWORDS:
+            if statement[index] == "(":
+                index += 1
+                continue
+            concatenated = _consume_concatenated_sql_strings(statement, index)
+            if concatenated is not None:
+                body, index = concatenated
+                names.update(_postgresql_identifiers(body))
+                last_keyword = None
+                continue
+        if (
+            index + 2 < length
+            and statement[index] in {"U", "u"}
+            and statement[index + 1] == "&"
+            and statement[index + 2] == '"'
+        ):
+            body, index = _parse_double_quoted_identifier(statement, index + 2)
+            escape = "\\"
+            taken = _consume_optional_uescape(statement, index)
+            if taken is not None:
+                escape, index = taken
+            ident = _decode_unicode_escaped_text(body, escape=escape)
+            if ident:
+                names.add(ident.upper())
+            last_keyword = None
+            continue
+        if statement[index] == '"':
+            ident, index = _parse_double_quoted_identifier(statement, index)
+            if ident:
+                names.add(ident.upper())
+            last_keyword = None
+            continue
+        skipped_string = _try_parse_sql_string_literal(statement, index)
+        if skipped_string is not None:
+            _, index = skipped_string
+            last_keyword = None
+            continue
+        match = _UNQUOTED_IDENT.match(statement, index)
+        if match:
+            last_keyword = match.group(0).upper()
+            names.add(last_keyword)
+            index = match.end()
+            continue
+        last_keyword = None
+        index += 1
+    return frozenset(names)
+
+
 def validate_package_postgresql_statement(
     statement: str,
     *,
@@ -420,12 +761,23 @@ def validate_package_postgresql_statement(
         raise MigrationError(
             "PostgreSQL package migration must not control transaction boundaries"
         )
-    tokens = set(re.findall(r"[A-Z_][A-Z0-9_$]*", executable))
+    lead = re.findall(r"[A-Z_][A-Z0-9_$]*", executable)
+    if lead and lead[0] in _PACKAGE_FORBIDDEN_LEAD:
+        raise MigrationError(
+            f"PostgreSQL package migration command is forbidden: {lead[0]}"
+        )
+    tokens = set(lead)
     forbidden = tokens & _PACKAGE_FORBIDDEN_TOKENS
     if forbidden:
         raise MigrationError(
             "PostgreSQL package migration command is forbidden: "
             + ",".join(sorted(forbidden))
+        )
+    reserved = _postgresql_identifiers(statement) & _PACKAGE_RESERVED_RELATIONS
+    if reserved:
+        raise MigrationError(
+            "PostgreSQL package migration must not reference "
+            + ",".join(sorted(name.lower() for name in reserved))
         )
     # Reject explicit references to protected schemas / other package schemas.
     protected = (META_SCHEMA.upper(), CORE_SCHEMA.upper(), "PUBLIC")
