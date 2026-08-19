@@ -56,7 +56,9 @@ from .packages import PackageRegistry, PackageStatus
 from .postgresql import PostgreSQLAdapter, PostgreSQLAdapterError
 from .postgresql_security import (
     DelegatingStore,
+    PostgreSQLAuditLog,
     PostgreSQLIdentityStore,
+    PostgreSQLOperationJournal,
     PostgreSQLSessionStore,
 )
 from .requirements import RequirementsNotMet, SystemRequirements
@@ -372,11 +374,13 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             operation_integrity_key = providers.resolve(operation_key_reference)
 
         configured = None
-        use_postgresql_sessions = postgresql_security_backend_ready()
-        if use_postgresql_sessions:
+        use_postgresql_security = postgresql_security_backend_ready()
+        if use_postgresql_security:
             configured = configuration_store.require()
 
-        if use_postgresql_sessions and configured is not None:
+        audit_key = audit_integrity_key.get_secret_value().encode("utf-8")
+        operation_key = operation_integrity_key.get_secret_value().encode("utf-8")
+        if use_postgresql_security and configured is not None:
             adapter = postgresql_adapter(configured)
             connect = adapter.runtime_connect
             sessions = PostgreSQLSessionStore(
@@ -384,28 +388,34 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                 token_pepper=session_pepper.get_secret_value().encode("utf-8"),
                 identity_store=identity_store,
             )
+            audit = PostgreSQLAuditLog(connect, integrity_key=audit_key)
+            operations = PostgreSQLOperationJournal(
+                connect,
+                integrity_key=operation_key,
+            )
+            audit.adopt_legacy_file_if_empty(runtime.audit_log_path)
+            operations.adopt_legacy_file_if_empty(runtime.operation_journal_path)
         else:
             sessions = SessionStore(
                 runtime.sessions_registry_path,
                 token_pepper=session_pepper.get_secret_value().encode("utf-8"),
                 identity_store=identity_store,
             )
-        audit = AuditLog(
-            runtime.audit_log_path,
-            integrity_key=audit_integrity_key.get_secret_value().encode("utf-8"),
-        )
-        operations = OperationJournal(
-            runtime.operation_journal_path,
-            integrity_key=operation_integrity_key.get_secret_value().encode("utf-8"),
-        )
+            audit = AuditLog(
+                runtime.audit_log_path,
+                integrity_key=audit_key,
+            )
+            operations = OperationJournal(
+                runtime.operation_journal_path,
+                integrity_key=operation_key,
+            )
         application.state.secret_providers = providers
         application.state.session_store = sessions
         application.state.audit_log = audit
         application.state.operation_journal = operations
-        if json_settings_store.audit_sink is None:
-            json_settings_store.audit_sink = settings_events_to_audit_sink(
-                audit.append
-            )
+        json_settings_store.audit_sink = settings_events_to_audit_sink(
+            audit.append
+        )
         sync_extension_host()
         return sessions, audit, operations
 
@@ -1362,12 +1372,6 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     )
 
                 state = install_store.advance(request.target)
-                if state == InstallState.DATABASE_READY:
-                    ready_configuration = configuration_store.read()
-                    if ready_configuration is not None and isinstance(
-                        ready_configuration.database, PostgreSQLDatabase
-                    ):
-                        application.state.session_store = None
                 if state == InstallState.COMPLETED:
                     configuration_store.seal(install_store)
                 append_audit_once(
@@ -1378,6 +1382,15 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                     target_id=state.value,
                 )
                 operations.succeed(identifier)
+                if state == InstallState.DATABASE_READY:
+                    ready_configuration = configuration_store.read()
+                    if ready_configuration is not None and isinstance(
+                        ready_configuration.database, PostgreSQLDatabase
+                    ):
+                        application.state.session_store = None
+                        application.state.audit_log = None
+                        application.state.operation_journal = None
+                        application.state.http_auth = None
             except HTTPException as error:
                 append_audit_once(
                     audit,
