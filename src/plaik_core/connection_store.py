@@ -28,7 +28,8 @@ class ConnectionStore:
     lock and is a fresh grant, not a stale retry.
     """
 
-    REGISTRY_VERSION = 1
+    REGISTRY_VERSION = 2
+    LEGACY_REGISTRY_VERSION = 1
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -115,12 +116,16 @@ class ConnectionStore:
         )
         if not isinstance(data, dict):
             raise ConnectionStoreError("invalid connection registry")
-        if data.get("version") != self.REGISTRY_VERSION:
+        version = data.get("version")
+        if version not in {self.LEGACY_REGISTRY_VERSION, self.REGISTRY_VERSION}:
             raise ConnectionStoreError("unsupported connection registry version")
         connections = data.get("connections")
         if not isinstance(connections, dict):
             raise ConnectionStoreError("invalid connection registry")
-        generations = data.get("owner_generations", {})
+        if version == self.LEGACY_REGISTRY_VERSION:
+            generations = data.get("owner_generations", {})
+        else:
+            generations = data.get("owner_generations")
         if not isinstance(generations, dict):
             raise ConnectionStoreError("invalid connection registry")
         canonical_generations: dict[str, int] = {}
