@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -36,6 +37,8 @@ class HookRegistry:
             raise ValueError(f"invalid hook names: {invalid}")
         self.allowed_hooks = frozenset(allowed_hooks)
         self._bindings: set[HookBinding] = set()
+        self._inactive_owners: set[str] = set()
+        self._lock = threading.RLock()
 
     def register(self, binding: HookBinding) -> None:
         if binding.hook not in self.allowed_hooks:
@@ -47,15 +50,43 @@ class HookRegistry:
         _validate_path_segment(binding.module_id, error="invalid module id")
         if not _is_safe_relative_path(binding.template):
             raise ValueError("invalid template")
-        self._bindings.add(binding)
+        with self._lock:
+            self._bindings.add(binding)
 
     def bindings(self, hook: str) -> list[HookBinding]:
         if hook not in self.allowed_hooks:
             raise ValueError(f"unknown hook: {hook}")
-        return sorted(
-            (binding for binding in self._bindings if binding.hook == hook),
-            key=lambda binding: (binding.position, binding.module_id, binding.template),
-        )
+        with self._lock:
+            return sorted(
+                (
+                    binding
+                    for binding in self._bindings
+                    if binding.hook == hook
+                    and binding.module_id not in self._inactive_owners
+                ),
+                key=lambda binding: (binding.position, binding.module_id, binding.template),
+            )
+
+    def deactivate_owner(self, owner: str) -> int:
+        return self._set_owner_active(owner, False)
+
+    def activate_owner(self, owner: str) -> int:
+        return self._set_owner_active(owner, True)
+
+    def _set_owner_active(self, owner: str, active: bool) -> int:
+        if not isinstance(owner, str) or not MODULE_PATTERN.fullmatch(owner):
+            raise ValueError("invalid module id")
+        _validate_path_segment(owner, error="invalid module id")
+        with self._lock:
+            matching = sum(1 for binding in self._bindings if binding.module_id == owner)
+            currently_active = owner not in self._inactive_owners
+            if currently_active == active:
+                return 0
+            if active:
+                self._inactive_owners.discard(owner)
+            else:
+                self._inactive_owners.add(owner)
+            return matching
 
 
 def _is_safe_relative_path(value: str) -> bool:

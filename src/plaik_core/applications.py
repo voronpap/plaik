@@ -46,7 +46,7 @@ from .packages import PackageStatus
 from .signing_keys import SigningKeyStoreError
 from .storage import exclusive_file_lock
 from .web import WebRenderError, WebRenderer
-from .web_extensions import project_enabled_hooks, project_enabled_slots
+from .web_extensions import LiveWebProjection
 from .theme_operations import ThemeActivationCoordinator, ThemeOperationError
 from .themes import TemplateResolver
 
@@ -1056,20 +1056,17 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
     for theme in discovered.values():
         allowed_hooks.update(theme.hooks)
         allowed_slots.update(theme.slots)
-    records = core.state.package_registry.records()
+    projection = LiveWebProjection(
+        records=core.state.package_registry.records,
+        installed_packages_dir=runtime.installed_packages_dir,
+        allowed_hooks=allowed_hooks,
+        allowed_slots=allowed_slots,
+    )
     renderer = WebRenderer(
         theme_manager=manager,
         theme_registry=registry,
-        hook_registry=project_enabled_hooks(
-            records,
-            runtime.installed_packages_dir,
-            allowed_hooks=allowed_hooks,
-        ),
-        slot_registry=project_enabled_slots(
-            records,
-            runtime.installed_packages_dir,
-            allowed_slots=allowed_slots,
-        ),
+        hook_registry=projection.hook_registry,
+        slot_registry=projection.slot_registry,
         system_fallback_root=runtime.system_fallback_dir,
         template_resolver=TemplateResolver(
             registry,
@@ -1077,6 +1074,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
             (runtime.installed_packages_dir,),
         ),
         revision_store=core.state.theme_revision_store,
+        projection=projection,
     )
     application = FastAPI(
         title="PLAIK Web",
@@ -1086,7 +1084,7 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
         openapi_url=None,
     )
     _safe_validation(application)
-    application.state.public_projection_version = 1
+    application.state.public_projection_version = projection.version
 
     def require_web_ready() -> dict:
         if core.state.install_store.read() != InstallState.COMPLETED:
@@ -1143,6 +1141,8 @@ def create_web_app(settings: CoreSettings | None = None) -> FastAPI:
                 status_code=503,
                 detail="web rendering is unavailable",
             ) from None
+        finally:
+            application.state.public_projection_version = projection.version
         return HTMLResponse(
             rendered.html,
             headers={
