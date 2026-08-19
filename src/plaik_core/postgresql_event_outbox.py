@@ -86,8 +86,8 @@ class PostgreSQLEventOutbox:
                 correlation_id=correlation_id,
                 created_at=created_at,
             )
-        except (ValidationError, TypeError, ValueError) as error:
-            raise OutboxEnvelopeError("outbox envelope is invalid") from error
+        except (ValidationError, TypeError, ValueError):
+            raise OutboxEnvelopeError("outbox envelope is invalid") from None
         persisted_scope = dump_scope(envelope.scope)
         persisted_resource = dump_resource(envelope.resource)
         payload_json = json.dumps(
