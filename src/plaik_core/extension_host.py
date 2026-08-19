@@ -428,18 +428,19 @@ class ExtensionHost:
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
-                    committed = False
                     try:
                         runtime = self._build_runtime(
                             records[package_id], scope, configuration.locale
                         )
                         if package_id not in self._registered:
                             self._try_register(package_id, runtime)
-                            self._registered.add(package_id)
                         self._runtimes[package_id] = runtime
-                        committed = True
+                        self._registered.add(package_id)
                     finally:
-                        if not committed:
+                        if (
+                            runtime is not None
+                            and self._runtimes.get(package_id) is not runtime
+                        ):
                             self._unbind_health(package_id)
                 bound.append(runtime)
         return tuple(bound)
