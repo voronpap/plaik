@@ -563,6 +563,29 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             last_keyword = None
             continue
         if (
+            last_keyword == "AS"
+            and index + 2 < length
+            and statement[index] in {"U", "u"}
+            and statement[index + 1] == "&"
+            and statement[index + 2] == "'"
+        ):
+            body, index = _parse_single_quoted_string(statement, index + 2)
+            escape = "\\"
+            after = _skip_sql_comments_and_space(statement, index)
+            keyword = _UNQUOTED_IDENT.match(statement, after)
+            if keyword is not None and keyword.group(0).upper() == "UESCAPE":
+                quote_at = _skip_sql_comments_and_space(statement, keyword.end())
+                if quote_at < length and statement[quote_at] == "'":
+                    marker, index = _parse_single_quoted_string(statement, quote_at)
+                    if len(marker) != 1:
+                        raise ValueError("invalid unicode identifier escape")
+                    escape = marker
+            names.update(
+                _postgresql_identifiers(_decode_unicode_escaped_text(body, escape=escape))
+            )
+            last_keyword = None
+            continue
+        if (
             index + 2 < length
             and statement[index] in {"U", "u"}
             and statement[index + 1] == "&"
