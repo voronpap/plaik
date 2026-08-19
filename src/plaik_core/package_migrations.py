@@ -481,6 +481,130 @@ def _parse_single_quoted_string(statement: str, index: int) -> tuple[str, int]:
     raise ValueError("migration statement contains an unterminated quote")
 
 
+
+def _consume_optional_uescape(statement: str, index: int) -> tuple[str, int] | None:
+    """Return (escape, index) if a UESCAPE clause follows, else None."""
+
+    after = _skip_sql_comments_and_space(statement, index)
+    keyword = _UNQUOTED_IDENT.match(statement, after)
+    if keyword is None or keyword.group(0).upper() != "UESCAPE":
+        return None
+    quote_at = _skip_sql_comments_and_space(statement, keyword.end())
+    if quote_at >= len(statement) or statement[quote_at] != "'":
+        return None
+    marker, end = _parse_single_quoted_string(statement, quote_at)
+    if len(marker) != 1:
+        raise ValueError("invalid unicode identifier escape")
+    return marker, end
+
+
+def _parse_e_string(statement: str, index: int) -> tuple[str, int]:
+    """Parse an E'...' literal, decoding PostgreSQL escape-string sequences."""
+
+    end = index + 1
+    decoded: list[str] = []
+    length = len(statement)
+    simple = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+    while end < length:
+        char = statement[end]
+        if char == "'":
+            if end + 1 < length and statement[end + 1] == "'":
+                decoded.append("'")
+                end += 2
+                continue
+            return "".join(decoded), end + 1
+        if char != "\\":
+            decoded.append(char)
+            end += 1
+            continue
+        if end + 1 >= length:
+            break
+        nxt = statement[end + 1]
+        if nxt in simple:
+            decoded.append(simple[nxt])
+            end += 2
+            continue
+        if nxt in {"x", "X"}:
+            hex_start = end + 2
+            hex_end = hex_start
+            while hex_end < length and hex_end < hex_start + 2 and statement[hex_end] in _HEX_DIGIT:
+                hex_end += 1
+            if hex_end == hex_start:
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(statement[hex_start:hex_end], 16)))
+            end = hex_end
+            continue
+        if nxt == "u":
+            digits = statement[end + 2 : end + 6]
+            if len(digits) != 4 or any(digit not in _HEX_DIGIT for digit in digits):
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(digits, 16)))
+            end += 6
+            continue
+        if nxt == "U":
+            digits = statement[end + 2 : end + 10]
+            if len(digits) != 8 or any(digit not in _HEX_DIGIT for digit in digits):
+                raise ValueError("invalid unicode identifier escape")
+            decoded.append(chr(int(digits, 16)))
+            end += 10
+            continue
+        if nxt in "01234567":
+            oct_end = end + 1
+            while oct_end < length and oct_end < end + 4 and statement[oct_end] in "01234567":
+                oct_end += 1
+            decoded.append(chr(int(statement[end + 1 : oct_end], 8)))
+            end = oct_end
+            continue
+        decoded.append(nxt)
+        end += 2
+    raise ValueError("migration statement contains an unterminated quote")
+
+
+def _try_parse_sql_string_literal(statement: str, index: int) -> tuple[str, int] | None:
+    """Parse one SQL string literal at index, or return None."""
+
+    length = len(statement)
+    if index >= length:
+        return None
+    if (
+        index + 1 < length
+        and statement[index] in {"E", "e"}
+        and statement[index + 1] == "'"
+    ):
+        return _parse_e_string(statement, index + 1)
+    if (
+        index + 2 < length
+        and statement[index] in {"U", "u"}
+        and statement[index + 1] == "&"
+        and statement[index + 2] == "'"
+    ):
+        body, index = _parse_single_quoted_string(statement, index + 2)
+        escape = "\\"
+        taken = _consume_optional_uescape(statement, index)
+        if taken is not None:
+            escape, index = taken
+        return _decode_unicode_escaped_text(body, escape=escape), index
+    if statement[index] == "'":
+        return _parse_single_quoted_string(statement, index)
+    return None
+
+
+def _consume_concatenated_sql_strings(statement: str, index: int) -> tuple[str, int] | None:
+    """Parse PostgreSQL adjacent string literals starting at index."""
+
+    first = _try_parse_sql_string_literal(statement, index)
+    if first is None:
+        return None
+    body, index = first
+    while True:
+        after = _skip_sql_comments_and_space(statement, index)
+        nxt = _try_parse_sql_string_literal(statement, after)
+        if nxt is None:
+            return body, index
+        part, index = nxt
+        body += part
+
+
 def _decode_unicode_escaped_text(body: str, *, escape: str) -> str:
     if len(escape) != 1:
         raise ValueError("invalid unicode identifier escape")
@@ -529,9 +653,11 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
     """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
 
     String literals after ``AS`` (function/procedure bodies) are scanned as
-    nested SQL. Other string literals, comments, and bracket/backtick forms
-    are skipped. Dollar quotes are scanned as nested SQL. Unicode-escaped
-    identifiers accept comments between the quotes and ``UESCAPE``.
+    nested SQL, including adjacent concatenated literals and ``E'...'``
+    escape sequences. Other string literals, comments, and bracket/backtick
+    forms are skipped. Dollar quotes are scanned as nested SQL.
+    Unicode-escaped identifiers accept comments between the quotes and
+    ``UESCAPE``.
     """
 
     names: set[str] = set()
@@ -562,29 +688,13 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             index = end + len(delimiter)
             last_keyword = None
             continue
-        if (
-            last_keyword == "AS"
-            and index + 2 < length
-            and statement[index] in {"U", "u"}
-            and statement[index + 1] == "&"
-            and statement[index + 2] == "'"
-        ):
-            body, index = _parse_single_quoted_string(statement, index + 2)
-            escape = "\\"
-            after = _skip_sql_comments_and_space(statement, index)
-            keyword = _UNQUOTED_IDENT.match(statement, after)
-            if keyword is not None and keyword.group(0).upper() == "UESCAPE":
-                quote_at = _skip_sql_comments_and_space(statement, keyword.end())
-                if quote_at < length and statement[quote_at] == "'":
-                    marker, index = _parse_single_quoted_string(statement, quote_at)
-                    if len(marker) != 1:
-                        raise ValueError("invalid unicode identifier escape")
-                    escape = marker
-            names.update(
-                _postgresql_identifiers(_decode_unicode_escaped_text(body, escape=escape))
-            )
-            last_keyword = None
-            continue
+        if last_keyword == "AS":
+            concatenated = _consume_concatenated_sql_strings(statement, index)
+            if concatenated is not None:
+                body, index = concatenated
+                names.update(_postgresql_identifiers(body))
+                last_keyword = None
+                continue
         if (
             index + 2 < length
             and statement[index] in {"U", "u"}
@@ -593,15 +703,9 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
         ):
             body, index = _parse_double_quoted_identifier(statement, index + 2)
             escape = "\\"
-            after = _skip_sql_comments_and_space(statement, index)
-            keyword = _UNQUOTED_IDENT.match(statement, after)
-            if keyword is not None and keyword.group(0).upper() == "UESCAPE":
-                quote_at = _skip_sql_comments_and_space(statement, keyword.end())
-                if quote_at < length and statement[quote_at] == "'":
-                    marker, index = _parse_single_quoted_string(statement, quote_at)
-                    if len(marker) != 1:
-                        raise ValueError("invalid unicode identifier escape")
-                    escape = marker
+            taken = _consume_optional_uescape(statement, index)
+            if taken is not None:
+                escape, index = taken
             ident = _decode_unicode_escaped_text(body, escape=escape)
             if ident:
                 names.add(ident.upper())
@@ -613,20 +717,9 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
                 names.add(ident.upper())
             last_keyword = None
             continue
-        if (
-            last_keyword == "AS"
-            and statement[index] in {"E", "e"}
-            and index + 1 < length
-            and statement[index + 1] == "'"
-        ):
-            body, index = _parse_single_quoted_string(statement, index + 1)
-            names.update(_postgresql_identifiers(body))
-            last_keyword = None
-            continue
-        if statement[index] == "'":
-            body, index = _parse_single_quoted_string(statement, index)
-            if last_keyword == "AS":
-                names.update(_postgresql_identifiers(body))
+        skipped_string = _try_parse_sql_string_literal(statement, index)
+        if skipped_string is not None:
+            _, index = skipped_string
             last_keyword = None
             continue
         match = _UNQUOTED_IDENT.match(statement, index)
