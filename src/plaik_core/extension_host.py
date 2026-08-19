@@ -454,9 +454,14 @@ class ExtensionHost:
             if record.status == PackageStatus.ENABLED
             and record.manifest.type.value in {"module", "integration"}
         }
-        for package_id in tuple(self._runtimes):
-            if package_id not in enabled_ids:
-                del self._runtimes[package_id]
+        dropping = [
+            package_id
+            for package_id in tuple(self._runtimes)
+            if package_id not in enabled_ids
+        ]
+        for package_id in dropping:
+            self._unbind_health(package_id)
+            del self._runtimes[package_id]
         for package_id in tuple(self._runtime_generations):
             if package_id not in enabled_ids or package_id not in self._runtimes:
                 self._unbind_health(package_id)
