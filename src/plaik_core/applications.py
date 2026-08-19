@@ -546,7 +546,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 "sources": dict(resolved.sources),
             }
 
-        def settings_http_error(error: SettingsStoreError) -> HTTPException:
+        def settings_http_error(
+            error: SettingsStoreError, *, mutating: bool
+        ) -> HTTPException:
             message = str(error)
             if message.startswith("unknown settings namespace"):
                 return HTTPException(
@@ -556,7 +558,11 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 )
             return HTTPException(
                 status_code=409,
-                detail="settings mutation failed",
+                detail=(
+                    "settings mutation failed"
+                    if mutating
+                    else "settings could not be read"
+                ),
                 headers={"Cache-Control": "no-store"},
             )
 
@@ -755,7 +761,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
             try:
                 resolved = store.resolve(context, namespace)
             except SettingsStoreError as error:
-                raise settings_http_error(error) from None
+                raise settings_http_error(error, mutating=False) from None
             return settings_resolution_payload(namespace, resolved)
 
         @application.put("/api/admin/settings")
@@ -774,7 +780,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=principal.user_id,
                 )
             except SettingsStoreError as error:
-                raise settings_http_error(error) from None
+                raise settings_http_error(error, mutating=True) from None
             core.state.anchor_journals()
             return settings_resolution_payload(payload.namespace, resolved)
 
@@ -795,7 +801,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     actor_id=principal.user_id,
                 )
             except SettingsStoreError as error:
-                raise settings_http_error(error) from None
+                raise settings_http_error(error, mutating=True) from None
             core.state.anchor_journals()
             return settings_resolution_payload(payload.namespace, resolved)
 

@@ -119,6 +119,7 @@ class SettingsStore:
     ) -> SettingsResolution:
         """Set only the supplied fields as overrides at the exact context."""
 
+        actor_id = _optional_settings_actor_id(actor_id)
         schema = self._schema(namespace)
         supplied = self._supplied_values(values)
         if not supplied:
@@ -174,6 +175,7 @@ class SettingsStore:
     ) -> SettingsResolution:
         """Remove exact-scope overrides so values inherit from the parent/default."""
 
+        actor_id = _optional_settings_actor_id(actor_id)
         schema = self._schema(namespace)
         with self._registry_transaction() as registry:
             scopes = registry["scopes"]
