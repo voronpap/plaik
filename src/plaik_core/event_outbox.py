@@ -245,7 +245,8 @@ class SQLiteEventOutbox:
 
     def _event_from_row(self, row: tuple[Any, ...]) -> OutboxEvent | None:
         try:
-            payload = json.loads(row[4])
+            payload = json.loads(row[4], parse_constant=_reject_json_constant)
+            json.dumps(payload, allow_nan=False, separators=(",", ":"))
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
         if not isinstance(payload, dict):
@@ -262,6 +263,10 @@ class SQLiteEventOutbox:
             resource_json=row[8],
             correlation_id=row[9],
         )
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"nonstandard JSON constant: {value}")
 
 
 class EventOutboxDispatcher:
