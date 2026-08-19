@@ -14,6 +14,7 @@ from markupsafe import Markup
 from pydantic import BaseModel, ConfigDict
 
 from .hooks import HookRegistry
+from .packages import PackageLifecycleError
 from .slots import SlotRegistry
 from .themes import TemplateResolver, ThemeManager, ThemeRegistry
 from .web_extensions import LiveWebProjection, WebExtensionError
@@ -199,15 +200,18 @@ class WebRenderer:
             enable_async=False,
         )
 
-    def _sync_web_projection(self) -> None:
+    def _sync_web_projection(self) -> tuple[HookRegistry, SlotRegistry]:
         if self._projection is None:
-            return
+            return self.hook_registry, self.slot_registry
         try:
-            self._projection.refresh()
+            hooks, slots, _version = self._projection.capture()
         except WebExtensionError as error:
             raise WebRenderError(str(error)) from error
-        self.hook_registry = self._projection.hook_registry
-        self.slot_registry = self._projection.slot_registry
+        except (OSError, PackageLifecycleError):
+            raise WebRenderError("web package projection is unavailable") from None
+        self.hook_registry = hooks
+        self.slot_registry = slots
+        return hooks, slots
 
     def render(
         self,
@@ -218,7 +222,7 @@ class WebRenderer:
         layout: str = "full-width",
         context: dict[str, Any] | None = None,
     ) -> RenderedWeb:
-        self._sync_web_projection()
+        hook_registry, slot_registry = self._sync_web_projection()
         safe_layout = _safe_layout(layout)
         extra_context = copy.deepcopy(dict(context or {}))
         overlap = sorted(self.RESERVED_CONTEXT & set(extra_context))
@@ -248,7 +252,7 @@ class WebRenderer:
 
         def render_hook(name: str) -> Markup:
             fragments: list[str] = []
-            for binding in self.hook_registry.bindings(name):
+            for binding in hook_registry.bindings(name):
                 template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
@@ -282,7 +286,7 @@ class WebRenderer:
             if name not in declared_slots:
                 raise WebRenderError("unknown slot")
             fragments: list[str] = []
-            for binding in self.slot_registry.bindings(name):
+            for binding in slot_registry.bindings(name):
                 template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
@@ -372,7 +376,7 @@ class WebRenderer:
         from .theme_composition import PageTemplateResolver, ThemeCompositionError
         from .theme_revisions import ThemeRevisionError
 
-        self._sync_web_projection()
+        hook_registry, slot_registry = self._sync_web_projection()
         safe_layout = _safe_layout(layout)
         extra_context = copy.deepcopy(dict(context or {}))
         reserved = self.RESERVED_CONTEXT | {"settings", "blocks", "composition"}
@@ -414,7 +418,7 @@ class WebRenderer:
             raise WebRenderError("revision theme version does not match")
         try:
             resolved = PageTemplateResolver(
-                self.theme_registry, self.slot_registry
+                self.theme_registry, slot_registry
             ).resolve(
                 active.id,
                 page_type,
@@ -437,7 +441,7 @@ class WebRenderer:
 
         def render_hook(name: str) -> Markup:
             fragments: list[str] = []
-            for binding in self.hook_registry.bindings(name):
+            for binding in hook_registry.bindings(name):
                 template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,
@@ -465,7 +469,7 @@ class WebRenderer:
             if name not in declared_slots:
                 raise WebRenderError("unknown slot")
             fragments: list[str] = []
-            for binding in self.slot_registry.bindings(name):
+            for binding in slot_registry.bindings(name):
                 template_ref = self.template_resolver.resolve_module_template(
                     theme_id=active.id,
                     module_id=binding.module_id,

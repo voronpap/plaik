@@ -173,27 +173,29 @@ class LiveWebProjection:
     def slot_registry(self) -> SlotRegistry:
         return self._slots
 
-    def refresh(self) -> int:
+    def capture(self) -> tuple[HookRegistry, SlotRegistry, int]:
         with self._lock:
             records = self._records()
             fingerprint = web_projection_fingerprint(records)
-            if fingerprint == self._fingerprint:
-                return self.version
-            hooks = project_enabled_hooks(
-                records,
-                self._installed_packages_dir,
-                allowed_hooks=self._allowed_hooks,
-            )
-            slots = project_enabled_slots(
-                records,
-                self._installed_packages_dir,
-                allowed_slots=self._allowed_slots,
-            )
-            self._hooks = hooks
-            self._slots = slots
-            self._fingerprint = fingerprint
-            self.version += 1
-            return self.version
+            if fingerprint != self._fingerprint:
+                hooks = project_enabled_hooks(
+                    records,
+                    self._installed_packages_dir,
+                    allowed_hooks=self._allowed_hooks,
+                )
+                slots = project_enabled_slots(
+                    records,
+                    self._installed_packages_dir,
+                    allowed_slots=self._allowed_slots,
+                )
+                self._hooks = hooks
+                self._slots = slots
+                self._fingerprint = fingerprint
+                self.version += 1
+            return self._hooks, self._slots, self.version
+
+    def refresh(self) -> int:
+        return self.capture()[2]
 
 
 def _require_regular_template(root: Path, relative: str) -> Path:
