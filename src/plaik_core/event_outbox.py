@@ -338,16 +338,22 @@ class SqliteDurableEvents:
         self.outbox = SQLiteEventOutbox()
         self.dispatcher = EventOutboxDispatcher(self.outbox, bus)
         self._lock = threading.RLock()
+        self._idle = threading.Condition(self._lock)
         self._dispatch_after_enqueue = dispatch_after_enqueue
         self._dispatching = False
+        self._dispatch_thread: int | None = None
 
     def defer_dispatch(self) -> None:
         """Hold rows until subscribers from the current host sync exist."""
 
-        self._dispatch_after_enqueue = False
+        with self._idle:
+            self._dispatch_after_enqueue = False
+            while self._dispatching and self._dispatch_thread != threading.get_ident():
+                self._idle.wait()
 
     def enable_live_dispatch(self) -> None:
-        self._dispatch_after_enqueue = True
+        with self._idle:
+            self._dispatch_after_enqueue = True
 
     def publish(
         self,
@@ -361,7 +367,7 @@ class SqliteDurableEvents:
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> int:
-        with self._lock:
+        with self._idle:
             connection = self._open()
             try:
                 self.outbox.enqueue(
@@ -378,38 +384,48 @@ class SqliteDurableEvents:
                 connection.commit()
             finally:
                 connection.close()
-        if not self._dispatch_after_enqueue:
+            should_drain = self._dispatch_after_enqueue
+        if not should_drain:
             return 0
         return self.drain()
 
     def drain(self, *, limit: int = 100) -> int:
         """Deliver pending rows after crash between commit and ack."""
 
-        with self._lock:
-            if self._dispatching:
+        me = threading.get_ident()
+        with self._idle:
+            if self._dispatching and self._dispatch_thread == me:
                 return 0
+            while self._dispatching:
+                self._idle.wait()
             self._dispatching = True
-            try:
-                delivered = 0
-                remaining = limit
-                while remaining > 0:
-                    connection = self._open()
-                    try:
-                        batch = self.dispatcher.dispatch(connection, limit=remaining)
-                    finally:
-                        connection.close()
-                    if batch == 0:
-                        break
-                    delivered += batch
-                    remaining -= batch
-                return delivered
-            finally:
+            self._dispatch_thread = me
+        try:
+            delivered = 0
+            remaining = limit
+            while remaining > 0:
+                connection = self._open()
+                try:
+                    batch = self.dispatcher.dispatch(connection, limit=remaining)
+                finally:
+                    connection.close()
+                if batch == 0:
+                    break
+                delivered += batch
+                remaining -= batch
+            return delivered
+        finally:
+            with self._idle:
                 self._dispatching = False
+                self._dispatch_thread = None
+                self._idle.notify_all()
 
     def recover_subscribers(self, *, limit: int = 100) -> int:
-        delivered = self.drain(limit=limit)
-        self.enable_live_dispatch()
-        return delivered
+        with self._idle:
+            while self._dispatching and self._dispatch_thread != threading.get_ident():
+                self._idle.wait()
+            self._dispatch_after_enqueue = True
+        return self.drain(limit=limit)
 
     def pending_count(self) -> int:
         with self._lock:
