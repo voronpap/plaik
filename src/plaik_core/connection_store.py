@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from plaik_contracts import ConnectionRef, SecretReference
+from plaik_contracts.packages import PACKAGE_ID_PATTERN
 
 from .storage import exclusive_file_lock, read_json, write_json_atomic
+
+_OWNER = re.compile(PACKAGE_ID_PATTERN)
 
 
 class ConnectionStoreError(RuntimeError):
@@ -42,7 +46,7 @@ class ConnectionStore:
         return ConnectionRef.model_validate(payload)
 
     def list_for_owner(self, owner: str) -> tuple[ConnectionRef, ...]:
-        prefix = f"{owner}:"
+        prefix = _owner_connection_prefix(owner)
         registry = self._read()
         items = []
         for key, payload in registry["connections"].items():
@@ -52,6 +56,25 @@ class ConnectionStore:
                 raise ConnectionStoreError(f"invalid connection record: {key}")
             items.append(ConnectionRef.model_validate(payload))
         return tuple(sorted(items, key=lambda item: item.id))
+
+    def revoke_owner(self, owner: str) -> int:
+        """Forget every named connection granted to a package."""
+
+        prefix = _owner_connection_prefix(owner)
+        with exclusive_file_lock(self.path):
+            registry = self._read()
+            connections = registry["connections"]
+            removing = [
+                key
+                for key in tuple(connections)
+                if isinstance(key, str) and key.startswith(prefix)
+            ]
+            if not removing:
+                return 0
+            for key in removing:
+                del connections[key]
+            write_json_atomic(self.path, registry)
+            return len(removing)
 
     def _read(self) -> dict:
         data = read_json(
@@ -71,3 +94,9 @@ class ConnectionStore:
 
 def _connection_key(owner: str, connection_id: str) -> str:
     return f"{owner}:{connection_id}"
+
+
+def _owner_connection_prefix(owner: str) -> str:
+    if not isinstance(owner, str) or not _OWNER.fullmatch(owner):
+        raise ValueError("invalid extension owner id")
+    return f"{owner}:"

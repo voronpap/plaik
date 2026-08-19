@@ -412,6 +412,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         application.state.configuration_store.require().store_id
                     ),
                     migration_applier=migration_applier,
+                    occupancy_reset=core.state.connection_store.revoke_owner,
                 )
                 manager.recover()
                 reconcile_package_audits(manager)
@@ -717,6 +718,8 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     record.manifest,
                     active=record.status == PackageStatus.ENABLED,
                 )
+            if result.action == "install" and not result.idempotent_replay:
+                core.state.connection_store.revoke_owner(result.package_id)
             if result.action == "enable":
                 for registry in runtime_registries:
                     registry.activate_owner(result.package_id)
@@ -732,6 +735,8 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 for registry in runtime_registries:
                     registry.deactivate_owner(result.package_id)
                 catalog.retain_package(result.package_id)
+                if not result.idempotent_replay:
+                    core.state.connection_store.revoke_owner(result.package_id)
             _sync_extension_host(core)
             if result.action in {"update", "disable", "uninstall"}:
                 core.state.cache.invalidate_namespace(result.package_id)
