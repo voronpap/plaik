@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
@@ -153,6 +154,75 @@ class PostgreSQLJournalLines:
                 _safe_rollback(connection)
             _safe_close(connection)
 
+    def import_lines_if_empty(self, lines: list[str]) -> bool:
+        """Insert ``lines`` in one transaction when this journal has no rows.
+
+        Returns True if the snapshot was stored, False if rows already existed.
+        A mismatch or any error rolls the whole import back so a later boot can
+        retry instead of keeping a truncated chain.
+        """
+
+        if not lines:
+            return False
+        for line in lines:
+            if not line.endswith("\n"):
+                raise ValueError("journal line must include trailing newline")
+        connection = self.connect()
+        try:
+            _execute(
+                connection,
+                "SELECT pg_advisory_lock(%s)",
+                (_journal_lock(self.journal_id),),
+            )
+            row = _fetchone(
+                connection,
+                f"""
+                SELECT COALESCE(MAX(sequence), 0)
+                FROM {self._table}
+                WHERE journal_id = %s
+                """,
+                (self.journal_id,),
+            )
+            if int(row[0] if row else 0) > 0:
+                connection.commit()
+                return False
+            for sequence, line in enumerate(lines, start=1):
+                _execute(
+                    connection,
+                    f"""
+                    INSERT INTO {self._table} (journal_id, sequence, content)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (self.journal_id, sequence, line),
+                )
+            stored = _fetchall(
+                connection,
+                f"""
+                SELECT content FROM {self._table}
+                WHERE journal_id = %s
+                ORDER BY sequence
+                """,
+                (self.journal_id,),
+            )
+            if [item[0] for item in stored] != list(lines):
+                raise RuntimeError("imported journal lines did not round-trip")
+            connection.commit()
+            return True
+        except Exception:
+            _safe_rollback(connection)
+            raise
+        finally:
+            try:
+                _execute(
+                    connection,
+                    "SELECT pg_advisory_unlock(%s)",
+                    (_journal_lock(self.journal_id),),
+                )
+                connection.commit()
+            except Exception:
+                _safe_rollback(connection)
+            _safe_close(connection)
+
 
 def _journal_lock(journal_id: str) -> int:
     digest = hashlib.sha256(f"plaik-journal:{journal_id}".encode()).digest()[:8]
@@ -274,6 +344,19 @@ class PostgreSQLAuditLog(AuditLog):
         ):
             yield
 
+    def adopt_legacy_file_if_empty(self, path: Path) -> None:
+        """Copy a verified JSONL audit chain into an empty PostgreSQL journal."""
+
+        _adopt_legacy_file_if_empty(
+            path,
+            integrity_key=self._integrity_key,
+            file_journal_cls=AuditLog,
+            lines=self._lines,
+            exclusive_lock=self._exclusive_lock,
+            integrity_error_cls=AuditIntegrityError,
+            journal_label="audit",
+        )
+
 
 class PostgreSQLOperationJournal(OperationJournal):
     """Operation journal hash chain persisted in PostgreSQL."""
@@ -349,6 +432,74 @@ class PostgreSQLOperationJournal(OperationJournal):
             self._thread_lock,
         ):
             yield
+
+    def adopt_legacy_file_if_empty(self, path: Path) -> None:
+        """Copy a verified JSONL operation chain into an empty PostgreSQL journal."""
+
+        _adopt_legacy_file_if_empty(
+            path,
+            integrity_key=self._integrity_key,
+            file_journal_cls=OperationJournal,
+            lines=self._lines,
+            exclusive_lock=self._exclusive_lock,
+            integrity_error_cls=OperationJournalIntegrityError,
+            journal_label="operation",
+        )
+
+
+def _jsonl_snapshot(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    if not text:
+        return []
+    return [
+        line if line.endswith("\n") else f"{line}\n"
+        for line in text.splitlines(keepends=True)
+    ]
+
+
+def _adopt_legacy_file_if_empty(
+    path: Path,
+    *,
+    integrity_key: bytes,
+    file_journal_cls: type[AuditLog] | type[OperationJournal],
+    lines: PostgreSQLJournalLines,
+    exclusive_lock,
+    integrity_error_cls: type[Exception],
+    journal_label: str,
+) -> None:
+    if not path.exists():
+        return
+    try:
+        expected = file_journal_cls(path, integrity_key=integrity_key).verify()
+    except Exception as error:
+        if isinstance(error, integrity_error_cls):
+            raise
+        raise integrity_error_cls(
+            f"legacy {journal_label} journal cannot be verified"
+        ) from None
+    if expected.event_count == 0:
+        return
+    try:
+        payload = _jsonl_snapshot(path)
+    except Exception:
+        raise integrity_error_cls(
+            f"legacy {journal_label} journal cannot be verified"
+        ) from None
+    if len(payload) != expected.event_count:
+        raise integrity_error_cls(
+            f"legacy {journal_label} journal changed during cutover"
+        )
+    with exclusive_lock():
+        try:
+            imported = lines.import_lines_if_empty(payload)
+        except Exception as error:
+            if isinstance(error, integrity_error_cls):
+                raise
+            raise integrity_error_cls(
+                f"legacy {journal_label} journal cannot be imported"
+            ) from None
+        if not imported:
+            return
 
 
 class PostgreSQLIdentityStore:
