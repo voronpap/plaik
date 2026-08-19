@@ -173,6 +173,9 @@ POSTGRESQL_CORE_MIGRATIONS = (
                 PRIMARY KEY (journal_id, sequence)
             )
             """,
+            # Core platform SettingsStore shape (version + scopes), not package
+            # product data. Live SettingsStore still uses the JSON file; this
+            # table is reserved Core schema for a future Core PostgreSQL adapter.
             """
             CREATE TABLE plaik_settings_registry (
                 singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),

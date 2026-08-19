@@ -71,7 +71,9 @@ class SettingsStore:
     store scopes in that order and validates the final value with Pydantic.
     Mutations serialize the complete registry read-modify-write. External audit
     sinks run after commit and outside that lock; sink failures do not roll back
-    the persisted mutation.
+    the persisted mutation. The live store is the JSON file. PostgreSQL Core
+    table ``plaik_settings_registry`` is the reserved Core durable shape of the
+    same registry, not package-owned product settings.
     """
 
     REGISTRY_VERSION = 1
