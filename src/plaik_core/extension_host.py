@@ -222,8 +222,10 @@ class _OwnerEvents(EventPublisher):
 
 
 class _OwnerJobs(JobScheduler):
-    def __init__(self, queue: DurableJobQueue) -> None:
-        self._queue = queue
+    def __init__(self, host: ExtensionHost, owner: str, generation: int) -> None:
+        self._host = host
+        self._owner = owner
+        self._generation = generation
 
     def enqueue(
         self,
@@ -234,14 +236,17 @@ class _OwnerJobs(JobScheduler):
         maximum_attempts: int = 5,
         scheduled_at: datetime | None = None,
     ) -> str:
-        record = self._queue.enqueue(
-            job_type,
-            payload,
-            idempotency_key=idempotency_key,
-            maximum_attempts=maximum_attempts,
-            scheduled_at=scheduled_at,
-        )
-        return record.id
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("job scheduler is no longer bound")
+            record = self._host._jobs.enqueue(
+                job_type,
+                payload,
+                idempotency_key=idempotency_key,
+                maximum_attempts=maximum_attempts,
+                scheduled_at=scheduled_at,
+            )
+            return record.id
 
 
 class _OwnerSlots(SlotContributor):
@@ -394,7 +399,7 @@ class ExtensionHost:
             secrets=_OwnerSecrets(self, package_id),
             services=_OwnerServices(self._services),
             events=_OwnerEvents(self, package_id, scope, generation),
-            jobs=_OwnerJobs(self._jobs),
+            jobs=_OwnerJobs(self, package_id, generation),
             slots=_OwnerSlots(self._slots, package_id),
             health=_OwnerHealth(self, package_id, scope, generation),
         )
