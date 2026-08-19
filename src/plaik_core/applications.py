@@ -412,6 +412,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         application.state.configuration_store.require().store_id
                     ),
                     migration_applier=migration_applier,
+                    occupancy_reset=core.state.connection_store.revoke_owner,
                 )
                 manager.recover()
                 reconcile_package_audits(manager)

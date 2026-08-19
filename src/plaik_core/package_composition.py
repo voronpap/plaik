@@ -98,6 +98,7 @@ def build_package_manager(
     store_id_provider: Callable[[], str],
     migration_applier: PackageMigrationApplier | None = None,
     sql_coordinator: PackageSQLCoordinator | None = None,
+    occupancy_reset: Callable[[str], None] | None = None,
 ) -> TransactionalPackageManager:
     """Build one mutation-scoped manager from a fresh package trust snapshot."""
 
@@ -231,6 +232,7 @@ def build_package_manager(
         stage_validator=validate_stage,
         state_validator=validate_state,
         migration_applier=migration_applier,
+        occupancy_reset=occupancy_reset,
         lock_target=runtime.extension_operation_lock_path,
     )
     if sql_coordinator is not None:

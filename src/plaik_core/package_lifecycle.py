@@ -58,6 +58,7 @@ class TransactionPhase(StrEnum):
 
 PackageAction = Literal["install", "update", "enable", "disable", "uninstall"]
 FailureInjector = Callable[[str], None]
+OccupancyReset = Callable[[str], None]
 SignerTransitionAuthorizer = Callable[[str, PackageType, str, str], bool]
 PackageStageValidator = Callable[[Path, PackageManifest, Mapping[str, PackageRecord]], None]
 PackageMigrationApplier = Callable[[Path, PackageManifest], None]
@@ -117,6 +118,7 @@ class TransactionalPackageManager:
         stage_validator: PackageStageValidator | None = None,
         migration_applier: PackageMigrationApplier | None = None,
         state_validator: PackageStateValidator | None = None,
+        occupancy_reset: OccupancyReset | None = None,
         lock_target: Path | None = None,
     ) -> None:
         self.registry_path = Path(registry_path)
@@ -135,6 +137,7 @@ class TransactionalPackageManager:
         self.stage_validator = stage_validator
         self.migration_applier = migration_applier
         self.state_validator = state_validator
+        self.occupancy_reset = occupancy_reset
 
     @contextmanager
     def _lifecycle_locks(self) -> Iterator[None]:
@@ -227,6 +230,13 @@ class TransactionalPackageManager:
                 after,
                 backup=True,
             )
+            try:
+                self._reset_occupancy(package_id)
+            except Exception:
+                self._fail_without_intent(operation_id, "package.occupancy_reset_failed")
+                raise TransactionalPackageError(
+                    "package occupancy reset failed"
+                ) from None
             self._execute(intent)
             return PackageLifecycleResult(
                 operation_id, "uninstall", package_id, None, None
@@ -386,6 +396,14 @@ class TransactionalPackageManager:
                 raise TransactionalPackageError(
                     "package staging failed and was rolled back"
                 ) from None
+            if action == "install":
+                try:
+                    self._reset_occupancy(package_id)
+                except Exception:
+                    self._rollback_and_fail(intent, "package.occupancy_reset_failed")
+                    raise TransactionalPackageError(
+                        "package occupancy reset failed and was rolled back"
+                    ) from None
             self._execute(intent)
             return _result(operation_id, action, after[package_id])
 
@@ -846,6 +864,11 @@ class TransactionalPackageManager:
 
     def _fail_without_intent(self, operation_id: str, error_code: str) -> None:
         self._mark_failed(operation_id, error_code)
+
+    def _reset_occupancy(self, package_id: str) -> None:
+        if self.occupancy_reset is None:
+            return
+        self.occupancy_reset(package_id)
 
     def _inject(self, point: str) -> None:
         if self.failure_injector is not None:
