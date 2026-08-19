@@ -717,6 +717,8 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     record.manifest,
                     active=record.status == PackageStatus.ENABLED,
                 )
+            if result.action == "install":
+                core.state.connection_store.revoke_owner(result.package_id)
             if result.action == "enable":
                 for registry in runtime_registries:
                     registry.activate_owner(result.package_id)
