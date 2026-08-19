@@ -174,10 +174,17 @@ class _OwnerServices(ServiceResolver):
 
 
 class _OwnerEvents(EventPublisher):
-    def __init__(self, bus: EventBus, owner: str, scope: ScopeRef) -> None:
-        self._bus = bus
+    def __init__(
+        self,
+        host: ExtensionHost,
+        owner: str,
+        scope: ScopeRef,
+        generation: int,
+    ) -> None:
+        self._host = host
         self._owner = owner
         self._scope = scope
+        self._generation = generation
 
     def publish(
         self,
@@ -190,25 +197,28 @@ class _OwnerEvents(EventPublisher):
         resource: ResourceRef | None = None,
         correlation_id: str | None = None,
     ) -> None:
-        if scope is None:
-            resolved_scope = self._scope
-        else:
-            resolved_scope = _require_bound_scope(self._scope, scope)
-        canonical_resource = None
-        if resource is not None:
-            canonical_resource = _canonical_resource(
-                resource, self._owner, self._scope
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("event publisher is no longer bound")
+            if scope is None:
+                resolved_scope = self._scope
+            else:
+                resolved_scope = _require_bound_scope(self._scope, scope)
+            canonical_resource = None
+            if resource is not None:
+                canonical_resource = _canonical_resource(
+                    resource, self._owner, self._scope
+                )
+            self._host._events.publish(
+                owner=self._owner,
+                contract=contract,
+                version=version,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                scope=resolved_scope,
+                resource=canonical_resource,
+                correlation_id=correlation_id,
             )
-        self._bus.publish(
-            owner=self._owner,
-            contract=contract,
-            version=version,
-            payload=payload,
-            idempotency_key=idempotency_key,
-            scope=resolved_scope,
-            resource=canonical_resource,
-            correlation_id=correlation_id,
-        )
 
 
 class _OwnerJobs(JobScheduler):
@@ -271,7 +281,7 @@ class _OwnerHealth(HealthReporter):
 
     def report(self, issue: HealthIssue) -> None:
         with self._host._lock:
-            if self._host._health_generations.get(self._owner) != self._generation:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
                 raise ExtensionHostError("health reporter is no longer bound")
             self._host._health.report(
                 _canonical_health_issue(issue, self._owner, self._scope)
@@ -303,8 +313,8 @@ class ExtensionHost:
         self._secrets = secret_providers
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
-        self._health_generations: dict[str, int] = {}
-        self._health_epoch = 0
+        self._runtime_generations: dict[str, int] = {}
+        self._runtime_epoch = 0
         self._lock = threading.RLock()
 
     def set_secret_providers(self, providers: SecretProviderRegistry | None) -> None:
@@ -334,7 +344,7 @@ class ExtensionHost:
             for package_id in tuple(self._runtimes):
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
-            for package_id in tuple(self._health_generations):
+            for package_id in tuple(self._runtime_generations):
                 if package_id not in enabled_ids or package_id not in self._runtimes:
                     self._unbind_health(package_id)
             for package_id in tuple(self._registered):
@@ -360,7 +370,7 @@ class ExtensionHost:
         return tuple(bound)
 
     def _unbind_health(self, package_id: str) -> None:
-        self._health_generations.pop(package_id, None)
+        self._runtime_generations.pop(package_id, None)
         self._health.clear(owner=package_id)
 
     def runtime_for(self, package_id: str) -> ExtensionRuntime | None:
@@ -374,8 +384,8 @@ class ExtensionHost:
         locale: str,
     ) -> ExtensionRuntime:
         store_id = scope.store_id or scope.group_id or scope.installation_id
-        self._health_epoch += 1
-        generation = self._health_epoch
+        self._runtime_epoch += 1
+        generation = self._runtime_epoch
         runtime = ExtensionRuntime(
             package_id=package_id,
             store_id=store_id,
@@ -383,12 +393,12 @@ class ExtensionHost:
             settings=_NullSettings(),
             secrets=_OwnerSecrets(self, package_id),
             services=_OwnerServices(self._services),
-            events=_OwnerEvents(self._events, package_id, scope),
+            events=_OwnerEvents(self, package_id, scope, generation),
             jobs=_OwnerJobs(self._jobs),
             slots=_OwnerSlots(self._slots, package_id),
             health=_OwnerHealth(self, package_id, scope, generation),
         )
-        self._health_generations[package_id] = generation
+        self._runtime_generations[package_id] = generation
         return runtime
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
