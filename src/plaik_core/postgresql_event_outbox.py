@@ -10,9 +10,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
+
 from plaik_contracts import EventEnvelope, ResourceRef, ScopeRef
 
 from .envelope import dump_resource, dump_scope, envelope_from_row
+from .event_outbox import OutboxEnvelopeError
 from .extension_runtime import _json_snapshot
 
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -67,8 +70,29 @@ class PostgreSQLEventOutbox:
     ) -> str:
         snapshot = _json_snapshot(payload)
         event_id = str(uuid.uuid4())
+        created_at = datetime.now(UTC)
         persisted_scope = dump_scope(scope or ScopeRef.installation())
         persisted_resource = dump_resource(resource)
+        try:
+            envelope = envelope_from_row(
+                event_id=event_id,
+                owner=owner,
+                contract=contract,
+                version=version,
+                payload=snapshot,
+                scope_raw=persisted_scope,
+                resource_raw=persisted_resource,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+                created_at=created_at,
+            )
+        except (ValidationError, TypeError, ValueError) as error:
+            raise OutboxEnvelopeError("outbox envelope is invalid") from error
+        persisted_scope = dump_scope(envelope.scope)
+        persisted_resource = dump_resource(envelope.resource)
+        payload_json = json.dumps(
+            envelope.payload, sort_keys=True, separators=(",", ":")
+        )
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -82,16 +106,16 @@ class PostgreSQLEventOutbox:
                 RETURNING id
                 """,
                 (
-                    event_id,
-                    owner,
-                    contract,
-                    version,
-                    json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
-                    idempotency_key,
-                    datetime.now(UTC),
+                    envelope.id,
+                    envelope.owner,
+                    envelope.contract,
+                    envelope.version,
+                    payload_json,
+                    envelope.idempotency_key,
+                    envelope.created_at,
                     persisted_scope,
                     persisted_resource,
-                    correlation_id,
+                    envelope.correlation_id,
                 ),
             )
             row = cursor.fetchone()
