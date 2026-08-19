@@ -518,18 +518,12 @@ def _verify_jsonl_snapshot(
     integrity_key: bytes,
     file_journal_cls: type[AuditLog] | type[OperationJournal],
 ):
-    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
-    name = handle.name
-    try:
-        handle.write(payload)
-        handle.close()
-        os.chmod(name, 0o600)
-        return file_journal_cls(Path(name), integrity_key=integrity_key).verify()
-    finally:
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+    with tempfile.TemporaryDirectory(prefix="plaik-journal-cutover-") as directory:
+        os.chmod(directory, 0o700)
+        path = Path(directory) / "journal.jsonl"
+        path.write_bytes(payload)
+        os.chmod(path, 0o600)
+        return file_journal_cls(path, integrity_key=integrity_key).verify()
 
 
 def _adopt_legacy_file_if_empty(
