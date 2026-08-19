@@ -49,6 +49,10 @@ class PostgreSQLOutboxEvent:
     def as_envelope(self) -> EventEnvelope:
         if self.created_at is None or type(self.payload) is not dict:
             raise OutboxEnvelopeError("outbox envelope is invalid")
+        if self.scope_json is not None and type(self.scope_json) is not dict:
+            raise OutboxEnvelopeError("outbox envelope is invalid")
+        if self.resource_json is not None and type(self.resource_json) is not dict:
+            raise OutboxEnvelopeError("outbox envelope is invalid")
         try:
             return envelope_from_row(
                 event_id=self.id,
