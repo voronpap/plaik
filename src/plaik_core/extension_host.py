@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
-from plaik_contracts import HealthIssue, HealthSeverity, ResourceRef, ScopeRef
+from plaik_contracts import HealthIssue, HealthSeverity, ResourceRef, ScopeRef, SecretReference
 from plaik_sdk import (
     EventPublisher,
     ExtensionRuntime,
@@ -31,6 +31,7 @@ from .installer_config import InstallerConfiguration
 from .jobs import DurableJobQueue
 from .packages import PackageRecord, PackageStatus
 from .secret_store import SecretNotFoundError, SecretProviderRegistry
+from .settings_store import SettingsStore, SettingsStoreError
 
 
 class ExtensionHostError(RuntimeError):
@@ -142,10 +143,72 @@ def _canonical_health_issue(provided: object, owner: str, bound: ScopeRef) -> He
     return canonical
 
 
-class _NullSettings(SettingsReader):
+class _PackageSettingsBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+def _settings_field_name(key: str, used: set[str]) -> str:
+    name = key.replace("-", "_").replace(".", "_")
+    if not name.isidentifier():
+        name = "setting_" + "".join(
+            character if character.isalnum() else "_" for character in key
+        )
+    if name in used:
+        name = f"{name}_{len(used)}"
+    used.add(name)
+    return name
+
+
+def _package_settings_schema(
+    package_id: str, declarations: tuple[Any, ...] | list[Any]
+) -> type[BaseModel]:
+    used: set[str] = set()
+    fields: dict[str, Any] = {}
+    for item in declarations:
+        name = _settings_field_name(item.key, used)
+        if item.secret:
+            fields[name] = (SecretReference | None, Field(default=None, alias=item.key))
+        else:
+            fields[name] = (
+                str | int | bool | None,
+                Field(default=None, alias=item.key),
+            )
+    return create_model(
+        f"PackageSettings_{package_id.replace('-', '_')}",
+        __base__=_PackageSettingsBase,
+        **fields,
+    )
+
+
+class _OwnerSettings(SettingsReader):
+    def __init__(
+        self,
+        host: ExtensionHost,
+        owner: str,
+        scope: ScopeRef,
+        generation: int,
+    ) -> None:
+        self._host = host
+        self._owner = owner
+        self._scope = scope
+        self._generation = generation
+
     def get(self, key: str, default: Any = None) -> Any:
-        del key
-        return default
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("settings reader is no longer bound")
+            store = self._host._settings
+            if store is None or self._owner not in store.schemas:
+                return default
+            try:
+                resolved = store.resolve(self._scope, self._owner)
+            except SettingsStoreError as error:
+                raise ExtensionHostError("settings could not be resolved") from error
+            for field_name, field in resolved.values.__class__.model_fields.items():
+                alias = field.alias or field_name
+                if alias == key or field_name == key:
+                    return getattr(resolved.values, field_name)
+            return default
 
 
 class _OwnerSecrets(SecretReader):
@@ -320,6 +383,7 @@ class ExtensionHost:
         connection_store: ConnectionStore,
         health_issues: HealthIssueRegistry,
         secret_providers: SecretProviderRegistry | None = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         self._packages_root = Path(packages_root)
         self._services = service_registry
@@ -329,6 +393,7 @@ class ExtensionHost:
         self._connections = connection_store
         self._health = health_issues
         self._secrets = secret_providers
+        self._settings = settings_store
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
         self._runtime_generations: dict[str, int] = {}
@@ -366,7 +431,7 @@ class ExtensionHost:
                     committed = False
                     try:
                         runtime = self._build_runtime(
-                            package_id, scope, configuration.locale
+                            records[package_id], scope, configuration.locale
                         )
                         if package_id not in self._registered:
                             self._try_register(package_id, runtime)
@@ -409,10 +474,12 @@ class ExtensionHost:
 
     def _build_runtime(
         self,
-        package_id: str,
+        record: PackageRecord,
         scope: ScopeRef,
         locale: str,
     ) -> ExtensionRuntime:
+        package_id = record.manifest.id
+        self._ensure_settings_schema(record)
         store_id = scope.store_id or scope.group_id or scope.installation_id
         self._runtime_epoch += 1
         generation = self._runtime_epoch
@@ -420,7 +487,7 @@ class ExtensionHost:
             package_id=package_id,
             store_id=store_id,
             locale=locale,
-            settings=_NullSettings(),
+            settings=_OwnerSettings(self, package_id, scope, generation),
             secrets=_OwnerSecrets(self, package_id, generation),
             services=_OwnerServices(self, package_id, generation),
             events=_OwnerEvents(self, package_id, scope, generation),
@@ -430,6 +497,17 @@ class ExtensionHost:
         )
         self._runtime_generations[package_id] = generation
         return runtime
+
+    def _ensure_settings_schema(self, record: PackageRecord) -> None:
+        if self._settings is None:
+            return
+        declarations = record.manifest.settings
+        if not declarations:
+            return
+        self._settings.register_schema(
+            record.manifest.id,
+            _package_settings_schema(record.manifest.id, declarations),
+        )
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
         module_path = self._packages_root / package_id / "extension.py"

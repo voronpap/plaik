@@ -201,6 +201,10 @@ class CoreSettings:
         return self.data_dir / "jobs.json"
 
     @property
+    def settings_registry_path(self) -> Path:
+        return self.data_dir / "settings.json"
+
+    @property
     def package_artifacts_dir(self) -> Path:
         return self.data_dir / "packages"
 

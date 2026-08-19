@@ -65,8 +65,6 @@ class SettingsStore:
         self.path = path
         self.schemas = dict(schemas)
         self.audit_sink = audit_sink
-        if not self.schemas:
-            raise ValueError("at least one settings schema is required")
         for namespace, schema in self.schemas.items():
             self._validate_namespace(namespace)
             if not isinstance(schema, type) or not issubclass(schema, BaseModel):
@@ -216,6 +214,12 @@ class SettingsStore:
             character not in allowed for character in namespace
         ):
             raise ValueError(f"invalid settings namespace: {namespace}")
+
+    def register_schema(self, namespace: str, schema: type[BaseModel]) -> None:
+        self._validate_namespace(namespace)
+        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+            raise TypeError(f"settings schema must be a BaseModel: {namespace}")
+        self.schemas[namespace] = schema
 
     def _read_registry(self) -> dict[str, Any]:
         registry = read_json(
