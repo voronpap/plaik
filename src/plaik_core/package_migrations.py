@@ -403,6 +403,106 @@ def _references_protected_schema(statement: str) -> str | None:
     return None
 
 
+_UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+
+def _skip_sql_comment_or_literal(statement: str, index: int) -> int | None:
+    """Return the index after a comment or non-identifier literal, else None."""
+
+    length = len(statement)
+    pair = statement[index : index + 2]
+    if pair == "--":
+        end = statement.find("\n", index + 2)
+        return length if end < 0 else end
+    if pair == "/*":
+        depth = 1
+        end = index + 2
+        while end < length and depth:
+            if statement[end : end + 2] == "/*":
+                depth += 1
+                end += 2
+            elif statement[end : end + 2] == "*/":
+                depth -= 1
+                end += 2
+            else:
+                end += 1
+        if depth:
+            raise ValueError("migration statement contains an unterminated comment")
+        return end
+    if statement[index] == "'":
+        end = index + 1
+        while end < length:
+            if statement[end] == "'":
+                if end + 1 < length and statement[end + 1] == "'":
+                    end += 2
+                    continue
+                return end + 1
+            end += 1
+        raise ValueError("migration statement contains an unterminated quote")
+    if statement[index] == "`":
+        end = statement.find("`", index + 1)
+        if end < 0:
+            raise ValueError("migration statement contains an unterminated quote")
+        return end + 1
+    if statement[index] == "[":
+        end = statement.find("]", index + 1)
+        if end < 0:
+            raise ValueError("migration statement contains an unterminated identifier")
+        return end + 1
+    delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
+    if delimiter_match:
+        delimiter = delimiter_match.group(0)
+        end = statement.find(delimiter, index + len(delimiter))
+        if end < 0:
+            raise ValueError("migration statement contains an unterminated dollar quote")
+        return end + len(delimiter)
+    return None
+
+
+def _postgresql_identifiers(statement: str) -> frozenset[str]:
+    """Unquoted and double-quoted SQL identifiers, uppercased.
+
+    String literals, comments, dollar quotes, and bracket/backtick forms are
+    skipped so a reserved relation cannot hide inside quotes-as-strings, but a
+    PostgreSQL ``"plaik_settings_registry"`` identifier is still visible.
+    """
+
+    names: set[str] = set()
+    index = 0
+    length = len(statement)
+    while index < length:
+        skipped = _skip_sql_comment_or_literal(statement, index)
+        if skipped is not None:
+            index = skipped
+            continue
+        if statement[index] == '"':
+            end = index + 1
+            decoded: list[str] = []
+            while end < length:
+                if statement[end] == '"':
+                    if end + 1 < length and statement[end + 1] == '"':
+                        decoded.append('"')
+                        end += 2
+                        continue
+                    ident = "".join(decoded)
+                    if ident:
+                        names.add(ident.upper())
+                    index = end + 1
+                    break
+                decoded.append(statement[end])
+                end += 1
+            else:
+                raise ValueError("migration statement contains an unterminated quote")
+            continue
+        match = _UNQUOTED_IDENT.match(statement, index)
+        if match:
+            names.add(match.group(0).upper())
+            index = match.end()
+            continue
+        index += 1
+    return frozenset(names)
+
+
 def validate_package_postgresql_statement(
     statement: str,
     *,
@@ -416,6 +516,12 @@ def validate_package_postgresql_statement(
         raise MigrationError(
             f"PostgreSQL package migration must not reference {blocked}"
         )
+    reserved = _postgresql_identifiers(statement) & _PACKAGE_RESERVED_RELATIONS
+    if reserved:
+        raise MigrationError(
+            "PostgreSQL package migration must not reference "
+            + ",".join(sorted(name.lower() for name in reserved))
+        )
     executable = _erase_sql_literals_and_comments(statement).upper()
     if _PACKAGE_TRANSACTION_CONTROL.match(executable.lstrip()):
         raise MigrationError(
@@ -427,12 +533,6 @@ def validate_package_postgresql_statement(
         raise MigrationError(
             "PostgreSQL package migration command is forbidden: "
             + ",".join(sorted(forbidden))
-        )
-    reserved = tokens & _PACKAGE_RESERVED_RELATIONS
-    if reserved:
-        raise MigrationError(
-            "PostgreSQL package migration must not reference "
-            + ",".join(sorted(name.lower() for name in reserved))
         )
     # Reject explicit references to protected schemas / other package schemas.
     protected = (META_SCHEMA.upper(), CORE_SCHEMA.upper(), "PUBLIC")
