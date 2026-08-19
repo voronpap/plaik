@@ -8,6 +8,7 @@ Core never rewrites a hook name into a slot id.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 
 from plaik_contracts.theme_api import SLOT_ID_PATTERN, require_public_slot_id
@@ -36,6 +37,8 @@ class SlotRegistry:
             require_public_slot_id(slot_id)
         self.allowed_slots = frozenset(allowed_slots)
         self._bindings: set[SlotBinding] = set()
+        self._inactive_owners: set[str] = set()
+        self._lock = threading.RLock()
 
     def register(self, binding: SlotBinding) -> None:
         if binding.slot not in self.allowed_slots:
@@ -49,12 +52,40 @@ class SlotRegistry:
             ".html"
         ):
             raise ValueError("invalid template")
-        self._bindings.add(binding)
+        with self._lock:
+            self._bindings.add(binding)
 
     def bindings(self, slot: str) -> list[SlotBinding]:
         if slot not in self.allowed_slots:
             raise ValueError(f"unknown slot: {slot}")
-        return sorted(
-            (binding for binding in self._bindings if binding.slot == slot),
-            key=lambda binding: (binding.position, binding.module_id, binding.template),
-        )
+        with self._lock:
+            return sorted(
+                (
+                    binding
+                    for binding in self._bindings
+                    if binding.slot == slot
+                    and binding.module_id not in self._inactive_owners
+                ),
+                key=lambda binding: (binding.position, binding.module_id, binding.template),
+            )
+
+    def deactivate_owner(self, owner: str) -> int:
+        return self._set_owner_active(owner, False)
+
+    def activate_owner(self, owner: str) -> int:
+        return self._set_owner_active(owner, True)
+
+    def _set_owner_active(self, owner: str, active: bool) -> int:
+        if not isinstance(owner, str) or not MODULE_PATTERN.fullmatch(owner):
+            raise ValueError("invalid module id")
+        _validate_path_segment(owner, error="invalid module id")
+        with self._lock:
+            matching = sum(1 for binding in self._bindings if binding.module_id == owner)
+            currently_active = owner not in self._inactive_owners
+            if currently_active == active:
+                return 0
+            if active:
+                self._inactive_owners.discard(owner)
+            else:
+                self._inactive_owners.add(owner)
+            return matching

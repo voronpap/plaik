@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import stat
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
 from plaik_contracts import PackageManifest, PackageType
@@ -122,6 +123,77 @@ def project_enabled_slots(
                 )
             )
     return registry
+
+
+def web_projection_fingerprint(
+    records: Mapping[str, PackageRecord],
+) -> tuple[tuple[str, str, str], ...]:
+    """Durable identity of the enabled-package set that drives Web SSR."""
+
+    return tuple(
+        sorted(
+            (package_id, record.status.value, record.manifest.version)
+            for package_id, record in records.items()
+        )
+    )
+
+
+class LiveWebProjection:
+    """Rebuild process-local hook/slot registries when durable package state changes.
+
+    Admin and Web are separate processes. ``deactivate_owner`` on Admin's Core
+    registries cannot update Web SSR. Web re-reads ``PackageRegistry.records()``
+    and rebuilds from ENABLED packages only.
+    """
+
+    def __init__(
+        self,
+        *,
+        records: Callable[[], Mapping[str, PackageRecord]],
+        installed_packages_dir: Path,
+        allowed_hooks: set[str] | frozenset[str],
+        allowed_slots: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
+        self._records = records
+        self._installed_packages_dir = Path(installed_packages_dir)
+        self._allowed_hooks = frozenset(allowed_hooks)
+        self._allowed_slots = frozenset(allowed_slots)
+        self._lock = threading.Lock()
+        self._fingerprint: tuple[tuple[str, str, str], ...] | None = None
+        self._hooks = HookRegistry(set(self._allowed_hooks))
+        self._slots = SlotRegistry(set(self._allowed_slots))
+        self.version = 0
+        self.refresh()
+
+    @property
+    def hook_registry(self) -> HookRegistry:
+        return self._hooks
+
+    @property
+    def slot_registry(self) -> SlotRegistry:
+        return self._slots
+
+    def refresh(self) -> int:
+        with self._lock:
+            records = self._records()
+            fingerprint = web_projection_fingerprint(records)
+            if fingerprint == self._fingerprint:
+                return self.version
+            hooks = project_enabled_hooks(
+                records,
+                self._installed_packages_dir,
+                allowed_hooks=self._allowed_hooks,
+            )
+            slots = project_enabled_slots(
+                records,
+                self._installed_packages_dir,
+                allowed_slots=self._allowed_slots,
+            )
+            self._hooks = hooks
+            self._slots = slots
+            self._fingerprint = fingerprint
+            self.version += 1
+            return self.version
 
 
 def _require_regular_template(root: Path, relative: str) -> Path:

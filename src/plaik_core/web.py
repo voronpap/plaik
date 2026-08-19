@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from .hooks import HookRegistry
 from .slots import SlotRegistry
 from .themes import TemplateResolver, ThemeManager, ThemeRegistry
+from .web_extensions import LiveWebProjection, WebExtensionError
 
 
 _MUTATING_METHODS = frozenset(
@@ -175,6 +176,7 @@ class WebRenderer:
         revision_store: object | None = None,
         system_fallback_root: Path | None = None,
         asset_url_prefix: str = "/themes",
+        projection: LiveWebProjection | None = None,
     ) -> None:
         self.theme_manager = theme_manager
         self.theme_registry = theme_registry
@@ -186,6 +188,7 @@ class WebRenderer:
             Path(system_fallback_root) if system_fallback_root is not None else None
         )
         self.asset_url_prefix = asset_url_prefix.rstrip("/")
+        self._projection = projection
         self.environment = WebSandboxedEnvironment(
             autoescape=select_autoescape(
                 enabled_extensions=("html", "xml"),
@@ -196,6 +199,16 @@ class WebRenderer:
             enable_async=False,
         )
 
+    def _sync_web_projection(self) -> None:
+        if self._projection is None:
+            return
+        try:
+            self._projection.refresh()
+        except WebExtensionError as error:
+            raise WebRenderError(str(error)) from error
+        self.hook_registry = self._projection.hook_registry
+        self.slot_registry = self._projection.slot_registry
+
     def render(
         self,
         *,
@@ -205,6 +218,7 @@ class WebRenderer:
         layout: str = "full-width",
         context: dict[str, Any] | None = None,
     ) -> RenderedWeb:
+        self._sync_web_projection()
         safe_layout = _safe_layout(layout)
         extra_context = copy.deepcopy(dict(context or {}))
         overlap = sorted(self.RESERVED_CONTEXT & set(extra_context))
@@ -358,6 +372,7 @@ class WebRenderer:
         from .theme_composition import PageTemplateResolver, ThemeCompositionError
         from .theme_revisions import ThemeRevisionError
 
+        self._sync_web_projection()
         safe_layout = _safe_layout(layout)
         extra_context = copy.deepcopy(dict(context or {}))
         reserved = self.RESERVED_CONTEXT | {"settings", "blocks", "composition"}
