@@ -174,8 +174,8 @@ POSTGRESQL_CORE_MIGRATIONS = (
             )
             """,
             # Core platform SettingsStore shape (version + scopes), not package
-            # product data. Live SettingsStore still uses the JSON file; this
-            # table is reserved Core schema for a future Core PostgreSQL adapter.
+            # product data. PostgreSQL installs use this table as the live store;
+            # SQLite/reference installs keep the JSON file.
             """
             CREATE TABLE plaik_settings_registry (
                 singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
