@@ -277,6 +277,37 @@ class DurableJobQueue:
     def records(self) -> dict[str, JobRecord]:
         return dict(sorted(self._read().items()))
 
+    def leased(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> JobRecord | None:
+        """Return the job only while this worker still holds a live lease."""
+
+        worker_id = _validate_worker_id(worker_id)
+        if (
+            not isinstance(fencing_token, int)
+            or isinstance(fencing_token, bool)
+            or fencing_token < 1
+        ):
+            raise ValueError("job fencing token must be a positive integer")
+        timestamp = _as_utc(now or datetime.now(UTC))
+        with exclusive_file_lock(self.path):
+            current = self._read().get(job_id)
+            if (
+                current is None
+                or current.status != JobStatus.RUNNING
+                or current.lease_owner != worker_id
+                or current.fencing_token != fencing_token
+                or current.lease_expires_at is None
+                or timestamp >= current.lease_expires_at
+            ):
+                return None
+            return current
+
     def purge_terminal(self, *, before: datetime, limit: int = 100) -> int:
         """Remove a bounded terminal batch older than an explicit UTC cutoff."""
 
@@ -445,41 +476,49 @@ class JobRunner:
         job = self.queue.claim(worker_id, now=now)
         if job is None:
             return None
-        handler = self.handlers.get(job.type)
+        live = self.queue.leased(
+            job.id,
+            worker_id,
+            fencing_token=job.fencing_token,
+            now=now,
+        )
+        if live is None:
+            return self.queue.records().get(job.id)
+        handler = self.handlers.get(live.type)
         if handler is None:
             return self.queue.fail(
-                job.id,
+                live.id,
                 worker_id,
-                fencing_token=job.fencing_token,
+                fencing_token=live.fencing_token,
                 error_code="job.handler_missing",
                 now=now,
             )
-        if job.lease_expires_at is None or job.lease_owner is None:
+        if live.lease_expires_at is None or live.lease_owner is None:
             raise JobQueueError("claimed job is missing lease context")
         context = JobExecutionContext(
-            job_id=job.id,
-            idempotency_key=job.idempotency_key,
-            attempt=job.attempts,
-            fencing_token=job.fencing_token,
-            lease_owner=job.lease_owner,
-            lease_expires_at=job.lease_expires_at,
-            payload=job.payload,
+            job_id=live.id,
+            idempotency_key=live.idempotency_key,
+            attempt=live.attempts,
+            fencing_token=live.fencing_token,
+            lease_owner=live.lease_owner,
+            lease_expires_at=live.lease_expires_at,
+            payload=live.payload,
         )
         try:
             handler(context)
         except Exception as error:
             safe_code = f"job.{type(error).__name__.casefold()}"[:128]
             return self.queue.fail(
-                job.id,
+                live.id,
                 worker_id,
-                fencing_token=job.fencing_token,
+                fencing_token=live.fencing_token,
                 error_code=safe_code,
                 now=now,
             )
         return self.queue.succeed(
-            job.id,
+            live.id,
             worker_id,
-            fencing_token=job.fencing_token,
+            fencing_token=live.fencing_token,
             now=now,
         )
 
