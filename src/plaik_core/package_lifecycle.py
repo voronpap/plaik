@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -134,6 +135,14 @@ class TransactionalPackageManager:
         self.migration_applier = migration_applier
         self.state_validator = state_validator
 
+    @contextmanager
+    def _lifecycle_locks(self) -> Iterator[None]:
+        """Serialize filesystem/intent work then packages.json. Never reverse."""
+
+        with exclusive_file_lock(self.lock_target):
+            with exclusive_file_lock(self.registry_path):
+                yield
+
     def install(
         self,
         operation_id: str,
@@ -162,7 +171,7 @@ class TransactionalPackageManager:
         operation_id = _validate_operation_id(operation_id)
         package_id = _validate_package_id(package_id)
         target = f"package/{package_id}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(operation_id, action="package.uninstall", target=target)
@@ -225,12 +234,12 @@ class TransactionalPackageManager:
     def recover(self) -> tuple[str, ...]:
         """Recover every durable intent and return the affected operation IDs."""
 
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             return self._recover_locked()
 
     def records(self) -> dict[str, PackageRecord]:
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             return self._read_records()
@@ -246,7 +255,7 @@ class TransactionalPackageManager:
         package_id = artifact.manifest.id
         target = f"package/{package_id}/{artifact.artifact_sha256}"
         journal_action = f"package.{action}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(operation_id, action=journal_action, target=target)
@@ -389,7 +398,7 @@ class TransactionalPackageManager:
         operation_id = _validate_operation_id(operation_id)
         package_id = _validate_package_id(package_id)
         target = f"package/{package_id}"
-        with exclusive_file_lock(self.lock_target):
+        with self._lifecycle_locks():
             self._ensure_roots()
             self._recover_locked()
             replay = self._begin(
