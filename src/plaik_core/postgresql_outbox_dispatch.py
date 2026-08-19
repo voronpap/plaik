@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .event_outbox import OutboxEnvelopeError
 from .postgresql_event_outbox import PostgreSQLEventOutbox, PostgreSQLOutboxEvent
 
 
@@ -46,6 +47,18 @@ class PostgreSQLOutboxDispatcher:
                 connection.rollback()
                 break
             event = claimed[0]
+            try:
+                event.as_envelope()
+            except OutboxEnvelopeError:
+                self.outbox.record_failure(
+                    connection,
+                    event.id,
+                    error_code="invalid_envelope",
+                    max_attempts=event.attempt_count + 1,
+                    backoff_seconds=base_backoff_seconds,
+                )
+                connection.commit()
+                continue
             try:
                 self.sink.deliver(event)
             except PermanentOutboxDeliveryError:

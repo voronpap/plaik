@@ -37,19 +37,22 @@ class PostgreSQLOutboxEvent:
 
     def as_envelope(self) -> EventEnvelope:
         if self.created_at is None:
-            raise ValueError("outbox event is missing created_at")
-        return envelope_from_row(
-            event_id=self.id,
-            owner=self.owner,
-            contract=self.contract,
-            version=self.version,
-            payload=self.payload,
-            scope_raw=self.scope_json,
-            resource_raw=self.resource_json,
-            idempotency_key=self.idempotency_key,
-            correlation_id=self.correlation_id,
-            created_at=self.created_at,
-        )
+            raise OutboxEnvelopeError("outbox envelope is invalid")
+        try:
+            return envelope_from_row(
+                event_id=self.id,
+                owner=self.owner,
+                contract=self.contract,
+                version=self.version,
+                payload=self.payload,
+                scope_raw=self.scope_json,
+                resource_raw=self.resource_json,
+                idempotency_key=self.idempotency_key,
+                correlation_id=self.correlation_id,
+                created_at=self.created_at,
+            )
+        except (ValidationError, TypeError, ValueError):
+            raise OutboxEnvelopeError("outbox envelope is invalid") from None
 
 
 class PostgreSQLEventOutbox:
