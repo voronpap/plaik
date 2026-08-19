@@ -83,7 +83,7 @@ class SettingsStore:
         if not supplied:
             raise SettingsStoreError("at least one setting must be supplied")
 
-        unknown = sorted(set(supplied) - set(schema.model_fields))
+        unknown = sorted(set(supplied) - self._public_field_names(schema))
         if unknown:
             raise SettingsStoreError(f"unknown settings for {namespace}: {unknown}")
 
@@ -105,10 +105,11 @@ class SettingsStore:
                 exact_override=candidate_override,
             )
             validated = self._validate(schema, namespace, merged)
-            canonical = validated.model_dump(
-                mode="json",
-                include=set(candidate_override),
-            )
+            canonical = {
+                key: value
+                for key, value in validated.model_dump(mode="json", by_alias=True).items()
+                if key in candidate_override
+            }
             self._assert_secret_references(validated, supplied)
 
             scope_namespaces[namespace] = canonical
@@ -143,7 +144,7 @@ class SettingsStore:
                 )
 
             changed = set(override) if fields is None else set(fields)
-            unknown = sorted(changed - set(schema.model_fields))
+            unknown = sorted(changed - self._public_field_names(schema))
             if unknown:
                 raise SettingsStoreError(f"unknown settings for {namespace}: {unknown}")
 
@@ -181,9 +182,10 @@ class SettingsStore:
         registry = self._read_registry()
         merged, sources = self._merge(context, namespace, registry)
         validated = self._validate(schema, namespace, merged)
-        for field_name in schema.model_fields:
-            if field_name not in sources:
-                sources[field_name] = "schema-default"
+        for field_name, field in schema.model_fields.items():
+            public_key = self._public_field_name(field_name, field)
+            if public_key not in sources:
+                sources[public_key] = "schema-default"
         return SettingsResolution(
             values=validated,
             sources=dict(sorted(sources.items())),
@@ -193,7 +195,7 @@ class SettingsStore:
     @staticmethod
     def _supplied_values(values: Mapping[str, Any] | BaseModel) -> dict[str, Any]:
         if isinstance(values, BaseModel):
-            return values.model_dump(mode="python", exclude_unset=True)
+            return values.model_dump(mode="python", exclude_unset=True, by_alias=True)
         if not isinstance(values, Mapping):
             raise TypeError("settings values must be a mapping or BaseModel")
         return dict(values)
@@ -214,6 +216,27 @@ class SettingsStore:
             character not in allowed for character in namespace
         ):
             raise ValueError(f"invalid settings namespace: {namespace}")
+
+    @staticmethod
+    def _public_field_name(field_name: str, field: Any) -> str:
+        alias = getattr(field, "alias", None)
+        if isinstance(alias, str) and alias:
+            return alias
+        return field_name
+
+    @staticmethod
+    def _public_field_names(schema: type[BaseModel]) -> set[str]:
+        return {
+            SettingsStore._public_field_name(name, field)
+            for name, field in schema.model_fields.items()
+        }
+
+    @staticmethod
+    def _python_field_name(schema: type[BaseModel], public_key: str) -> str | None:
+        for name, field in schema.model_fields.items():
+            if SettingsStore._public_field_name(name, field) == public_key:
+                return name
+        return None
 
     def register_schema(self, namespace: str, schema: type[BaseModel]) -> None:
         self._validate_namespace(namespace)
@@ -239,7 +262,7 @@ class SettingsStore:
     def _validate(
         schema: type[BaseModel], namespace: str, values: Mapping[str, Any]
     ) -> BaseModel:
-        unknown = sorted(set(values) - set(schema.model_fields))
+        unknown = sorted(set(values) - SettingsStore._public_field_names(schema))
         if unknown:
             raise SettingsStoreError(f"unknown settings for {namespace}: {unknown}")
         try:
@@ -284,13 +307,16 @@ class SettingsStore:
     ) -> None:
         """Reject plaintext supplied for fields typed as SecretReference."""
 
-        for field_name in supplied:
-            value = getattr(validated, field_name)
+        for public_key in supplied:
+            python_name = SettingsStore._python_field_name(type(validated), public_key)
+            if python_name is None:
+                continue
+            value = getattr(validated, python_name)
             if isinstance(value, SecretReference):
-                raw = supplied[field_name]
+                raw = supplied[public_key]
                 if not isinstance(raw, (SecretReference, Mapping)):
                     raise SettingsStoreError(
-                        f"secret setting {field_name} must be a SecretReference"
+                        f"secret setting {public_key} must be a SecretReference"
                     )
 
     @staticmethod
@@ -324,9 +350,15 @@ class SettingsStore:
             return
         secret_fields = tuple(
             sorted(
-                field_name
-                for field_name in changed_fields
-                if self._contains_secret_reference(getattr(validated, field_name))
+                public_key
+                for public_key in changed_fields
+                if self._contains_secret_reference(
+                    getattr(
+                        validated,
+                        self._python_field_name(type(validated), public_key)
+                        or public_key,
+                    )
+                )
             )
         )
         self.audit_sink(

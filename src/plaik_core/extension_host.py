@@ -144,7 +144,7 @@ def _canonical_health_issue(provided: object, owner: str, bound: ScopeRef) -> He
 
 
 class _PackageSettingsBase(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 def _settings_field_name(key: str, used: set[str]) -> str:
@@ -205,8 +205,8 @@ class _OwnerSettings(SettingsReader):
             except SettingsStoreError as error:
                 raise ExtensionHostError("settings could not be resolved") from error
             for field_name, field in resolved.values.__class__.model_fields.items():
-                alias = field.alias or field_name
-                if alias == key or field_name == key:
+                public_key = field.alias if field.alias else field_name
+                if public_key == key:
                     return getattr(resolved.values, field_name)
             return default
 
