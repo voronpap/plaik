@@ -76,7 +76,7 @@ from .service_control import (
 from .connection_store import ConnectionStore
 from .extension_host import ExtensionHost
 from .health_issues import HealthIssueRegistry
-from .settings_store import SettingsStore
+from .settings_store import SettingsStore, settings_events_to_audit_sink
 from .storage import exclusive_file_lock, read_json
 from .theme_revisions import ThemeRevisionStore
 from .themes import ActiveThemeStore, ThemeManager, ThemeRegistry
@@ -310,6 +310,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
             and cached_audit is not None
             and cached_operations is not None
         ):
+            if application.state.settings_store.audit_sink is None:
+                application.state.settings_store.audit_sink = (
+                    settings_events_to_audit_sink(cached_audit.append)
+                )
             return cached_session, cached_audit, cached_operations
 
         local_secrets = LocalFileSecretProvider(runtime.secrets_dir)
@@ -386,6 +390,10 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         application.state.session_store = sessions
         application.state.audit_log = audit
         application.state.operation_journal = operations
+        if application.state.settings_store.audit_sink is None:
+            application.state.settings_store.audit_sink = settings_events_to_audit_sink(
+                audit.append
+            )
         sync_extension_host()
         return sessions, audit, operations
 

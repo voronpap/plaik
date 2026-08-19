@@ -42,6 +42,27 @@ class SettingsResolution:
 AuditSink = Callable[[SettingsAuditEvent], None]
 
 
+def settings_events_to_audit_sink(append: Callable[..., object]) -> AuditSink:
+    """Adapt value-free settings events onto the platform audit journal."""
+
+    def sink(event: SettingsAuditEvent) -> None:
+        metadata: dict[str, Any] = {
+            "scope": event.scope,
+            "changed_fields": list(event.changed_fields),
+        }
+        if event.secret_fields:
+            metadata["reference_fields"] = list(event.secret_fields)
+        append(
+            actor_id=None,
+            action=f"settings.{event.action}",
+            target_type="platform.settings",
+            target_id=event.namespace,
+            metadata=metadata,
+        )
+
+    return sink
+
+
 class SettingsStore:
     """Persist and resolve typed overrides over the installation hierarchy.
 
