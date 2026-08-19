@@ -281,11 +281,13 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     def sync_extension_host() -> None:
         host: ExtensionHost = application.state.extension_host
         host.set_secret_providers(application.state.secret_providers)
+        records = package_registry.records()
         try:
             configuration = configuration_store.require()
         except Exception:
+            host.drop_unenabled(records)
             return
-        host.sync_enabled(package_registry.records(), configuration)
+        host.sync_enabled(records, configuration)
 
     application.state.sync_extension_host = sync_extension_host
 
