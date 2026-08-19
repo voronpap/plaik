@@ -334,8 +334,9 @@ class ExtensionHost:
             for package_id in tuple(self._runtimes):
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
-                    self._health_generations.pop(package_id, None)
-                    self._health.clear(owner=package_id)
+            for package_id in tuple(self._health_generations):
+                if package_id not in enabled_ids:
+                    self._unbind_health(package_id)
             for package_id in tuple(self._registered):
                 if package_id not in records:
                     self._registered.discard(package_id)
@@ -343,12 +344,20 @@ class ExtensionHost:
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
                     runtime = self._build_runtime(package_id, scope, configuration.locale)
-                    if package_id not in self._registered:
-                        self._try_register(package_id, runtime)
-                        self._registered.add(package_id)
-                    self._runtimes[package_id] = runtime
+                    try:
+                        if package_id not in self._registered:
+                            self._try_register(package_id, runtime)
+                            self._registered.add(package_id)
+                        self._runtimes[package_id] = runtime
+                    except Exception:
+                        self._unbind_health(package_id)
+                        raise
                 bound.append(runtime)
         return tuple(bound)
+
+    def _unbind_health(self, package_id: str) -> None:
+        self._health_generations.pop(package_id, None)
+        self._health.clear(owner=package_id)
 
     def runtime_for(self, package_id: str) -> ExtensionRuntime | None:
         with self._lock:
@@ -363,8 +372,7 @@ class ExtensionHost:
         store_id = scope.store_id or scope.group_id or scope.installation_id
         self._health_epoch += 1
         generation = self._health_epoch
-        self._health_generations[package_id] = generation
-        return ExtensionRuntime(
+        runtime = ExtensionRuntime(
             package_id=package_id,
             store_id=store_id,
             locale=locale,
@@ -376,6 +384,8 @@ class ExtensionHost:
             slots=_OwnerSlots(self._slots, package_id),
             health=_OwnerHealth(self, package_id, scope, generation),
         )
+        self._health_generations[package_id] = generation
+        return runtime
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
         module_path = self._packages_root / package_id / "extension.py"
