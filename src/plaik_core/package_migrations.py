@@ -406,6 +406,7 @@ def _references_protected_schema(statement: str) -> str | None:
 _UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _HEX_DIGIT = frozenset("0123456789abcdefABCDEF")
 _PACKAGE_FORBIDDEN_LEAD = frozenset({"DO", "CALL", "EXECUTE", "PREPARE"})
+_NESTED_SQL_STRING_KEYWORDS = frozenset({"AS", "EXECUTE", "PERFORM"})
 
 
 def _skip_sql_comment(statement: str, index: int) -> int | None:
@@ -658,7 +659,7 @@ def _parse_double_quoted_identifier(statement: str, index: int) -> tuple[str, in
 def _postgresql_identifiers(statement: str) -> frozenset[str]:
     """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
 
-    String literals after ``AS`` (function/procedure bodies) are scanned as
+    String literals after ``AS``, ``EXECUTE``, or ``PERFORM`` are scanned as
     nested SQL, including adjacent concatenated literals, ``N'...'``, and ``E'...'``
     escape sequences. Other string literals, comments, and bracket/backtick
     forms are skipped. Dollar quotes are scanned as nested SQL.
@@ -694,7 +695,7 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             index = end + len(delimiter)
             last_keyword = None
             continue
-        if last_keyword == "AS":
+        if last_keyword in _NESTED_SQL_STRING_KEYWORDS:
             concatenated = _consume_concatenated_sql_strings(statement, index)
             if concatenated is not None:
                 body, index = concatenated
