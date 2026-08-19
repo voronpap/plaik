@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -89,6 +89,63 @@ class JobRecord(BaseModel):
 
 
 JobHandler = Callable[[JobExecutionContext], None]
+
+
+class JobQueue(Protocol):
+    """Durable job state machine shared by JSON and PostgreSQL adapters."""
+
+    def enqueue(
+        self,
+        job_type: str,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+        maximum_attempts: int = 5,
+        scheduled_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> JobRecord: ...
+
+    def cancel_owner(self, owner: str, *, now: datetime | None = None) -> int: ...
+
+    def claim(
+        self,
+        worker_id: str,
+        *,
+        lease: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> JobRecord | None: ...
+
+    def succeed(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> JobRecord: ...
+
+    def fail(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        error_code: str,
+        now: datetime | None = None,
+    ) -> JobRecord: ...
+
+    def records(self) -> dict[str, JobRecord]: ...
+
+    def leased(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> JobRecord | None: ...
+
+    def purge_terminal(self, *, before: datetime, limit: int = 100) -> int: ...
 
 
 class DurableJobQueue:
@@ -455,10 +512,148 @@ class DurableJobQueue:
         )
 
 
+class DelegatingJobQueue:
+    """Route job mutations to the live backend; drain leftover JSON first."""
+
+    def __init__(
+        self,
+        resolve: Callable[[], JobQueue],
+        *,
+        fallback: JobQueue | None = None,
+    ) -> None:
+        self._resolve = resolve
+        self._fallback = fallback
+
+    def enqueue(
+        self,
+        job_type: str,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+        maximum_attempts: int = 5,
+        scheduled_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> JobRecord:
+        return self._resolve().enqueue(
+            job_type,
+            payload,
+            idempotency_key=idempotency_key,
+            maximum_attempts=maximum_attempts,
+            scheduled_at=scheduled_at,
+            now=now,
+        )
+
+    def cancel_owner(self, owner: str, *, now: datetime | None = None) -> int:
+        live = self._resolve()
+        changed = live.cancel_owner(owner, now=now)
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            changed += fallback.cancel_owner(owner, now=now)
+        return changed
+
+    def claim(
+        self,
+        worker_id: str,
+        *,
+        lease: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> JobRecord | None:
+        live = self._resolve()
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            leftover = fallback.claim(worker_id, lease=lease, now=now)
+            if leftover is not None:
+                return leftover
+        return live.claim(worker_id, lease=lease, now=now)
+
+    def succeed(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> JobRecord:
+        return self._backend_for(job_id).succeed(
+            job_id,
+            worker_id,
+            fencing_token=fencing_token,
+            now=now,
+        )
+
+    def fail(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        error_code: str,
+        now: datetime | None = None,
+    ) -> JobRecord:
+        return self._backend_for(job_id).fail(
+            job_id,
+            worker_id,
+            fencing_token=fencing_token,
+            error_code=error_code,
+            now=now,
+        )
+
+    def records(self) -> dict[str, JobRecord]:
+        live = self._resolve()
+        fallback = self._fallback
+        merged: dict[str, JobRecord] = {}
+        if fallback is not None and fallback is not live:
+            merged.update(fallback.records())
+        merged.update(live.records())
+        return dict(sorted(merged.items()))
+
+    def leased(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> JobRecord | None:
+        live = self._resolve()
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            leftover = fallback.leased(
+                job_id,
+                worker_id,
+                fencing_token=fencing_token,
+                now=now,
+            )
+            if leftover is not None:
+                return leftover
+        return live.leased(
+            job_id,
+            worker_id,
+            fencing_token=fencing_token,
+            now=now,
+        )
+
+    def purge_terminal(self, *, before: datetime, limit: int = 100) -> int:
+        live = self._resolve()
+        purged = live.purge_terminal(before=before, limit=limit)
+        fallback = self._fallback
+        if fallback is not None and fallback is not live and purged < limit:
+            purged += fallback.purge_terminal(before=before, limit=limit - purged)
+        return purged
+
+    def _backend_for(self, job_id: str) -> JobQueue:
+        live = self._resolve()
+        fallback = self._fallback
+        if fallback is not None and fallback is not live:
+            if job_id in fallback.records() and job_id not in live.records():
+                return fallback
+        return live
+
+
 class JobRunner:
     def __init__(
         self,
-        queue: DurableJobQueue,
+        queue: JobQueue,
         handlers: Mapping[str, JobHandler],
     ) -> None:
         self.queue = queue

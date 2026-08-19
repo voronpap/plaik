@@ -47,7 +47,7 @@ from .installer_config import (
     SQLiteDatabase,
 )
 from .migrations import MigrationError, MigrationRunner
-from .jobs import DurableJobQueue, JobDrainPump, JobRunner
+from .jobs import DelegatingJobQueue, DurableJobQueue, JobDrainPump, JobRunner
 from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
 from .event_outbox import DelegatingDurableEvents, SqliteDurableEvents
 from .operation_journal import OperationJournal, OperationStatus
@@ -56,6 +56,7 @@ from .package_declarations import PackagePermissionCatalog
 from .packages import PackageRegistry, PackageStatus
 from .postgresql import PostgreSQLAdapter, PostgreSQLAdapterError
 from .postgresql_outbox_runtime import PostgreSQLDurableEvents
+from .postgresql_job_queue import PostgreSQLJobQueue
 from .postgresql_security import (
     DelegatingStore,
     PostgreSQLAuditLog,
@@ -181,7 +182,17 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
 
     identity_store = DelegatingStore(resolve_identity_store)
     runtime_cache = NamespacedTTLCache()
-    job_queue = DurableJobQueue(runtime.jobs_registry_path)
+    json_jobs = DurableJobQueue(runtime.jobs_registry_path)
+    pg_jobs_holder: dict[str, PostgreSQLJobQueue | None] = {"queue": None}
+
+    def resolve_job_queue() -> DurableJobQueue | PostgreSQLJobQueue:
+        if postgresql_security_backend_ready():
+            queue = pg_jobs_holder["queue"]
+            if queue is not None:
+                return queue
+        return json_jobs
+
+    job_queue = DelegatingJobQueue(resolve_job_queue, fallback=json_jobs)
     service_registry = ServiceRegistry()
     event_bus = EventBus()
     sqlite_events = SqliteDurableEvents(
@@ -646,6 +657,9 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         lambda: postgresql_adapter().runtime_connect(),
         event_bus,
         dispatch_after_enqueue=False,
+    )
+    pg_jobs_holder["queue"] = PostgreSQLJobQueue(
+        lambda: postgresql_adapter().runtime_connect(),
     )
     application.state.postgresql_adapter = postgresql_adapter
     application.state.package_owner_connect = None
