@@ -257,13 +257,25 @@ class _OwnerSlots(SlotContributor):
 
 
 class _OwnerHealth(HealthReporter):
-    def __init__(self, registry: HealthIssueRegistry, owner: str, scope: ScopeRef) -> None:
-        self._registry = registry
+    def __init__(
+        self,
+        host: ExtensionHost,
+        owner: str,
+        scope: ScopeRef,
+        generation: int,
+    ) -> None:
+        self._host = host
         self._owner = owner
         self._scope = scope
+        self._generation = generation
 
     def report(self, issue: HealthIssue) -> None:
-        self._registry.report(_canonical_health_issue(issue, self._owner, self._scope))
+        with self._host._lock:
+            if self._host._health_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("health reporter is no longer bound")
+            self._host._health.report(
+                _canonical_health_issue(issue, self._owner, self._scope)
+            )
 
 
 class ExtensionHost:
@@ -291,6 +303,8 @@ class ExtensionHost:
         self._secrets = secret_providers
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
+        self._health_generations: dict[str, int] = {}
+        self._health_epoch = 0
         self._lock = threading.RLock()
 
     def set_secret_providers(self, providers: SecretProviderRegistry | None) -> None:
@@ -320,20 +334,34 @@ class ExtensionHost:
             for package_id in tuple(self._runtimes):
                 if package_id not in enabled_ids:
                     del self._runtimes[package_id]
-                    self._health.clear(owner=package_id)
+            for package_id in tuple(self._health_generations):
+                if package_id not in enabled_ids or package_id not in self._runtimes:
+                    self._unbind_health(package_id)
             for package_id in tuple(self._registered):
                 if package_id not in records:
                     self._registered.discard(package_id)
             for package_id in sorted(enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
-                    runtime = self._build_runtime(package_id, scope, configuration.locale)
-                    if package_id not in self._registered:
-                        self._try_register(package_id, runtime)
-                        self._registered.add(package_id)
-                    self._runtimes[package_id] = runtime
+                    committed = False
+                    try:
+                        runtime = self._build_runtime(
+                            package_id, scope, configuration.locale
+                        )
+                        if package_id not in self._registered:
+                            self._try_register(package_id, runtime)
+                            self._registered.add(package_id)
+                        self._runtimes[package_id] = runtime
+                        committed = True
+                    finally:
+                        if not committed:
+                            self._unbind_health(package_id)
                 bound.append(runtime)
         return tuple(bound)
+
+    def _unbind_health(self, package_id: str) -> None:
+        self._health_generations.pop(package_id, None)
+        self._health.clear(owner=package_id)
 
     def runtime_for(self, package_id: str) -> ExtensionRuntime | None:
         with self._lock:
@@ -346,7 +374,9 @@ class ExtensionHost:
         locale: str,
     ) -> ExtensionRuntime:
         store_id = scope.store_id or scope.group_id or scope.installation_id
-        return ExtensionRuntime(
+        self._health_epoch += 1
+        generation = self._health_epoch
+        runtime = ExtensionRuntime(
             package_id=package_id,
             store_id=store_id,
             locale=locale,
@@ -356,8 +386,10 @@ class ExtensionHost:
             events=_OwnerEvents(self._events, package_id, scope),
             jobs=_OwnerJobs(self._jobs),
             slots=_OwnerSlots(self._slots, package_id),
-            health=_OwnerHealth(self._health, package_id, scope),
+            health=_OwnerHealth(self, package_id, scope, generation),
         )
+        self._health_generations[package_id] = generation
+        return runtime
 
     def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
         module_path = self._packages_root / package_id / "extension.py"
