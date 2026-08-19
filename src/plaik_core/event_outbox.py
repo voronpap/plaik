@@ -23,7 +23,7 @@ _QUARANTINE_REASON = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
 class OutboxEnvelopeError(ValueError):
-    """A SQLite outbox row is not a valid EventEnvelope."""
+    """An outbox row is not a valid EventEnvelope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,8 +128,8 @@ class SQLiteEventOutbox:
                 correlation_id=correlation_id,
                 created_at=created_at,
             )
-        except (ValidationError, TypeError, ValueError) as error:
-            raise OutboxEnvelopeError("outbox envelope is invalid") from error
+        except (ValidationError, TypeError, ValueError):
+            raise OutboxEnvelopeError("outbox envelope is invalid") from None
         persisted_scope = dump_scope(envelope.scope)
         persisted_resource = dump_resource(envelope.resource)
         payload_json = json.dumps(
