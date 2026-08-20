@@ -1557,7 +1557,11 @@ document.getElementById("login-form").addEventListener("submit",async event=>{
     if(!response.ok) throw new Error("sign-in failed");
     document.getElementById("login-card").hidden=true;
     document.getElementById("packages-card").hidden=false;
-    await loadPackages();
+    try{
+      await loadPackages();
+    }catch(loadErr){
+      document.getElementById("packages-table").textContent=String(loadErr.message||loadErr);
+    }
   }catch(err){error.textContent=String(err.message||err);error.hidden=false;}
 });
 </script>
