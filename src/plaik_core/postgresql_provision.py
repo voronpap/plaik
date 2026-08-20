@@ -20,6 +20,11 @@ ProvisionRunner = Callable[..., tuple[int, str]]
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
 PASSWORD = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
+_SAFE_LOCALE = re.compile(r"^[A-Za-z0-9._@+-]+$")
+TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+RUNUSER = "/usr/sbin/runuser"
+PSQL = "/usr/bin/psql"
+CREATEDB = "/usr/bin/createdb"
 
 
 class PostgreSQLProvisionError(RuntimeError):
@@ -40,12 +45,19 @@ def generate_role_secret() -> str:
 
 
 def peer_subprocess_env(source: dict[str, str] | None = None) -> dict[str, str]:
-    """Return env that cannot redirect libpq via inherited PG* variables."""
+    """Return a minimal env that cannot hijack privileged peer commands.
 
-    env = dict(os.environ if source is None else source)
-    for key in list(env):
-        if key.startswith("PG"):
-            del env[key]
+    Inherited ``PG*``, ``PATH``, and dynamic-loader variables are dropped.
+    Commands run with a fixed trusted PATH and absolute ``runuser``/``psql``/
+    ``createdb`` paths so executable substitution cannot redirect apply.
+    """
+
+    inherited = os.environ if source is None else source
+    env = {"PATH": TRUSTED_PATH}
+    for key in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
+        value = inherited.get(key)
+        if value and _SAFE_LOCALE.fullmatch(value):
+            env[key] = value
     return env
 
 
@@ -178,11 +190,11 @@ def provision_local_postgresql(
         createdb = _run(
             runner,
             [
-                "runuser",
+                RUNUSER,
                 "-u",
                 "postgres",
                 "--",
-                "createdb",
+                CREATEDB,
                 "--username=postgres",
                 "--port",
                 str(port),
@@ -483,11 +495,11 @@ def _psql_command(port: int, database: str) -> list[str]:
     if IDENTIFIER.fullmatch(database) is None and database != "postgres":
         raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
     return [
-        "runuser",
+        RUNUSER,
         "-u",
         "postgres",
         "--",
-        "psql",
+        PSQL,
         "--no-psqlrc",
         "--no-password",
         "--set=ON_ERROR_STOP=1",
