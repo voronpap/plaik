@@ -619,20 +619,15 @@ def _consume_concatenated_sql_strings(statement: str, index: int) -> tuple[str, 
 
 
 def _reject_constructed_execute_tail(statement: str, index: int) -> None:
-    """Reject operators or calls that continue a constructed EXECUTE string."""
+    """Allow only terminator or INTO/USING after a literal EXECUTE command string."""
 
     after = _skip_sql_comments_and_space(statement, index)
     if after >= len(statement) or statement[after] in ");":
         return
-    if statement.startswith("||", after) or statement[after] in ",(":
-        raise _ConstructedPackageExecuteError("constructed execute")
     match = _UNQUOTED_IDENT.match(statement, after)
-    if match is None:
-        if statement[after] in "|&+.":
-            raise _ConstructedPackageExecuteError("constructed execute")
+    if match is not None and match.group(0).upper() in _EXECUTE_LITERAL_FOLLOWERS:
         return
-    if match.group(0).upper() not in _EXECUTE_LITERAL_FOLLOWERS:
-        raise _ConstructedPackageExecuteError("constructed execute")
+    raise _ConstructedPackageExecuteError("constructed execute")
 
 
 def _close_execute_grouping(statement: str, index: int, depth: int) -> int:
