@@ -14,13 +14,12 @@ from .config import CoreSettings, _source_repository_root
 from .installer import InstallState, InstallStateStore
 from .packages import PackageRegistry, PackageStatus
 
-_PRODUCTION_DATA_DIRS = frozenset(
-    {
-        Path("/var/lib/plaik"),
-        Path("/var/lib/plaik/public"),
-    }
+_PRODUCTION_PREFIXES = (
+    Path("/opt/plaik"),
+    Path("/var/lib/plaik"),
+    Path("/etc/plaik"),
+    Path("/var/log/plaik"),
 )
-_PRODUCTION_PREFIXES = (Path("/opt/plaik"),)
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 _OFFICIAL_MODULES = ("catalog", "inventory", "pricing", "search", "seo")
 
@@ -42,21 +41,25 @@ def require_source_checkout() -> Path:
     return root
 
 
-def require_dev_data_dir(path: Path) -> Path:
+def _production_prefix(resolved: Path) -> Path | None:
+    for prefix in _PRODUCTION_PREFIXES:
+        if resolved == prefix or prefix in resolved.parents:
+            return prefix
+    return None
+
+
+def refuse_production_path(path: Path, *, what: str = "PLAIK_DATA_DIR") -> Path:
     resolved = path.expanduser().resolve()
     if not resolved.is_absolute():
-        raise DevServeError("PLAIK_DATA_DIR must be absolute")
-    if resolved in _PRODUCTION_DATA_DIRS:
-        raise DevServeError("refusing to use production PLAIK_DATA_DIR")
-    for prefix in _PRODUCTION_PREFIXES:
-        try:
-            resolved.relative_to(prefix)
-        except ValueError:
-            continue
-        raise DevServeError("refusing to use a data directory under /opt/plaik")
-    if Path("/opt/plaik") in resolved.parents:
-        raise DevServeError("refusing to use a data directory under /opt/plaik")
+        raise DevServeError(f"{what} must be absolute")
+    prefix = _production_prefix(resolved)
+    if prefix is not None:
+        raise DevServeError(f"refusing to use production {what} under {prefix}")
     return resolved
+
+
+def require_dev_data_dir(path: Path) -> Path:
+    return refuse_production_path(path, what="PLAIK_DATA_DIR")
 
 
 def watch_directories(plaik_root: Path) -> list[Path]:
@@ -86,17 +89,22 @@ def official_module_sources(packages_root: Path) -> dict[str, Path]:
 def mount_dev_package_sources(
     installed_packages_dir: Path, sources: dict[str, Path]
 ) -> list[str]:
-    """DEV-only: point installed-packages at checked-out module trees."""
+    """DEV-only: accept bind-mounted source trees. Never create package symlinks.
 
+    Core web projection rejects symlinked package roots. Live source on Linux is
+    a bind mount (see plaik-internal ops/dev bind-packages). Missing targets are
+    an operator error, not a reason to weaken that check.
+    """
+
+    installed_packages_dir = refuse_production_path(
+        installed_packages_dir, what="installed-packages"
+    )
     installed_packages_dir.mkdir(parents=True, exist_ok=True)
     mounted: list[str] = []
     for package_id, source in sources.items():
         target = installed_packages_dir / package_id
         source = source.resolve()
         if target.is_symlink():
-            if target.resolve() == source:
-                mounted.append(package_id)
-                continue
             target.unlink()
         elif target.exists():
             marker = target / "extension.py"
@@ -107,14 +115,16 @@ def mount_dev_package_sources(
             raise DevServeError(
                 f"installed-packages/{package_id} exists and is not a DEV source mount"
             )
-        target.symlink_to(source, target_is_directory=True)
-        mounted.append(package_id)
+        raise DevServeError(
+            f"installed-packages/{package_id} is not a bind-mounted source tree"
+        )
     return mounted
 
 
 def register_mounted_packages(settings: CoreSettings, mounted: Iterable[str]) -> list[str]:
     """Record mounted source packages as enabled. DEV-only; no signature bypass in production."""
 
+    refuse_production_path(settings.data_dir, what="PLAIK_DATA_DIR")
     registry = PackageRegistry(
         settings.package_registry_path,
         core_version=__version__,
@@ -124,7 +134,12 @@ def register_mounted_packages(settings: CoreSettings, mounted: Iterable[str]) ->
     to_install = []
     enabled: list[str] = []
     for package_id in mounted:
-        manifest = load_package_manifest(settings.installed_packages_dir / package_id)
+        package_root = settings.installed_packages_dir / package_id
+        if package_root.is_symlink():
+            raise DevServeError(
+                f"installed-packages/{package_id} is a symlink; bind-mount source trees instead"
+            )
+        manifest = load_package_manifest(package_root)
         existing = records.get(package_id)
         if existing is None:
             to_install.append(manifest)
