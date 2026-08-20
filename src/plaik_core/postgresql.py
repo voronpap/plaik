@@ -1522,6 +1522,10 @@ class PostgreSQLAdapter:
             owner_scopes=owner_scopes,
         )
 
+    @property
+    def secrets(self) -> SecretProvider | SecretProviderRegistry:
+        return self._secrets
+
     def preflight(self) -> DatabasePreflightResult:
         return preflight_connection(self.connect)
 

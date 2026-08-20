@@ -26,7 +26,12 @@ from plaik_sdk import (
 )
 
 from .connection_store import ConnectionStore, ConnectionStoreError
-from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
+from .extension_runtime import (
+    EventBus,
+    ExtensionContractError,
+    RenderSlotRegistry,
+    ServiceRegistry,
+)
 from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import JobQueue, _owner_job_prefix, _validate_job_type
@@ -248,6 +253,21 @@ class _OwnerServices(ServiceResolver):
                 raise ExtensionHostError("service resolver is no longer bound")
             return self._host._services.resolve(contract, version)
 
+    def register(self, contract: str, version: str, provider: Any) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("service resolver is no longer bound")
+            if not contract.startswith(f"{self._owner}."):
+                raise ExtensionHostError(
+                    "service contract must use its package-owned namespace"
+                )
+            self._host._services.register(
+                owner=self._owner,
+                contract=contract,
+                version=version,
+                provider=provider,
+            )
+
 
 class _OwnerEvents(EventPublisher):
     def __init__(
@@ -310,6 +330,27 @@ class _OwnerEvents(EventPublisher):
                 correlation_id=correlation_id,
             )
         drain()
+
+    def subscribe(
+        self,
+        contract: str,
+        version: str,
+        handler,
+        *,
+        priority: int = 100,
+    ) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("event publisher is no longer bound")
+            if not callable(handler):
+                raise TypeError("event handler must be callable")
+            self._host._events.subscribe(
+                subscriber=self._owner,
+                contract=contract,
+                version=version,
+                handler=handler,
+                priority=priority,
+            )
 
 
 class _OwnerJobs(JobScheduler):
@@ -579,7 +620,19 @@ class ExtensionHost:
             health=_OwnerHealth(self, package_id, scope, generation),
         )
         self._runtime_generations[package_id] = generation
+        self._declare_manifest_events(record)
         return runtime
+
+    def _declare_manifest_events(self, record: PackageRecord) -> None:
+        for event in record.manifest.events:
+            try:
+                self._events.declare(
+                    owner=record.manifest.id,
+                    contract=event.contract,
+                    version=event.version,
+                )
+            except ExtensionContractError:
+                continue
 
     def _ensure_settings_schema(self, record: PackageRecord) -> None:
         if self._settings is None:

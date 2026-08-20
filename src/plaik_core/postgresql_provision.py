@@ -372,6 +372,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'package schema has unexpected owner';
     END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format(
+            'ALTER ROLE %I NOLOGIN CONNECTION LIMIT 0',
+            role_name
+        );
+    END IF;
     FOR backend IN
         SELECT pid FROM pg_stat_activity
         WHERE usename = role_name AND pid <> pg_backend_pid()
