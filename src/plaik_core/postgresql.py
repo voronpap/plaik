@@ -1240,7 +1240,7 @@ class PostgreSQLMigrationRunner:
             """
             SELECT nspname
             FROM pg_namespace
-            WHERE nspname LIKE 'plaik_pkg_%'
+            WHERE nspname LIKE 'plaik_pkg_%%'
               AND nspname <> %s
               AND has_schema_privilege(%s, nspname, 'USAGE')
             """,

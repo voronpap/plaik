@@ -129,7 +129,7 @@ def _reject_unsafe_owner_grants(
         """
         SELECT nspname
         FROM pg_namespace
-        WHERE nspname LIKE 'plaik_pkg_%'
+        WHERE nspname LIKE 'plaik_pkg_%%'
           AND nspname <> %s
           AND has_schema_privilege(%s, nspname, 'USAGE')
         """,
@@ -387,6 +387,9 @@ def _sqlstate(error: BaseException) -> str | None:
         state = getattr(current, "sqlstate", None)
         if state is None:
             state = getattr(current, "pgcode", None)
+        if state is None:
+            diagnostic = getattr(current, "diag", None)
+            state = getattr(diagnostic, "sqlstate", None)
         if isinstance(state, str) and state:
             return state
         current = current.__cause__
