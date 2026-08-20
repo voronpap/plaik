@@ -196,6 +196,7 @@ def provision_local_postgresql(
                 "--",
                 CREATEDB,
                 "--username=postgres",
+                "--no-password",
                 "--port",
                 str(port),
                 "--owner",
