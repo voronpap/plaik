@@ -55,6 +55,7 @@ from .operation_journal import OperationJournal, OperationStatus
 from .operational_safety import MaintenanceController
 from .package_declarations import PackagePermissionCatalog
 from .packages import PackageRegistry, PackageStatus
+from .package_sql_session import PackageSqlUnavailable
 from .postgresql import PostgreSQLAdapter, PostgreSQLAdapterError
 from .postgresql_outbox_runtime import PostgreSQLDurableEvents
 from .postgresql_job_queue import PostgreSQLJobQueue
@@ -233,9 +234,12 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         return store
 
     def _resolve_package_sql_connect(package_id: str):
+        configured = configuration_store.read()
+        if configured is None or not isinstance(configured.database, PostgreSQLDatabase):
+            raise PackageSqlUnavailable("package SQL is unavailable")
         connect = package_sql_connect_holder["connect"]
         if connect is None:
-            raise RuntimeError("package SQL is unavailable")
+            raise PackageSqlUnavailable("package SQL is unavailable")
         return connect(package_id)
 
     settings_store = DelegatingStore(resolve_settings_store)

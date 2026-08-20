@@ -354,6 +354,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 }
             return core.state.health_check()
         except Exception:
+            _LOG.exception("admin health core check failed")
             response.status_code = 503
             return {"status": "unavailable", "reason": "core_not_ready"}
 
