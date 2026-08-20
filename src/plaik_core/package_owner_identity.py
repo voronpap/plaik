@@ -27,7 +27,7 @@ from .postgresql import (
     _safe_close,
     _safe_rollback,
 )
-from .postgresql_provision import PASSWORD, literal
+from .postgresql_provision import PASSWORD
 from .secret_store import (
     SecretNotFoundError,
     SecretProvider,
@@ -153,6 +153,21 @@ def _reject_unsafe_owner_grants(
     if memberships:
         raise PostgreSQLOwnershipError(
             "package owner role has outbound role memberships"
+        )
+    inbound = _fetchall(
+        connection,
+        """
+        SELECT member_role.rolname
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE granted_role.rolname = %s
+        """,
+        (scope.role,),
+    )
+    if inbound:
+        raise PostgreSQLOwnershipError(
+            "package owner role has inbound role memberships"
         )
 
 
@@ -290,14 +305,7 @@ def _provision_owner_inline(
         (scope.role,),
     )
     if existing is None:
-        _execute(
-            connection,
-            (
-                f"CREATE ROLE {role_sql} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
-                "NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 "
-                f"PASSWORD {literal(password)}"
-            ),
-        )
+        _create_owner_role(connection, scope.role, password)
     else:
         unsafe = (*existing[:4], existing[5], existing[6])
         if any(unsafe) or existing[4] is not True:
@@ -332,6 +340,43 @@ def _provision_owner_inline(
         f"REVOKE CREATE ON SCHEMA public FROM {role_sql}",
     )
     _reject_unsafe_owner_grants(connection, scope)
+
+
+def _create_owner_role(
+    connection: DatabaseConnection, role: str, password: str
+) -> None:
+    """Create the LOGIN owner without putting the password in client SQL text."""
+
+    if _OWNER_ROLE.fullmatch(role) is None:
+        raise PostgreSQLOwnershipError("invalid package owner role")
+    _execute(
+        connection,
+        "CREATE TEMP TABLE plaik_owner_secret (password text) ON COMMIT DROP",
+    )
+    _execute(
+        connection,
+        "INSERT INTO plaik_owner_secret (password) VALUES (%s)",
+        (password,),
+    )
+    _execute(
+        connection,
+        f"""
+        DO $plaik$
+        DECLARE
+            secret text;
+        BEGIN
+            SELECT password INTO STRICT secret FROM plaik_owner_secret;
+            EXECUTE format(
+                'CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB '
+                'NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 '
+                'PASSWORD %L',
+                '{role}',
+                secret
+            );
+        END
+        $plaik$;
+        """,
+    )
 
 
 def _sqlstate(error: BaseException) -> str | None:

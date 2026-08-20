@@ -7,6 +7,7 @@ dumps, never drops occupied databases and never logs passwords.
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import subprocess
@@ -38,6 +39,16 @@ def generate_role_secret() -> str:
     return value
 
 
+def peer_subprocess_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Return env that cannot redirect libpq via inherited PG* variables."""
+
+    env = dict(os.environ if source is None else source)
+    for key in list(env):
+        if key.startswith("PG"):
+            del env[key]
+    return env
+
+
 def _default_runner(command: list[str], input_text: str | None = None) -> tuple[int, str]:
     try:
         completed = subprocess.run(
@@ -47,6 +58,7 @@ def _default_runner(command: list[str], input_text: str | None = None) -> tuple[
             capture_output=True,
             text=True,
             timeout=15,
+            env=peer_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
@@ -171,6 +183,7 @@ def provision_local_postgresql(
                 "postgres",
                 "--",
                 "createdb",
+                "--username=postgres",
                 "--port",
                 str(port),
                 "--owner",
@@ -312,6 +325,15 @@ BEGIN
         WHERE member_role.rolname = role_name
     ) THEN
         RAISE EXCEPTION 'package owner role has outbound role memberships';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE granted_role.rolname = role_name
+    ) THEN
+        RAISE EXCEPTION 'package owner role has inbound role memberships';
     END IF;
 END;
 $plaik_ensure$;
@@ -467,8 +489,10 @@ def _psql_command(port: int, database: str) -> list[str]:
         "--",
         "psql",
         "--no-psqlrc",
+        "--no-password",
         "--set=ON_ERROR_STOP=1",
         "-At",
+        "--username=postgres",
         "-p",
         str(port),
         "--dbname",
