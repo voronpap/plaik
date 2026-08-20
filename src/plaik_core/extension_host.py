@@ -544,11 +544,17 @@ class ExtensionHost:
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
                     try:
+                        register = self._load_register(package_id)
+                        if package_id in self._registered and register is not None:
+                            # Disable dropped the generation; drop contracts
+                            # that register() recreates so subscribe() closures
+                            # capture the live runtime.
+                            self._forget_registered_owner(package_id)
                         runtime = self._build_runtime(
                             records[package_id], scope, configuration.locale
                         )
-                        if package_id not in self._registered:
-                            self._try_register(package_id, runtime)
+                        if package_id not in self._registered and register is not None:
+                            register(runtime)
                         self._runtimes[package_id] = runtime
                         self._registered.add(package_id)
                     finally:
@@ -557,6 +563,7 @@ class ExtensionHost:
                             and self._runtimes.get(package_id) is not runtime
                         ):
                             self._unbind_generation(package_id)
+                            self._forget_registered_owner(package_id)
                             self._set_owner_registries_active(package_id, False)
                 if runtime is not None and self._runtimes.get(package_id) is runtime:
                     self._set_owner_registries_active(package_id, True)
@@ -588,10 +595,15 @@ class ExtensionHost:
                     self._set_owner_registries_active(package_id, False)
         for package_id in tuple(self._registered):
             if package_id not in records:
-                self._drop_job_handlers(package_id)
-                self._drop_owner_contracts(package_id)
-                self._registered.discard(package_id)
+                self._forget_registered_owner(package_id)
         return enabled_ids
+
+    def _forget_registered_owner(self, package_id: str) -> None:
+        """Drop contracts register() recreates so a later bind can re-register."""
+
+        self._drop_job_handlers(package_id)
+        self._drop_owner_contracts(package_id)
+        self._registered.discard(package_id)
 
     def _drop_owner_contracts(self, package_id: str) -> None:
         self._services.drop_owner(package_id)
@@ -679,10 +691,10 @@ class ExtensionHost:
             _package_settings_schema(record.manifest.id, declarations),
         )
 
-    def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
+    def _load_register(self, package_id: str):
         module_path = self._packages_root / package_id / "extension.py"
         if not module_path.is_file():
-            return
+            return None
         spec = importlib.util.spec_from_file_location(
             f"plaik_extension_{package_id.replace('-', '_')}",
             module_path,
@@ -693,5 +705,10 @@ class ExtensionHost:
         spec.loader.exec_module(module)
         register = getattr(module, "register", None)
         if not callable(register):
-            return
-        register(runtime)
+            return None
+        return register
+
+    def _try_register(self, package_id: str, runtime: ExtensionRuntime) -> None:
+        register = self._load_register(package_id)
+        if register is not None:
+            register(runtime)
