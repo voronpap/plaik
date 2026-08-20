@@ -407,6 +407,12 @@ _UNQUOTED_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _HEX_DIGIT = frozenset("0123456789abcdefABCDEF")
 _PACKAGE_FORBIDDEN_LEAD = frozenset({"DO", "CALL", "EXECUTE", "PREPARE"})
 _NESTED_SQL_STRING_KEYWORDS = frozenset({"AS", "EXECUTE", "PERFORM"})
+_EXECUTE_TRIGGER_COMMANDS = frozenset({"FUNCTION", "PROCEDURE"})
+_EXECUTE_LITERAL_FOLLOWERS = frozenset({"INTO", "USING"})
+
+
+class _ConstructedPackageExecuteError(ValueError):
+    """EXECUTE was used with a non-literal command string."""
 
 
 def _skip_sql_comment(statement: str, index: int) -> int | None:
@@ -612,6 +618,34 @@ def _consume_concatenated_sql_strings(statement: str, index: int) -> tuple[str, 
         body += part
 
 
+def _reject_constructed_execute_tail(statement: str, index: int) -> None:
+    """Reject operators or calls that continue a constructed EXECUTE string."""
+
+    after = _skip_sql_comments_and_space(statement, index)
+    if after >= len(statement) or statement[after] in ");":
+        return
+    if statement.startswith("||", after) or statement[after] in ",(":
+        raise _ConstructedPackageExecuteError("constructed execute")
+    match = _UNQUOTED_IDENT.match(statement, after)
+    if match is None:
+        if statement[after] in "|&+.":
+            raise _ConstructedPackageExecuteError("constructed execute")
+        return
+    if match.group(0).upper() not in _EXECUTE_LITERAL_FOLLOWERS:
+        raise _ConstructedPackageExecuteError("constructed execute")
+
+
+def _close_execute_grouping(statement: str, index: int, depth: int) -> int:
+    while depth:
+        index = _skip_sql_comments_and_space(statement, index)
+        if index >= len(statement) or statement[index] != ")":
+            raise _ConstructedPackageExecuteError("constructed execute")
+        index += 1
+        depth -= 1
+    _reject_constructed_execute_tail(statement, index)
+    return index
+
+
 def _decode_unicode_escaped_text(body: str, *, escape: str) -> str:
     if len(escape) != 1:
         raise ValueError("invalid unicode identifier escape")
@@ -656,7 +690,11 @@ def _parse_double_quoted_identifier(statement: str, index: int) -> tuple[str, in
     raise ValueError("migration statement contains an unterminated quote")
 
 
-def _postgresql_identifiers(statement: str) -> frozenset[str]:
+def _postgresql_identifiers(
+    statement: str,
+    *,
+    reject_constructed_execute: bool = False,
+) -> frozenset[str]:
     """Unquoted, double-quoted, and Unicode-escaped SQL identifiers, uppercased.
 
     String literals after ``AS``, ``EXECUTE``, or ``PERFORM`` are scanned as
@@ -665,12 +703,27 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
     forms are skipped. Dollar quotes are scanned as nested SQL.
     Unicode-escaped identifiers accept comments between the quotes and
     ``UESCAPE``.
+
+    When ``reject_constructed_execute`` is true, ``EXECUTE`` must take a literal
+    command string (or ``EXECUTE FUNCTION`` / ``EXECUTE PROCEDURE`` trigger
+    syntax). ``format()``, concatenation, identifiers, and subqueries are
+    rejected so a reserved relation cannot be named only at runtime.
     """
 
     names: set[str] = set()
     index = 0
     length = len(statement)
     last_keyword: str | None = None
+    execute_parens = 0
+
+    def _scan_nested(fragment: str) -> None:
+        names.update(
+            _postgresql_identifiers(
+                fragment,
+                reject_constructed_execute=reject_constructed_execute,
+            )
+        )
+
     while index < length:
         if statement[index].isspace():
             index += 1
@@ -682,8 +735,51 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
         skipped = _skip_sql_non_sql_literal(statement, index)
         if skipped is not None:
             last_keyword = None
+            execute_parens = 0
             index = skipped
             continue
+        if reject_constructed_execute and last_keyword == "EXECUTE":
+            if statement[index] == "(":
+                execute_parens += 1
+                index += 1
+                continue
+            trigger = _UNQUOTED_IDENT.match(statement, index)
+            if (
+                trigger is not None
+                and trigger.group(0).upper() in _EXECUTE_TRIGGER_COMMANDS
+            ):
+                if execute_parens:
+                    raise _ConstructedPackageExecuteError("constructed execute")
+                last_keyword = trigger.group(0).upper()
+                names.add(last_keyword)
+                execute_parens = 0
+                index = trigger.end()
+                continue
+            delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
+            if delimiter_match:
+                delimiter = delimiter_match.group(0)
+                start = index + len(delimiter)
+                end = statement.find(delimiter, start)
+                if end < 0:
+                    raise ValueError(
+                        "migration statement contains an unterminated dollar quote"
+                    )
+                _scan_nested(statement[start:end])
+                index = _close_execute_grouping(
+                    statement, end + len(delimiter), execute_parens
+                )
+                execute_parens = 0
+                last_keyword = None
+                continue
+            concatenated = _consume_concatenated_sql_strings(statement, index)
+            if concatenated is not None:
+                body, index = concatenated
+                _scan_nested(body)
+                index = _close_execute_grouping(statement, index, execute_parens)
+                execute_parens = 0
+                last_keyword = None
+                continue
+            raise _ConstructedPackageExecuteError("constructed execute")
         delimiter_match = _DOLLAR_QUOTE.match(statement[index:])
         if delimiter_match:
             delimiter = delimiter_match.group(0)
@@ -691,9 +787,10 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             end = statement.find(delimiter, start)
             if end < 0:
                 raise ValueError("migration statement contains an unterminated dollar quote")
-            names.update(_postgresql_identifiers(statement[start:end]))
+            _scan_nested(statement[start:end])
             index = end + len(delimiter)
             last_keyword = None
+            execute_parens = 0
             continue
         if last_keyword in _NESTED_SQL_STRING_KEYWORDS:
             if statement[index] == "(":
@@ -702,8 +799,9 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             concatenated = _consume_concatenated_sql_strings(statement, index)
             if concatenated is not None:
                 body, index = concatenated
-                names.update(_postgresql_identifiers(body))
+                _scan_nested(body)
                 last_keyword = None
+                execute_parens = 0
                 continue
         if (
             index + 2 < length
@@ -720,25 +818,30 @@ def _postgresql_identifiers(statement: str) -> frozenset[str]:
             if ident:
                 names.add(ident.upper())
             last_keyword = None
+            execute_parens = 0
             continue
         if statement[index] == '"':
             ident, index = _parse_double_quoted_identifier(statement, index)
             if ident:
                 names.add(ident.upper())
             last_keyword = None
+            execute_parens = 0
             continue
         skipped_string = _try_parse_sql_string_literal(statement, index)
         if skipped_string is not None:
             _, index = skipped_string
             last_keyword = None
+            execute_parens = 0
             continue
         match = _UNQUOTED_IDENT.match(statement, index)
         if match:
             last_keyword = match.group(0).upper()
             names.add(last_keyword)
+            execute_parens = 0
             index = match.end()
             continue
         last_keyword = None
+        execute_parens = 0
         index += 1
     return frozenset(names)
 
@@ -773,7 +876,16 @@ def validate_package_postgresql_statement(
             "PostgreSQL package migration command is forbidden: "
             + ",".join(sorted(forbidden))
         )
-    reserved = _postgresql_identifiers(statement) & _PACKAGE_RESERVED_RELATIONS
+    try:
+        identifiers = _postgresql_identifiers(
+            statement,
+            reject_constructed_execute=True,
+        )
+    except _ConstructedPackageExecuteError as error:
+        raise MigrationError(
+            "PostgreSQL package migration must not execute constructed SQL"
+        ) from error
+    reserved = identifiers & _PACKAGE_RESERVED_RELATIONS
     if reserved:
         raise MigrationError(
             "PostgreSQL package migration must not reference "
