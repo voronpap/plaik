@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import stat
 import threading
 from collections import Counter
@@ -15,12 +16,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from plaik_contracts.packages import ADMIN_COMMAND_ID_PATTERN, PACKAGE_ID_PATTERN
 
 from . import __version__
 from .app import create_app as create_core_app
 from .audit import AuditOutcome
 from .config import CoreSettings
 from .context import StoreContext
+from .extension_host import ExtensionHostError
+from .identity import AuthorizationError
 from .installer import InstallState
 from .installer_config import InstallerConfigurationStore
 from .pairing import PairingStore, mount_pairing_activate
@@ -36,6 +40,11 @@ from .operational_safety import (
     MaintenanceActive,
     OperationalSafetyError,
     ShutdownBarrier,
+)
+from .package_admin_commands import (
+    MAX_COMMAND_JSON_BYTES,
+    CommandPayloadError,
+    parse_command_json,
 )
 from .package_artifacts import PackageArtifactError
 from .package_composition import (
@@ -1013,6 +1022,111 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
             if record is None:
                 raise HTTPException(status_code=404, detail="package is not installed")
             return {"package": record}
+
+        _PACKAGE_ID = re.compile(PACKAGE_ID_PATTERN)
+        _ADMIN_COMMAND_ID = re.compile(ADMIN_COMMAND_ID_PATTERN)
+
+        def require_session_csrf(request: Request):
+            return auth.verify_csrf(request)
+
+        def package_command_http_error(status: int, detail: str) -> HTTPException:
+            return HTTPException(
+                status_code=status,
+                detail=detail,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @application.post("/api/admin/packages/{package_id}/commands/{command_id}")
+        async def invoke_package_command(
+            package_id: str,
+            command_id: str,
+            request: Request,
+            principal=Depends(require_session_csrf),
+        ) -> dict:
+            if not _PACKAGE_ID.fullmatch(package_id) or not _ADMIN_COMMAND_ID.fullmatch(
+                command_id
+            ):
+                raise package_command_http_error(404, "package command is unknown")
+            records = core.state.package_registry.records()
+            record = records.get(package_id)
+            declared = None
+            if record is not None:
+                declared = next(
+                    (
+                        item
+                        for item in record.manifest.admin.commands
+                        if item.id == command_id
+                    ),
+                    None,
+                )
+            if record is None or declared is None:
+                raise package_command_http_error(404, "package command is unknown")
+            try:
+                core.state.identity_store.require_permission(
+                    principal.user_id, declared.permission
+                )
+            except AuthorizationError:
+                audit.append(
+                    actor_id=principal.user_id,
+                    action="identity.access.denied",
+                    target_type="identity.permission",
+                    target_id=declared.permission,
+                    outcome=AuditOutcome.DENIED,
+                    metadata={"reason": "permission_denied"},
+                )
+                raise package_command_http_error(
+                    404, "package command is unknown"
+                ) from None
+            require_operational_write()
+            if record.status != PackageStatus.ENABLED:
+                raise package_command_http_error(
+                    409, "package command is no longer bound"
+                )
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    raise package_command_http_error(
+                        400, "command payload must be a JSON object"
+                    ) from None
+                if declared_length > MAX_COMMAND_JSON_BYTES:
+                    raise package_command_http_error(
+                        413, "command payload exceeds the size limit"
+                    )
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_COMMAND_JSON_BYTES:
+                    raise package_command_http_error(
+                        413, "command payload exceeds the size limit"
+                    )
+                body.extend(chunk)
+            try:
+                payload = parse_command_json(bytes(body))
+            except CommandPayloadError as error:
+                raise package_command_http_error(error.status_code, str(error)) from None
+            host = core.state.extension_host
+            try:
+                result = host.invoke_admin_command(package_id, command_id, payload)
+            except ExtensionHostError as error:
+                if "no longer bound" in str(error):
+                    raise package_command_http_error(
+                        409, "package command is no longer bound"
+                    ) from None
+                _LOG.exception("package command failed")
+                raise package_command_http_error(500, "package command failed") from None
+            except Exception:
+                _LOG.exception("package command failed")
+                raise package_command_http_error(500, "package command failed") from None
+            audit.append(
+                actor_id=principal.user_id,
+                action="package.command",
+                target_type="platform.package",
+                target_id=package_id,
+                outcome=AuditOutcome.SUCCESS,
+                metadata={"command_id": command_id},
+            )
+            return result
 
         def artifact_operation(
             action: str,

@@ -18,6 +18,7 @@ from plaik_sdk import (
     HealthReporter,
     JobHandler,
     JobScheduler,
+    PackageAdmin,
     SecretReader,
     SecretValue,
     ServiceResolver,
@@ -36,6 +37,7 @@ from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import JobQueue, _owner_job_prefix, _validate_job_type
 from .packages import PackageRecord, PackageStatus
+from .package_admin_commands import CommandPayloadError, snapshot_command_json
 from .package_sql_session import OpenSql, OwnerSql, PackageSqlUnavailable
 from .secret_store import SecretNotFoundError, SecretProviderRegistry
 from .settings_store import SettingsStore, SettingsStoreError
@@ -503,6 +505,33 @@ class _BoundSqlTransaction:
             raise ExtensionHostError(str(error)) from None
 
 
+class _OwnerAdmin:
+    def __init__(self, host: "ExtensionHost", owner: str, generation: int) -> None:
+        self._host = host
+        self._owner = owner
+        self._generation = generation
+
+    def register(self, command_id: str, handler) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("package admin is no longer bound")
+            if not isinstance(command_id, str) or not command_id.startswith(
+                f"{self._owner}."
+            ):
+                raise ExtensionHostError(
+                    "admin command id must use its package-owned namespace"
+                )
+            declared = self._host._admin_declared.get(self._owner, {})
+            if command_id not in declared:
+                raise ExtensionHostError("admin command is not declared")
+            if not callable(handler):
+                raise TypeError("admin command handler must be callable")
+            self._host._admin_handlers[(self._owner, command_id)] = (
+                handler,
+                self._generation,
+            )
+
+
 class ExtensionHost:
     """Build and retain one ExtensionRuntime per enabled module or integration."""
 
@@ -535,6 +564,8 @@ class ExtensionHost:
         self._settings = settings_store
         self._package_sql_connect = package_sql_connect
         self._sql_open: dict[tuple[int, str], OpenSql] = {}
+        self._admin_declared: dict[str, dict[str, str]] = {}
+        self._admin_handlers: dict[tuple[str, str], tuple[Any, int]] = {}
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
         self._runtime_generations: dict[str, int] = {}
@@ -629,12 +660,14 @@ class ExtensionHost:
         for package_id in tuple(self._registered):
             if package_id not in records:
                 self._forget_registered_owner(package_id)
+                self._admin_declared.pop(package_id, None)
         return enabled_ids
 
     def _forget_registered_owner(self, package_id: str) -> None:
         """Drop contracts register() recreates so a later bind can re-register."""
 
         self._drop_job_handlers(package_id)
+        self._drop_admin_handlers(package_id)
         self._drop_owner_contracts(package_id)
         self._registered.discard(package_id)
 
@@ -651,6 +684,12 @@ class ExtensionHost:
             if job_type.startswith(prefix)
         ]:
             del self._job_handlers[job_type]
+
+    def _drop_admin_handlers(self, package_id: str) -> None:
+        for key in [
+            key for key in self._admin_handlers if key[0] == package_id
+        ]:
+            del self._admin_handlers[key]
 
     def _set_owner_registries_active(self, package_id: str, active: bool) -> None:
         for registry in (self._services, self._events, self._slots):
@@ -671,6 +710,26 @@ class ExtensionHost:
         with self._lock:
             return self._runtimes.get(package_id)
 
+    def invoke_admin_command(
+        self,
+        package_id: str,
+        command_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            generation = self._runtime_generations.get(package_id)
+            bound = self._admin_handlers.get((package_id, command_id))
+            if generation is None or bound is None or bound[1] != generation:
+                raise ExtensionHostError("package command is no longer bound")
+            handler = bound[0]
+        result = handler(payload)
+        if not isinstance(result, Mapping):
+            raise ExtensionHostError("package command result must be a JSON object")
+        try:
+            return snapshot_command_json(result)
+        except CommandPayloadError as error:
+            raise ExtensionHostError(str(error)) from error
+
     def _build_runtime(
         self,
         record: PackageRecord,
@@ -682,6 +741,10 @@ class ExtensionHost:
         store_id = scope.store_id or scope.group_id or scope.installation_id
         self._runtime_epoch += 1
         generation = self._runtime_epoch
+        self._admin_declared[package_id] = {
+            item.id: item.permission for item in record.manifest.admin.commands
+        }
+        admin: PackageAdmin = _OwnerAdmin(self, package_id, generation)
         runtime = ExtensionRuntime(
             package_id=package_id,
             store_id=store_id,
@@ -694,6 +757,7 @@ class ExtensionHost:
             slots=_OwnerSlots(self, package_id, generation),
             health=_OwnerHealth(self, package_id, scope, generation),
             sql=_OwnerSql(self, package_id, generation),
+            admin=admin,
         )
         self._runtime_generations[package_id] = generation
         self._declare_manifest_events(record)
