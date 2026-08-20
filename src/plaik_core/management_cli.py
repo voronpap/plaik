@@ -26,6 +26,7 @@ from typing import Any
 
 from . import __version__
 from .config import CoreSettings
+from .dev_serve import DevServeError, prepare_dev_runtime, require_loopback_host
 from .host_inventory import HostInventory, discover_host_inventory
 from .installer import InstallState, InstallStateStore
 from .installer_config import DeploymentMode, InstallerConfigurationStore
@@ -1297,6 +1298,50 @@ def _print_remote_pairing(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _dev_serve(args: argparse.Namespace) -> int:
+    host = require_loopback_host(str(args.host))
+    data_dir = args.data_dir
+    if data_dir is None:
+        env_dir = os.environ.get("PLAIK_DATA_DIR")
+        if not env_dir:
+            raise DevServeError("set PLAIK_DATA_DIR or pass --data-dir")
+        data_dir = Path(env_dir)
+    packages_root = args.packages_root
+    if packages_root is None:
+        from .dev_serve import require_source_checkout
+
+        candidate = require_source_checkout().parent / "plaik-packages" / "modules"
+        packages_root = candidate if candidate.is_dir() else None
+    public_url = args.public_url or os.environ.get("PLAIK_PUBLIC_URL") or f"http://{host}:{args.port}"
+    settings, mounted, watched = prepare_dev_runtime(
+        data_dir=Path(data_dir),
+        packages_root=packages_root,
+        public_url=public_url,
+        bootstrap=bool(args.bootstrap),
+    )
+    print(f"PLAIK {__version__} DEV web")
+    print(f"URL: {public_url}")
+    print(f"Bind: http://{host}:{args.port}")
+    print(f"Data: {settings.data_dir}")
+    print(f"Packages: {', '.join(mounted) if mounted else '(none mounted)'}")
+    print("Watch:")
+    for path in watched:
+        print(f"  {path}")
+    if args.no_reload:
+        print("Reload: off")
+    import uvicorn
+
+    uvicorn.run(
+        "plaik_web.app:app",
+        host=host,
+        port=int(args.port),
+        reload=not bool(args.no_reload),
+        reload_dirs=[str(path) for path in watched] or None,
+        log_level="info",
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plaik")
     parser.add_argument("--version", action="version", version=f"PLAIK {__version__}")
@@ -1363,6 +1408,22 @@ def _parser() -> argparse.ArgumentParser:
     add_test_command(
         dev_commands.add_parser("test", help="register the package against a fake runtime")
     )
+    serve = dev_commands.add_parser(
+        "serve",
+        help="run the Web app from a source checkout with DEV package mounts",
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=18080)
+    serve.add_argument("--data-dir", type=Path)
+    serve.add_argument("--packages-root", type=Path)
+    serve.add_argument("--public-url")
+    serve.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="run the existing installer contract once into the DEV data directory",
+    )
+    serve.add_argument("--no-reload", action="store_true")
+    serve.set_defaults(handler=_dev_serve)
 
     package = commands.add_parser(
         "package",
@@ -1384,6 +1445,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.handler(args))
     except PlaikCLIError as error:
+        print(f"plaik: {error}", file=sys.stderr)
+        return 2
+    except DevServeError as error:
         print(f"plaik: {error}", file=sys.stderr)
         return 2
     except PackageDevError as error:
