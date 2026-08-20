@@ -185,10 +185,16 @@ def provision_local_postgresql(
             f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
             f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
             f"{runtime_role}, {checkpoint_role};\n"
-            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
-            f"{package_owner_control_sql(migrator_role)}"
+            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
         )
         _psql(runner, port, database, grant_sql)
+        apply_package_owner_control(
+            port=port,
+            database=database,
+            migrator_role=migrator_role,
+            inventory=inventory,
+            runner=runner,
+        )
     except Exception as error:
         try:
             _drop_created_resources(
@@ -315,6 +321,56 @@ GRANT EXECUTE ON FUNCTION plaik_control.ensure_package_owner_login(name, name, t
     TO {migrator_role};
 COMMIT;
 """
+
+
+def apply_package_owner_control(
+    *,
+    port: int,
+    database: str,
+    migrator_role: str,
+    inventory: HostInventory,
+    runner: ProvisionRunner | None = None,
+) -> None:
+    """Install LOGIN owner control on an existing local PostgreSQL database.
+
+    This is the supported postgres-peer apply path for create, use-detected, and
+    already-provisioned loopback clusters. It does not create databases or
+    Core identities.
+    """
+
+    if provisionable_listener(inventory, port) is None:
+        raise PostgreSQLProvisionError(
+            "cannot install package owner control without local postgres peer access"
+        )
+    identifiers = (database, migrator_role)
+    if any(IDENTIFIER.fullmatch(value) is None for value in identifiers):
+        raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
+    _psql(runner, port, database, package_owner_control_sql(migrator_role))
+
+
+def try_apply_package_owner_control(
+    *,
+    port: int,
+    database: str,
+    migrator_role: str,
+    inventory: HostInventory,
+    runner: ProvisionRunner | None = None,
+) -> bool:
+    """Best-effort apply when local postgres peer access is available."""
+
+    if provisionable_listener(inventory, port) is None:
+        return False
+    try:
+        apply_package_owner_control(
+            port=port,
+            database=database,
+            migrator_role=migrator_role,
+            inventory=inventory,
+            runner=runner,
+        )
+    except PostgreSQLProvisionError:
+        return False
+    return True
 
 
 def restricted_identity_grants(

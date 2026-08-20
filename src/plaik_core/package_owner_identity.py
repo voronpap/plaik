@@ -40,8 +40,10 @@ OwnerConnectAs = Callable[[str, str], DatabaseConnection]
 SecretProviders = SecretProvider | SecretProviderRegistry
 
 _UNDEFINED_FUNCTION = "42883"
+_UNDEFINED_SCHEMA = "3F000"
 _OWNER_ROLE = re.compile(r"^plaik_owner_[a-z0-9_]+$")
 _OWNER_SCHEMA = re.compile(r"^plaik_pkg_[a-z0-9_]+$")
+_CONTROL_MISSING = frozenset({_UNDEFINED_FUNCTION, _UNDEFINED_SCHEMA})
 
 
 def package_owner_secret_reference(package_id: str) -> SecretReference:
@@ -230,17 +232,32 @@ def _ensure_package_owner_login(
         )
         return
     except Exception as error:
-        if _sqlstate(error) != _UNDEFINED_FUNCTION:
+        if _sqlstate(error) not in _CONTROL_MISSING:
             raise PostgreSQLOwnershipError(
                 "package owner LOGIN role could not be provisioned"
             ) from None
         _safe_rollback(connection)
+    if not _current_user_can_create_role(connection):
+        raise PostgreSQLOwnershipError(
+            "package owner LOGIN control function is not installed"
+        )
     _provision_owner_inline(
         connection,
         scope=scope,
         database_name=database_name,
         password=password,
     )
+
+
+def _current_user_can_create_role(connection: DatabaseConnection) -> bool:
+    row = _fetchone(
+        connection,
+        """
+        SELECT rolsuper, rolcreaterole
+        FROM pg_roles WHERE rolname = current_user
+        """,
+    )
+    return row is not None and True in (row[0], row[1])
 
 
 def _provision_owner_inline(

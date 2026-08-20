@@ -1385,6 +1385,17 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
                             )
                     else:
                         adapter = postgresql_adapter(configuration)
+                        from .host_inventory import discover_host_inventory
+                        from .postgresql_provision import (
+                            try_apply_package_owner_control,
+                        )
+
+                        try_apply_package_owner_control(
+                            port=configuration.database.port,
+                            database=configuration.database.database,
+                            migrator_role=configuration.database.username,
+                            inventory=discover_host_inventory(runtime),
+                        )
                         adapter.bootstrap_core()
                         if not all(
                             entry.status == "applied"
