@@ -5,6 +5,7 @@ import os
 import secrets
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -221,6 +222,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
     health_issues = HealthIssueRegistry()
     json_settings_store = SettingsStore(runtime.settings_registry_path, {})
     pg_settings_holder: dict[str, PostgreSQLSettingsStore | None] = {"store": None}
+    package_sql_connect_holder: dict[str, Any] = {"connect": None}
 
     def resolve_settings_store() -> SettingsStore:
         if not postgresql_security_backend_ready():
@@ -229,6 +231,12 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         if store is None:
             raise RuntimeError("PostgreSQL settings store is unavailable")
         return store
+
+    def _resolve_package_sql_connect(package_id: str):
+        connect = package_sql_connect_holder["connect"]
+        if connect is None:
+            raise RuntimeError("package SQL is unavailable")
+        return connect(package_id)
 
     settings_store = DelegatingStore(resolve_settings_store)
     extension_host = ExtensionHost(
@@ -241,6 +249,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         connection_store=connection_store,
         health_issues=health_issues,
         settings_store=settings_store,
+        package_sql_connect=_resolve_package_sql_connect,
     )
     job_runner = JobRunner(job_queue, extension_host.job_handlers)
     job_pump = JobDrainPump(job_runner)
@@ -667,6 +676,7 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         return postgresql_adapter().package_owner_connect(package_id)
 
     application.state.package_owner_connect = package_owner_connect
+    package_sql_connect_holder["connect"] = package_owner_connect
 
     def require_installer_access(request: Request) -> None:
         client_key = installer_rate_limiter.key_for(request)
