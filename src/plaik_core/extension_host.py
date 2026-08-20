@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import JobQueue, _owner_job_prefix, _validate_job_type
 from .packages import PackageRecord, PackageStatus
+from .package_sql_session import OpenSql, OwnerSql, PackageSqlUnavailable
 from .secret_store import SecretNotFoundError, SecretProviderRegistry
 from .settings_store import SettingsStore, SettingsStoreError
 
@@ -473,6 +474,35 @@ class _OwnerHealth(HealthReporter):
             )
 
 
+class _OwnerSql(OwnerSql):
+    def assert_bound(self) -> None:
+        try:
+            super().assert_bound()
+        except PackageSqlUnavailable as error:
+            raise ExtensionHostError(str(error)) from None
+
+    def transaction(self):
+        inner = super().transaction()
+        return _BoundSqlTransaction(inner)
+
+
+class _BoundSqlTransaction:
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __enter__(self):
+        try:
+            return self._inner.__enter__()
+        except PackageSqlUnavailable as error:
+            raise ExtensionHostError(str(error)) from None
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            return self._inner.__exit__(exc_type, exc, tb)
+        except PackageSqlUnavailable as error:
+            raise ExtensionHostError(str(error)) from None
+
+
 class ExtensionHost:
     """Build and retain one ExtensionRuntime per enabled module or integration."""
 
@@ -489,6 +519,7 @@ class ExtensionHost:
         health_issues: HealthIssueRegistry,
         secret_providers: SecretProviderRegistry | None = None,
         settings_store: SettingsStore | None = None,
+        package_sql_connect: Callable[[str], Any] | None = None,
     ) -> None:
         self._packages_root = Path(packages_root)
         self._services = service_registry
@@ -502,6 +533,8 @@ class ExtensionHost:
         self._health = health_issues
         self._secrets = secret_providers
         self._settings = settings_store
+        self._package_sql_connect = package_sql_connect
+        self._sql_open: dict[tuple[int, str], OpenSql] = {}
         self._runtimes: dict[str, ExtensionRuntime] = {}
         self._registered: set[str] = set()
         self._runtime_generations: dict[str, int] = {}
@@ -660,6 +693,7 @@ class ExtensionHost:
             jobs=_OwnerJobs(self, package_id, generation),
             slots=_OwnerSlots(self, package_id, generation),
             health=_OwnerHealth(self, package_id, scope, generation),
+            sql=_OwnerSql(self, package_id, generation),
         )
         self._runtime_generations[package_id] = generation
         self._declare_manifest_events(record)
