@@ -7,6 +7,7 @@ dumps, never drops occupied databases and never logs passwords.
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import subprocess
@@ -19,6 +20,11 @@ ProvisionRunner = Callable[..., tuple[int, str]]
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
 PASSWORD = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
+_SAFE_LOCALE = re.compile(r"^[A-Za-z0-9._@+-]+$")
+TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+RUNUSER = "/usr/sbin/runuser"
+PSQL = "/usr/bin/psql"
+CREATEDB = "/usr/bin/createdb"
 
 
 class PostgreSQLProvisionError(RuntimeError):
@@ -38,6 +44,23 @@ def generate_role_secret() -> str:
     return value
 
 
+def peer_subprocess_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Return a minimal env that cannot hijack privileged peer commands.
+
+    Inherited ``PG*``, ``PATH``, and dynamic-loader variables are dropped.
+    Commands run with a fixed trusted PATH and absolute ``runuser``/``psql``/
+    ``createdb`` paths so executable substitution cannot redirect apply.
+    """
+
+    inherited = os.environ if source is None else source
+    env = {"PATH": TRUSTED_PATH}
+    for key in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
+        value = inherited.get(key)
+        if value and _SAFE_LOCALE.fullmatch(value):
+            env[key] = value
+    return env
+
+
 def _default_runner(command: list[str], input_text: str | None = None) -> tuple[int, str]:
     try:
         completed = subprocess.run(
@@ -47,6 +70,7 @@ def _default_runner(command: list[str], input_text: str | None = None) -> tuple[
             capture_output=True,
             text=True,
             timeout=15,
+            env=peer_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
@@ -166,11 +190,13 @@ def provision_local_postgresql(
         createdb = _run(
             runner,
             [
-                "runuser",
+                RUNUSER,
                 "-u",
                 "postgres",
                 "--",
-                "createdb",
+                CREATEDB,
+                "--username=postgres",
+                "--no-password",
                 "--port",
                 str(port),
                 "--owner",
@@ -188,6 +214,13 @@ def provision_local_postgresql(
             "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
         )
         _psql(runner, port, database, grant_sql)
+        apply_package_owner_control(
+            port=port,
+            database=database,
+            migrator_role=migrator_role,
+            inventory=inventory,
+            runner=runner,
+        )
     except Exception as error:
         try:
             _drop_created_resources(
@@ -204,6 +237,175 @@ def provision_local_postgresql(
         if isinstance(error, PostgreSQLProvisionError):
             raise
         raise PostgreSQLProvisionError("PostgreSQL provision failed") from error
+
+
+def package_owner_control_sql(migrator_role: str) -> str:
+    """Return postgres-owned SQL that lets the migrator provision LOGIN owners.
+
+    The function is SECURITY DEFINER so the migrator can stay NOCREATEROLE. It
+    only accepts one canonical ``plaik_owner_*`` / ``plaik_pkg_*`` pair. Create,
+    PUBLIC revoke and migrator GRANT stay in one transaction so a crash cannot
+    leave EXECUTE granted to PUBLIC.
+    """
+
+    if IDENTIFIER.fullmatch(migrator_role) is None:
+        raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
+    return f"""
+BEGIN;
+CREATE SCHEMA IF NOT EXISTS plaik_control;
+REVOKE ALL ON SCHEMA plaik_control FROM PUBLIC;
+GRANT USAGE ON SCHEMA plaik_control TO {migrator_role};
+CREATE OR REPLACE FUNCTION plaik_control.ensure_package_owner_login(
+    p_role name,
+    p_schema name,
+    p_password text
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $plaik_ensure$
+DECLARE
+    role_name text := p_role::text;
+    schema_name text := p_schema::text;
+    database_name text := current_database();
+    scope_key text;
+BEGIN
+    IF role_name !~ '^plaik_owner_[a-z0-9_]+$' OR char_length(role_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package owner role';
+    END IF;
+    IF schema_name !~ '^plaik_pkg_[a-z0-9_]+$' OR char_length(schema_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package schema';
+    END IF;
+    scope_key := substring(role_name from '^plaik_owner_(.*)$');
+    IF scope_key IS NULL
+        OR scope_key IS DISTINCT FROM substring(schema_name from '^plaik_pkg_(.*)$') THEN
+        RAISE EXCEPTION 'package owner scope is not canonical';
+    END IF;
+    IF p_password IS NULL OR char_length(p_password) < 43
+        OR char_length(p_password) > 256 THEN
+        RAISE EXCEPTION 'invalid package owner secret';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = role_name
+          AND (
+              rolsuper OR rolinherit OR rolcreaterole OR rolcreatedb
+              OR rolreplication OR rolbypassrls OR NOT rolcanlogin
+          )
+    ) THEN
+        RAISE EXCEPTION 'package owner role has unsafe attributes';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format(
+            'CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB '
+            'NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 '
+            'PASSWORD %L',
+            role_name,
+            p_password
+        );
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname = schema_name
+          AND pg_get_userbyid(nspowner) <> role_name
+    ) THEN
+        RAISE EXCEPTION 'package schema has unexpected owner';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = schema_name) THEN
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I', schema_name, role_name);
+    END IF;
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', schema_name);
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', database_name, role_name);
+    EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I', role_name);
+    IF has_schema_privilege(role_name, 'plaik_meta', 'USAGE')
+        OR has_schema_privilege(role_name, 'plaik_core', 'USAGE')
+        OR has_schema_privilege(role_name, 'public', 'CREATE') THEN
+        RAISE EXCEPTION 'package owner can access a protected schema';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname LIKE 'plaik_pkg_%'
+          AND nspname <> schema_name
+          AND has_schema_privilege(role_name, nspname, 'USAGE')
+    ) THEN
+        RAISE EXCEPTION 'package owner can access another package schema';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE member_role.rolname = role_name
+    ) THEN
+        RAISE EXCEPTION 'package owner role has outbound role memberships';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE granted_role.rolname = role_name
+    ) THEN
+        RAISE EXCEPTION 'package owner role has inbound role memberships';
+    END IF;
+END;
+$plaik_ensure$;
+REVOKE ALL ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
+    TO {migrator_role};
+COMMIT;
+"""
+
+
+def apply_package_owner_control(
+    *,
+    port: int,
+    database: str,
+    migrator_role: str,
+    inventory: HostInventory,
+    runner: ProvisionRunner | None = None,
+) -> None:
+    """Install LOGIN owner control on an existing local PostgreSQL database.
+
+    This is the supported postgres-peer apply path for create, use-detected, and
+    already-provisioned loopback clusters. It does not create databases or
+    Core identities.
+    """
+
+    if provisionable_listener(inventory, port) is None:
+        raise PostgreSQLProvisionError(
+            "cannot install package owner control without local postgres peer access"
+        )
+    identifiers = (database, migrator_role)
+    if any(IDENTIFIER.fullmatch(value) is None for value in identifiers):
+        raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
+    _psql(runner, port, database, package_owner_control_sql(migrator_role))
+
+
+def try_apply_package_owner_control(
+    *,
+    port: int,
+    database: str,
+    migrator_role: str,
+    inventory: HostInventory,
+    runner: ProvisionRunner | None = None,
+) -> bool:
+    """Best-effort apply when local postgres peer access is available."""
+
+    if provisionable_listener(inventory, port) is None:
+        return False
+    try:
+        apply_package_owner_control(
+            port=port,
+            database=database,
+            migrator_role=migrator_role,
+            inventory=inventory,
+            runner=runner,
+        )
+    except PostgreSQLProvisionError:
+        return False
+    return True
 
 
 def restricted_identity_grants(
@@ -294,14 +496,16 @@ def _psql_command(port: int, database: str) -> list[str]:
     if IDENTIFIER.fullmatch(database) is None and database != "postgres":
         raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
     return [
-        "runuser",
+        RUNUSER,
         "-u",
         "postgres",
         "--",
-        "psql",
+        PSQL,
         "--no-psqlrc",
+        "--no-password",
         "--set=ON_ERROR_STOP=1",
         "-At",
+        "--username=postgres",
         "-p",
         str(port),
         "--dbname",

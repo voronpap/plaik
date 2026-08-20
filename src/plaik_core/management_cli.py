@@ -32,6 +32,7 @@ from .installer_config import DeploymentMode, InstallerConfigurationStore
 from .pairing import PairingIssueUnavailable, PairingStore, PairingStoreUnavailable
 from .postgresql_provision import (
     PostgreSQLProvisionError,
+    apply_package_owner_control,
     generate_role_secret,
     provision_local_postgresql,
 )
@@ -776,6 +777,16 @@ def _postgresql_payload(
         except PostgreSQLProvisionError as error:
             raise PlaikCLIError(str(error)) from None
         print(f"Created empty PostgreSQL database {name} on {host}:{port}")
+    elif source == "use-detected":
+        try:
+            apply_package_owner_control(
+                port=port,
+                database=name,
+                migrator_role=migrator,
+                inventory=inventory,
+            )
+        except PostgreSQLProvisionError as error:
+            raise PlaikCLIError(str(error)) from None
 
     _write_secret_as_runtime_user(
         settings,

@@ -355,7 +355,7 @@ class PackagePostgreSQLMigrationExecutor:
             """
             SELECT namespace.nspname
             FROM pg_namespace AS namespace
-            WHERE namespace.nspname LIKE 'plaik_pkg_%'
+            WHERE namespace.nspname LIKE 'plaik_pkg_%%'
               AND namespace.nspname <> %s
               AND has_schema_privilege(current_user, namespace.nspname, 'USAGE')
             """,

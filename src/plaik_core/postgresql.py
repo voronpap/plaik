@@ -447,6 +447,39 @@ class PostgreSQLConnectionFactory:
             # Do not retain the resolved plaintext beyond the driver call.
             password = ""
 
+    def connect_as(self, username: str, password: str) -> DatabaseConnection:
+        """Open one session as an already-provisioned LOGIN identity."""
+
+        if (
+            not isinstance(username, str)
+            or _POSTGRES_IDENTIFIER.fullmatch(username) is None
+        ):
+            raise PostgreSQLConfigurationError("invalid PostgreSQL owner identity")
+        if not isinstance(password, str) or not password:
+            raise PostgreSQLConfigurationError("PostgreSQL owner credential is empty")
+        database = self._configuration.database
+        connector = self._connector or _load_psycopg_connector()
+        try:
+            return connector(
+                host=database.host,
+                port=database.port,
+                dbname=database.database,
+                user=username,
+                password=password,
+                sslmode=database.ssl_mode,
+                connect_timeout=database.connect_timeout_seconds,
+                application_name="plaik-v2-package-owner",
+                target_session_attrs="read-write",
+                options=self._timeouts.libpq_options,
+                autocommit=False,
+            )
+        except Exception as error:
+            raise PostgreSQLConnectionError(
+                f"PostgreSQL owner connection failed ({_safe_error_class(error)})"
+            ) from None
+        finally:
+            password = ""
+
     @property
     def configuration(self) -> InstallerConfiguration:
         """Return the revalidated immutable configuration used by this factory."""
@@ -484,7 +517,12 @@ class PostgreSQLConnectionFactory:
 
 @dataclass(frozen=True, slots=True)
 class PostgreSQLOwnerScope:
-    """Pre-provisioned NOLOGIN role and owned schema for one package owner."""
+    """Canonical per-package schema and LOGIN role identifiers.
+
+    Live package SQL authenticates as ``role``. The leftover Core owner-scope
+    preflight still describes a NOLOGIN + SET ROLE model and must not execute
+    package statements.
+    """
 
     owner: str
     schema: str
@@ -1202,7 +1240,7 @@ class PostgreSQLMigrationRunner:
             """
             SELECT nspname
             FROM pg_namespace
-            WHERE nspname LIKE 'plaik_pkg_%'
+            WHERE nspname LIKE 'plaik_pkg_%%'
               AND nspname <> %s
               AND has_schema_privilege(%s, nspname, 'USAGE')
             """,
@@ -1461,6 +1499,7 @@ class PostgreSQLAdapter:
             timeouts=timeouts,
             connector=connector,
         )
+        self._secrets = secrets
         self.runtime_connect = PostgreSQLConnectionFactory(
             configuration,
             secrets,
@@ -1497,6 +1536,24 @@ class PostgreSQLAdapter:
 
     def verify_owner_scopes(self) -> tuple[str, ...]:
         return self.migrations.verify_owner_scopes()
+
+    def package_owner_connect(self, package_id: str) -> DatabaseConnection:
+        """Open a distinct LOGIN session as the canonical package owner."""
+
+        from .package_owner_identity import connect_package_owner
+
+        database = self.configuration.database
+        if not isinstance(database, PostgreSQLDatabase):
+            raise PostgreSQLConfigurationError(
+                "package owner connections require PostgreSQL"
+            )
+        return connect_package_owner(
+            migrator_connect=self.connect,
+            owner_connect_as=self.connect.connect_as,
+            secrets=self._secrets,
+            database_name=database.database,
+            package_id=package_id,
+        )
 
     def bootstrap_core(self) -> PostgreSQLBootstrapResult:
         preflight = self.preflight()
