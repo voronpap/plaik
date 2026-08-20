@@ -1074,7 +1074,9 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                     outcome=AuditOutcome.DENIED,
                     metadata={"reason": "permission_denied"},
                 )
-                raise package_command_http_error(403, "permission denied") from None
+                raise package_command_http_error(
+                    404, "package command is unknown"
+                ) from None
             require_operational_write()
             if record.status != PackageStatus.ENABLED:
                 raise package_command_http_error(

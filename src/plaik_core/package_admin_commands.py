@@ -36,6 +36,8 @@ def parse_command_json(raw: bytes) -> dict[str, Any]:
         )
     try:
         payload = json.loads(raw, parse_constant=_reject_json_constant)
+    except RecursionError:
+        raise CommandPayloadError("command payload exceeds the depth limit") from None
     except (UnicodeError, json.JSONDecodeError, ValueError, TypeError) as error:
         raise CommandPayloadError("command payload must be a JSON object") from error
     if not isinstance(payload, dict):
