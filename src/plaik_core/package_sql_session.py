@@ -152,7 +152,7 @@ class OwnerSqlTransaction:
             except PackageSqlUnavailable:
                 raise
             except Exception as error:
-                raise PackageSqlUnavailable("package SQL is unavailable") from error
+                raise PackageSqlUnavailable("package SQL connection failed") from error
             try:
                 self._sql.assert_bound()
                 prepare_package_search_path(connection, owner)
