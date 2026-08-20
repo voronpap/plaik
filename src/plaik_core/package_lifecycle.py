@@ -184,6 +184,12 @@ class TransactionalPackageManager:
                     raise TransactionalPackageError(
                         "succeeded uninstall journal conflicts with package registry"
                     )
+                try:
+                    self._release_durable_ownership(package_id)
+                except Exception:
+                    raise TransactionalPackageError(
+                        "package uninstalled; durable ownership cleanup required"
+                    ) from None
                 return PackageLifecycleResult(
                     operation_id, "uninstall", package_id, None, None, True
                 )

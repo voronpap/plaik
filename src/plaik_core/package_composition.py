@@ -53,6 +53,7 @@ def build_package_sql_coordinator(
         adapter.connect,
         owner_connect,
         lock_connect=adapter.connect,
+        secrets=getattr(adapter, "_secrets", None),
     )
 
 

@@ -18,6 +18,7 @@ from .package_migrations import (
     load_package_migrations,
     validate_package_postgresql_statement,
 )
+from .package_owner_identity import SecretProviders
 from .package_prepared_transactions import (
     finish_package_transaction,
     inspect_package_transaction,
@@ -62,10 +63,12 @@ class PackagePostgreSQLPreparedCoordinator:
         *,
         lock_connect: ConnectionFactory | None = None,
         advisory_lock_key: int = MIGRATION_LOCK_KEY,
+        secrets: SecretProviders | None = None,
     ) -> None:
         self.coordinator_connect = coordinator_connect
         self.owner_connect = owner_connect
         self.lock_connect = lock_connect or coordinator_connect
+        self.secrets = secrets
         self.runner = PostgreSQLMigrationRunner(
             coordinator_connect,
             lock_connect=self.lock_connect,
@@ -78,6 +81,7 @@ class PackagePostgreSQLPreparedCoordinator:
         drop_package_owner_login(
             migrator_connect=self.coordinator_connect,
             package_id=package_id,
+            secrets=self.secrets,
         )
 
     def drop_orphans(self, installed_package_ids: tuple[str, ...]) -> tuple[str, ...]:

@@ -367,5 +367,12 @@ class CrashAtomicPackageManager(TransactionalPackageManager):
         return self.sql_intent_root / f"{token}.json"
 
     def _cleanup_intent(self, intent: _TransactionIntent) -> None:
+        if intent.action == "uninstall" and intent.phase == TransactionPhase.COMMITTED:
+            try:
+                self._release_durable_ownership(intent.package_id)
+            except Exception:
+                raise TransactionalPackageError(
+                    "package uninstalled; durable ownership cleanup required"
+                ) from None
         self._sql_record_path(intent.operation_id).unlink(missing_ok=True)
         super()._cleanup_intent(intent)

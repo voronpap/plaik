@@ -31,6 +31,7 @@ from .postgresql_provision import PASSWORD
 from .secret_store import (
     SecretNotFoundError,
     SecretProvider,
+    SecretProviderReadOnlyError,
     SecretProviderRegistry,
     SecretStoreError,
 )
@@ -185,10 +186,11 @@ def drop_orphaned_package_owners(
 
 def _delete_owner_secret(secrets: SecretProviders, package_id: str) -> None:
     reference = package_owner_secret_reference(package_id)
+    ignored = (SecretNotFoundError, SecretProviderReadOnlyError)
     if isinstance(secrets, SecretProviderRegistry):
         try:
             secrets.delete(reference)
-        except SecretNotFoundError:
+        except ignored:
             return
         return
     delete = getattr(secrets, "delete", None)
@@ -196,7 +198,7 @@ def _delete_owner_secret(secrets: SecretProviders, package_id: str) -> None:
         return
     try:
         delete(reference.key, version=reference.version)
-    except SecretNotFoundError:
+    except ignored:
         return
 
 
@@ -232,6 +234,28 @@ def _drop_owner_inline(
 ) -> None:
     role_sql = _quote_identifier(scope.role)
     schema_sql = _quote_identifier(scope.schema)
+    backends = _fetchall(
+        connection,
+        """
+        SELECT pid FROM pg_stat_activity
+        WHERE usename = %s AND pid <> pg_backend_pid()
+        """,
+        (scope.role,),
+    )
+    for (pid,) in backends:
+        if isinstance(pid, int):
+            _execute(connection, "SELECT pg_terminate_backend(%s)", (pid,))
+    database_name = _fetchone(connection, "SELECT current_database()")
+    if (
+        database_name is not None
+        and isinstance(database_name[0], str)
+        and database_name[0]
+    ):
+        database_sql = _quote_identifier(database_name[0])
+        _execute(
+            connection,
+            f"REVOKE CONNECT ON DATABASE {database_sql} FROM {role_sql}",
+        )
     _execute(connection, f"DROP SCHEMA IF EXISTS {schema_sql} CASCADE")
     exists = _fetchone(
         connection,
