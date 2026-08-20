@@ -26,7 +26,12 @@ from plaik_sdk import (
 )
 
 from .connection_store import ConnectionStore, ConnectionStoreError
-from .extension_runtime import EventBus, RenderSlotRegistry, ServiceRegistry
+from .extension_runtime import (
+    EventBus,
+    ExtensionContractError,
+    RenderSlotRegistry,
+    ServiceRegistry,
+)
 from .health_issues import HealthIssueRegistry
 from .installer_config import InstallerConfiguration
 from .jobs import JobQueue, _owner_job_prefix, _validate_job_type
@@ -43,6 +48,30 @@ def _require_exact_str(value: object, error: str) -> str:
     if type(value) is not str:
         raise ExtensionHostError(error)
     return value
+
+
+def _enable_bind_order(
+    records: Mapping[str, PackageRecord], enabled_ids: set[str]
+) -> tuple[str, ...]:
+    remaining = set(enabled_ids)
+    ordered: list[str] = []
+    while remaining:
+        ready = [
+            package_id
+            for package_id in remaining
+            if all(
+                dependency.package_id not in remaining
+                for dependency in records[package_id].manifest.dependencies
+                if not dependency.optional
+            )
+        ]
+        if not ready:
+            ready = sorted(remaining)
+        else:
+            ready.sort()
+        ordered.extend(ready)
+        remaining.difference_update(ready)
+    return tuple(ordered)
 
 
 def _optional_exact_str(value: object, error: str) -> str | None:
@@ -248,6 +277,21 @@ class _OwnerServices(ServiceResolver):
                 raise ExtensionHostError("service resolver is no longer bound")
             return self._host._services.resolve(contract, version)
 
+    def register(self, contract: str, version: str, provider: Any) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("service resolver is no longer bound")
+            if not contract.startswith(f"{self._owner}."):
+                raise ExtensionHostError(
+                    "service contract must use its package-owned namespace"
+                )
+            self._host._services.register(
+                owner=self._owner,
+                contract=contract,
+                version=version,
+                provider=provider,
+            )
+
 
 class _OwnerEvents(EventPublisher):
     def __init__(
@@ -310,6 +354,27 @@ class _OwnerEvents(EventPublisher):
                 correlation_id=correlation_id,
             )
         drain()
+
+    def subscribe(
+        self,
+        contract: str,
+        version: str,
+        handler,
+        *,
+        priority: int = 100,
+    ) -> None:
+        with self._host._lock:
+            if self._host._runtime_generations.get(self._owner) != self._generation:
+                raise ExtensionHostError("event publisher is no longer bound")
+            if not callable(handler):
+                raise TypeError("event handler must be callable")
+            self._host._events.subscribe(
+                subscriber=self._owner,
+                contract=contract,
+                version=version,
+                handler=handler,
+                priority=priority,
+            )
 
 
 class _OwnerJobs(JobScheduler):
@@ -475,7 +540,7 @@ class ExtensionHost:
         bound: list[ExtensionRuntime] = []
         with self._lock:
             enabled_ids = self._drop_unenabled_locked(records)
-            for package_id in sorted(enabled_ids):
+            for package_id in _enable_bind_order(records, enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
                     try:
@@ -524,8 +589,14 @@ class ExtensionHost:
         for package_id in tuple(self._registered):
             if package_id not in records:
                 self._drop_job_handlers(package_id)
+                self._drop_owner_contracts(package_id)
                 self._registered.discard(package_id)
         return enabled_ids
+
+    def _drop_owner_contracts(self, package_id: str) -> None:
+        self._services.drop_owner(package_id)
+        self._events.drop_owner(package_id)
+        self._slots.drop_owner(package_id)
 
     def _drop_job_handlers(self, package_id: str) -> None:
         prefix = _owner_job_prefix(package_id)
@@ -579,7 +650,23 @@ class ExtensionHost:
             health=_OwnerHealth(self, package_id, scope, generation),
         )
         self._runtime_generations[package_id] = generation
+        self._declare_manifest_events(record)
         return runtime
+
+    def _declare_manifest_events(self, record: PackageRecord) -> None:
+        for event in record.manifest.events:
+            try:
+                self._events.declare(
+                    owner=record.manifest.id,
+                    contract=event.contract,
+                    version=event.version,
+                )
+            except ExtensionContractError as error:
+                if "already declared" not in str(error):
+                    raise
+                existing = self._events.get_declaration(event.contract, event.version)
+                if existing is None or existing.owner != record.manifest.id:
+                    raise
 
     def _ensure_settings_schema(self, record: PackageRecord) -> None:
         if self._settings is None:

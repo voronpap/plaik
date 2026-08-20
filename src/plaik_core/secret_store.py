@@ -106,6 +106,15 @@ class SecretProviderRegistry:
             entropy_bytes=entropy_bytes,
         )
 
+    def delete(self, reference: SecretReference) -> None:
+        provider = self._provider(reference.provider)
+        delete = getattr(provider, "delete", None)
+        if delete is None:
+            raise SecretProviderReadOnlyError(
+                f"secret provider cannot delete secrets: {reference.provider}"
+            )
+        delete(reference.key, version=reference.version)
+
     def _provider(self, name: str) -> SecretProvider:
         try:
             return self._providers[name]
@@ -321,6 +330,17 @@ class LocalFileSecretProvider:
                 return self.read(key, version=version)
         finally:
             temporary_path.unlink(missing_ok=True)
+
+    def delete(self, key: str, *, version: str | None = None) -> None:
+        path = self._path(key, version)
+        reference = _reference_label(self.name, key, version)
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            raise SecretNotFoundError(f"secret does not exist ({reference})") from None
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise SecretStoreError(f"secret is not a regular file ({reference})")
+        path.unlink()
 
     def path_for(self, key: str, *, version: str | None = None) -> Path:
         """Return the validated path for diagnostics without reading the secret."""

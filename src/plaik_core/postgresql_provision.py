@@ -14,17 +14,19 @@ import subprocess
 from collections.abc import Callable
 
 from .host_inventory import HostInventory, PostgreSQLListener
+from .privileged_peer import (
+    CREATEDB,
+    PSQL,
+    RUNUSER,
+    TRUSTED_PATH,
+    peer_subprocess_env,
+)
 
 ProvisionRunner = Callable[..., tuple[int, str]]
 
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
 PASSWORD = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
-_SAFE_LOCALE = re.compile(r"^[A-Za-z0-9._@+-]+$")
-TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
-RUNUSER = "/usr/sbin/runuser"
-PSQL = "/usr/bin/psql"
-CREATEDB = "/usr/bin/createdb"
 
 
 class PostgreSQLProvisionError(RuntimeError):
@@ -42,23 +44,6 @@ def generate_role_secret() -> str:
     if PASSWORD.fullmatch(value) is None:
         raise PostgreSQLProvisionError("generated PostgreSQL secret is invalid")
     return value
-
-
-def peer_subprocess_env(source: dict[str, str] | None = None) -> dict[str, str]:
-    """Return a minimal env that cannot hijack privileged peer commands.
-
-    Inherited ``PG*``, ``PATH``, and dynamic-loader variables are dropped.
-    Commands run with a fixed trusted PATH and absolute ``runuser``/``psql``/
-    ``createdb`` paths so executable substitution cannot redirect apply.
-    """
-
-    inherited = os.environ if source is None else source
-    env = {"PATH": TRUSTED_PATH}
-    for key in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
-        value = inherited.get(key)
-        if value and _SAFE_LOCALE.fullmatch(value):
-            env[key] = value
-    return env
 
 
 def _default_runner(command: list[str], input_text: str | None = None) -> tuple[int, str]:
@@ -353,6 +338,64 @@ $plaik_ensure$;
 REVOKE ALL ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
     FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
+    TO {migrator_role};
+CREATE OR REPLACE FUNCTION plaik_control.drop_package_owner_login(
+    p_role name,
+    p_schema name
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $plaik_drop$
+DECLARE
+    role_name text := p_role::text;
+    schema_name text := p_schema::text;
+    database_name text := current_database();
+    scope_key text;
+    backend integer;
+BEGIN
+    IF role_name !~ '^plaik_owner_[a-z0-9_]+$' OR char_length(role_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package owner role';
+    END IF;
+    IF schema_name !~ '^plaik_pkg_[a-z0-9_]+$' OR char_length(schema_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package schema';
+    END IF;
+    scope_key := substring(role_name from '^plaik_owner_(.*)$');
+    IF scope_key IS NULL
+        OR scope_key IS DISTINCT FROM substring(schema_name from '^plaik_pkg_(.*)$') THEN
+        RAISE EXCEPTION 'package owner scope is not canonical';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname = schema_name
+          AND pg_get_userbyid(nspowner) IS DISTINCT FROM role_name
+    ) THEN
+        RAISE EXCEPTION 'package schema has unexpected owner';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format(
+            'ALTER ROLE %I NOLOGIN CONNECTION LIMIT 0',
+            role_name
+        );
+    END IF;
+    FOR backend IN
+        SELECT pid FROM pg_stat_activity
+        WHERE usename = role_name AND pid <> pg_backend_pid()
+    LOOP
+        PERFORM pg_terminate_backend(backend);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I', database_name, role_name);
+    END IF;
+    EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format('DROP ROLE %I', role_name);
+    END IF;
+END;
+$plaik_drop$;
+REVOKE ALL ON FUNCTION plaik_control.drop_package_owner_login(name, name)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION plaik_control.drop_package_owner_login(name, name)
     TO {migrator_role};
 COMMIT;
 """

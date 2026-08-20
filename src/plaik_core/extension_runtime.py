@@ -111,6 +111,18 @@ class ServiceRegistry:
     def activate_owner(self, owner: str) -> int:
         return self._set_owner_active(owner, True)
 
+    def drop_owner(self, owner: str) -> int:
+        """Permanently remove an uninstalled owner's service contracts."""
+
+        _validate_owner(owner)
+        removed = 0
+        with self._lock:
+            for key, registration in tuple(self._registrations.items()):
+                if registration.owner == owner:
+                    del self._registrations[key]
+                    removed += 1
+        return removed
+
     def _set_owner_active(self, owner: str, active: bool) -> int:
         _validate_owner(owner)
         changed = 0
@@ -172,6 +184,11 @@ class EventBus:
             declaration = EventDeclaration(owner, contract, str(parsed), validator)
             self._declarations[key] = declaration
             return declaration
+
+    def get_declaration(self, contract: str, version: str) -> EventDeclaration | None:
+        key = (_validate_contract_name(contract), _version(version))
+        with self._lock:
+            return self._declarations.get(key)
 
     def subscribe(
         self,
@@ -325,6 +342,28 @@ class EventBus:
     def activate_owner(self, owner: str) -> int:
         return self._set_owner_active(owner, True)
 
+    def drop_owner(self, owner: str) -> int:
+        """Permanently remove an uninstalled owner's events and subscriptions."""
+
+        owner = _validate_owner(owner)
+        removed = 0
+        with self._lock:
+            for key, declaration in tuple(self._declarations.items()):
+                if declaration.owner == owner:
+                    del self._declarations[key]
+                    removed += 1
+            kept: list[EventSubscription] = []
+            for subscription in self._subscriptions:
+                if subscription.subscriber == owner:
+                    removed += 1
+                else:
+                    kept.append(subscription)
+            self._subscriptions = kept
+            for key in tuple(self._idempotency):
+                if key[0] == owner:
+                    del self._idempotency[key]
+        return removed
+
     def _set_owner_active(self, owner: str, active: bool) -> int:
         owner = _validate_owner(owner)
         changed = 0
@@ -475,6 +514,30 @@ class RenderSlotRegistry:
 
     def activate_owner(self, owner: str) -> int:
         return self._set_owner_active(owner, True)
+
+    def drop_owner(self, owner: str) -> int:
+        """Permanently remove an uninstalled owner's slots and bindings."""
+
+        owner = _validate_owner(owner)
+        removed = 0
+        with self._lock:
+            dropped_slots = {
+                name
+                for (name, _parsed), declaration in self._slots.items()
+                if declaration.owner == owner
+            }
+            for key, declaration in tuple(self._slots.items()):
+                if declaration.owner == owner:
+                    del self._slots[key]
+                    removed += 1
+            kept: list[RenderBinding] = []
+            for binding in self._bindings:
+                if binding.contributor == owner or binding.slot in dropped_slots:
+                    removed += 1
+                else:
+                    kept.append(binding)
+            self._bindings = kept
+        return removed
 
     def _set_owner_active(self, owner: str, active: bool) -> int:
         owner = _validate_owner(owner)

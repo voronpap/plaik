@@ -380,6 +380,20 @@ class PackagePostgreSQLMigrationExecutor:
             raise PostgreSQLOwnershipError(
                 "package owner role has outbound role memberships"
             )
+        inbound = _fetchall(
+            owner_connection,
+            """
+            SELECT member_role.rolname
+            FROM pg_auth_members AS membership
+            JOIN pg_roles AS member_role ON member_role.oid = membership.member
+            JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+            WHERE granted_role.rolname = current_user
+            """,
+        )
+        if inbound:
+            raise PostgreSQLOwnershipError(
+                "package owner role has inbound role memberships"
+            )
 
     @staticmethod
     def _prepare_owner_search_path(

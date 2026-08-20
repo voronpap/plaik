@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import CoreSettings
+from .privileged_peer import PG_LSCLUSTERS, PSQL, RUNUSER, SS, peer_subprocess_env
 from .requirements import RequirementCheck
 
 
@@ -37,6 +38,7 @@ def _default_runner(command: list[str]) -> tuple[int, str]:
             capture_output=True,
             text=True,
             timeout=3,
+            env=peer_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
@@ -181,9 +183,9 @@ def discover_host_inventory(
 def _discover_listeners(runner: CommandRunner) -> tuple[PostgreSQLListener, ...]:
     clusters = _discover_clusters(runner)
     by_port = {item.port: item for item in clusters}
-    code, output = runner(["ss", "-ltnp"])
+    code, output = runner([SS, "-ltnp"])
     if code != 0 or not output.strip():
-        code, output = runner(["ss", "-ltn"])
+        code, output = runner([SS, "-ltn"])
     listeners: dict[int, PostgreSQLListener] = dict(by_port)
     for line in output.splitlines():
         if "127.0.0.1:" not in line and "[::1]:" not in line:
@@ -215,7 +217,7 @@ def _discover_listeners(runner: CommandRunner) -> tuple[PostgreSQLListener, ...]
 
 
 def _discover_clusters(runner: CommandRunner) -> tuple[PostgreSQLListener, ...]:
-    code, output = runner(["pg_lsclusters", "--no-header"])
+    code, output = runner([PG_LSCLUSTERS, "--no-header"])
     if code != 0:
         return ()
     found: list[PostgreSQLListener] = []
@@ -324,11 +326,11 @@ def _psql(runner: CommandRunner, port: int, database: str, sql: str) -> tuple[in
         return 1, ""
     return runner(
         [
-            "runuser",
+            RUNUSER,
             "-u",
             "postgres",
             "--",
-            "psql",
+            PSQL,
             "--no-psqlrc",
             "-At",
             "-p",

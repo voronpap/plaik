@@ -47,7 +47,10 @@ from .package_lifecycle import (
     TransactionalPackageError,
     TransactionalPackageManager,
 )
+from .package_operations import last_package_operation, package_console_entry
+from .package_owner_identity import package_owner_secret_reference
 from .packages import PackageStatus
+from .secret_store import SecretNotFoundError, SecretProviderReadOnlyError
 from .settings_store import SettingsStoreError
 from .signing_keys import SigningKeyStoreError
 from .storage import exclusive_file_lock
@@ -856,6 +859,14 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 catalog.retain_package(result.package_id)
                 if not result.idempotent_replay:
                     core.state.connection_store.revoke_owner(result.package_id)
+                    providers = application.state.secret_providers
+                    if providers is not None:
+                        try:
+                            providers.delete(
+                                package_owner_secret_reference(result.package_id)
+                            )
+                        except (SecretNotFoundError, SecretProviderReadOnlyError):
+                            pass
             _sync_extension_host(core)
             if result.action in {"update", "disable", "uninstall"}:
                 core.state.cache.invalidate_namespace(result.package_id)
@@ -975,12 +986,33 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                 metadata={"count": len(records)},
             )
             core.state.anchor_journals()
+            job_records = jobs.records()
+            health_registry = getattr(application.state, "health_issues", None)
+            health = (
+                tuple(health_registry.issues()) if health_registry is not None else ()
+            )
+            operation_events = operations.events()
             return {
                 "packages": {
-                    package_id: record.model_dump(mode="json")
+                    package_id: package_console_entry(
+                        record,
+                        jobs=job_records,
+                        health_issues=health,
+                        last_operation=last_package_operation(
+                            operation_events, package_id
+                        ),
+                    )
                     for package_id, record in sorted(records.items())
                 }
             }
+
+        @application.get("/api/admin/packages/{package_id}")
+        def get_package(package_id: str, principal=Depends(read_platform)) -> dict:
+            listed = list_packages(principal)
+            record = listed["packages"].get(package_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="package is not installed")
+            return {"package": record}
 
         def artifact_operation(
             action: str,
@@ -1362,7 +1394,56 @@ _ADMIN_HTML = """<!doctype html>
 <html lang="uk" data-plaik-admin><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PLAIK Admin</title><style>
 [data-plaik-admin]{color-scheme:dark;font-family:system-ui,sans-serif;background:#111318;color:#f4f6fb}
-[data-plaik-admin] body{margin:0}[data-plaik-admin] main{max-width:64rem;margin:8vh auto;padding:2rem}
-[data-plaik-admin] .card{background:#1a1e26;border:1px solid #303745;border-radius:1rem;padding:1.5rem}
-</style></head><body><main><section class="card"><h1>PLAIK Admin</h1>
-<p>Увійдіть через захищений сеансовий API.</p></section></main></body></html>"""
+[data-plaik-admin] body{margin:0}[data-plaik-admin] main{max-width:72rem;margin:4vh auto;padding:1.5rem}
+[data-plaik-admin] .card{background:#1a1e26;border:1px solid #303745;border-radius:1rem;padding:1.5rem;margin-bottom:1rem}
+[data-plaik-admin] table{width:100%;border-collapse:collapse}[data-plaik-admin] th,[data-plaik-admin] td{text-align:left;padding:.5rem;border-bottom:1px solid #303745;vertical-align:top}
+[data-plaik-admin] input{background:#111318;color:#f4f6fb;border:1px solid #303745;border-radius:.5rem;padding:.5rem}
+[data-plaik-admin] button{background:#3b82f6;color:#fff;border:0;border-radius:.5rem;padding:.5rem .9rem}
+[data-plaik-admin] pre{white-space:pre-wrap;word-break:break-word}
+</style></head><body><main>
+<section class="card" id="login-card">
+<h1>PLAIK Admin</h1>
+<p>Platform console for package lifecycle. Sign in with the administrator session API.</p>
+<form id="login-form"><label>Email <input name="email" type="email" required></label>
+<label>Password <input name="password" type="password" required></label>
+<button type="submit">Sign in</button></form>
+<p id="login-error" hidden></p>
+</section>
+<section class="card" id="packages-card" hidden>
+<h2>Packages</h2>
+<p>Status, capabilities, health, jobs, migrations and last lifecycle operation.</p>
+<div id="packages-table"></div>
+<pre id="package-detail"></pre>
+</section>
+<script>
+async function csrf(){const r=await fetch("/api/auth/csrf",{credentials:"same-origin"});const d=await r.json();return d.csrf_token;}
+async function loadPackages(){
+  const r=await fetch("/api/admin/packages",{credentials:"same-origin"});
+  if(!r.ok) throw new Error("package registry unavailable");
+  const data=await r.json();
+  const rows=Object.values(data.packages||{});
+  const table=document.getElementById("packages-table");
+  if(!rows.length){table.textContent="No packages installed.";return;}
+  table.innerHTML="<table><thead><tr><th>Package</th><th>Version</th><th>Status</th><th>Provides</th><th>Health</th><th>Jobs</th><th>SQL</th><th>Last op</th></tr></thead><tbody>"+
+    rows.map(p=>`<tr data-id="${p.id}"><td>${p.id}</td><td>${p.version}</td><td>${p.status}</td><td>${(p.capabilities.provided||[]).map(x=>x.id).join(", ")||"—"}</td><td>${(p.health_issues||[]).length}</td><td>${(p.pending_jobs||[]).length}/${(p.failed_jobs||[]).length}</td><td>${p.migration_state.has_sql?"yes":"no"}</td><td>${p.last_lifecycle_operation?p.last_lifecycle_operation.action:"—"}</td></tr>`).join("")+
+    "</tbody></table>";
+  table.querySelectorAll("tr[data-id]").forEach(row=>row.addEventListener("click",()=>{
+    document.getElementById("package-detail").textContent=JSON.stringify(rows.find(item=>item.id===row.dataset.id),null,2);
+  }));
+}
+document.getElementById("login-form").addEventListener("submit",async event=>{
+  event.preventDefault();
+  const error=document.getElementById("login-error");
+  error.hidden=true;
+  try{
+    const token=await csrf();
+    const body=Object.fromEntries(new FormData(event.target).entries());
+    const response=await fetch("/api/auth/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF-Token":token},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error("sign-in failed");
+    document.getElementById("login-card").hidden=true;
+    document.getElementById("packages-card").hidden=false;
+    await loadPackages();
+  }catch(err){error.textContent=String(err.message||err);error.hidden=false;}
+});
+</script>
+</main></body></html>"""

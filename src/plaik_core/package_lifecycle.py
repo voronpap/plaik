@@ -184,6 +184,12 @@ class TransactionalPackageManager:
                     raise TransactionalPackageError(
                         "succeeded uninstall journal conflicts with package registry"
                     )
+                try:
+                    self._release_durable_ownership(package_id)
+                except Exception:
+                    raise TransactionalPackageError(
+                        "package uninstalled; durable ownership cleanup required"
+                    ) from None
                 return PackageLifecycleResult(
                     operation_id, "uninstall", package_id, None, None, True
                 )
@@ -238,6 +244,12 @@ class TransactionalPackageManager:
                     "package occupancy reset failed"
                 ) from None
             self._execute(intent)
+            try:
+                self._release_durable_ownership(package_id)
+            except Exception:
+                raise TransactionalPackageError(
+                    "package uninstalled; durable ownership cleanup required"
+                ) from None
             return PackageLifecycleResult(
                 operation_id, "uninstall", package_id, None, None
             )
@@ -869,6 +881,10 @@ class TransactionalPackageManager:
         if self.occupancy_reset is None:
             return
         self.occupancy_reset(package_id)
+
+    def _release_durable_ownership(self, package_id: str) -> None:
+        del package_id
+        return
 
     def _inject(self, point: str) -> None:
         if self.failure_injector is not None:
