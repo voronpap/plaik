@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import secrets
 from pathlib import Path
@@ -231,6 +233,53 @@ def bootstrap_reference_install(settings: CoreSettings, *, public_url: str) -> N
     secret_path.chmod(0o600)
 
 
+def ensure_dev_package_trust_store(settings: CoreSettings) -> Path:
+    """Create a DEV-only package trust snapshot so Admin can list the registry.
+
+    Production installers provision this file as an operator-managed store.
+    ``plaik dev serve`` is not a second installer; it only fills the gap when
+    the file is missing so GET /api/admin/packages is not 503.
+    """
+
+    path = settings.trusted_package_signing_keys_path
+    if path.is_file():
+        return path
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+    from plaik_contracts import PackageType
+
+    public = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "keys": {
+                    "publisher.plaik-dev": {
+                        "public_key": base64.urlsafe_b64encode(public)
+                        .decode("ascii")
+                        .rstrip("="),
+                        "packages": ["*"],
+                        "types": [item.value for item in PackageType],
+                        "revoked": False,
+                        "transfers_from": [],
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
 def prepare_dev_runtime(
     *,
     data_dir: Path,
@@ -251,6 +300,7 @@ def prepare_dev_runtime(
                 "dev data directory is not installed; rerun with --bootstrap once"
             )
         bootstrap_reference_install(settings, public_url=public_url)
+    ensure_dev_package_trust_store(settings)
     mounted: list[str] = []
     if packages_root is not None and packages_root.is_dir():
         sources = official_module_sources(packages_root)
