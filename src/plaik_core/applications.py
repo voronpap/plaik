@@ -38,7 +38,10 @@ from .operational_safety import (
     ShutdownBarrier,
 )
 from .package_artifacts import PackageArtifactError
-from .package_composition import build_package_manager, build_package_migration_applier
+from .package_composition import (
+    build_package_manager,
+    compose_package_sql_bindings,
+)
 from .package_lifecycle import (
     PackageLifecycleResult,
     TransactionalPackageError,
@@ -413,7 +416,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
         def package_manager() -> TransactionalPackageManager:
             try:
                 owner_connect = getattr(application.state, "package_owner_connect", None)
-                migration_applier = build_package_migration_applier(
+                migration_applier, sql_coordinator = compose_package_sql_bindings(
                     configuration=lambda: application.state.configuration_store.require(),
                     postgresql_adapter=core.state.postgresql_adapter,
                     owner_connect=owner_connect,
@@ -428,6 +431,7 @@ def create_admin_app(settings: CoreSettings | None = None) -> FastAPI:
                         application.state.configuration_store.require().store_id
                     ),
                     migration_applier=migration_applier,
+                    sql_coordinator=sql_coordinator,
                     occupancy_reset=core.state.connection_store.revoke_owner,
                 )
                 manager.recover()

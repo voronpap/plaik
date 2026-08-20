@@ -1,0 +1,264 @@
+"""LOGIN package-owner identity for crash-atomic PostgreSQL package SQL.
+
+Live package SQL authenticates as the canonical per-package LOGIN role. The
+migrator never executes package statements and never ``SET ROLE``s into the
+owner. Owner passwords live in the secret provider, never in Git or installer
+configuration.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+
+from plaik_contracts import SecretReference
+
+from .database import ConnectionFactory, DatabaseConnection
+from .postgresql import (
+    PostgreSQLConnectionError,
+    PostgreSQLOwnerScope,
+    PostgreSQLOwnershipError,
+    _execute,
+    _fetchone,
+    _quote_identifier,
+    _safe_close,
+    _safe_rollback,
+)
+from .postgresql_provision import PASSWORD, literal
+from .secret_store import (
+    SecretNotFoundError,
+    SecretProvider,
+    SecretProviderRegistry,
+    SecretStoreError,
+)
+
+
+OwnerConnectAs = Callable[[str, str], DatabaseConnection]
+SecretProviders = SecretProvider | SecretProviderRegistry
+
+_UNDEFINED_FUNCTION = "42883"
+_OWNER_ROLE = re.compile(r"^plaik_owner_[a-z0-9_]+$")
+_OWNER_SCHEMA = re.compile(r"^plaik_pkg_[a-z0-9_]+$")
+
+
+def package_owner_secret_reference(package_id: str) -> SecretReference:
+    """Return the local secret pointer for one package owner LOGIN role."""
+
+    PostgreSQLOwnerScope.for_package(package_id)
+    return SecretReference(
+        provider="local",
+        key=f"postgresql/package-owner/{package_id}",
+        version="v1",
+    )
+
+
+def connect_package_owner(
+    *,
+    migrator_connect: ConnectionFactory,
+    owner_connect_as: OwnerConnectAs,
+    secrets: SecretProviders,
+    database_name: str,
+    package_id: str,
+) -> DatabaseConnection:
+    """Provision the LOGIN owner if needed, then open a distinct owner session."""
+
+    scope = PostgreSQLOwnerScope.for_package(package_id)
+    _quote_identifier(database_name)
+    password = _resolve_owner_secret(secrets, package_id, migrator_connect, scope)
+    migrator = migrator_connect()
+    try:
+        _ensure_package_owner_login(
+            migrator,
+            scope=scope,
+            database_name=database_name,
+            password=password,
+        )
+        migrator.commit()
+    except Exception:
+        _safe_rollback(migrator)
+        raise
+    finally:
+        _safe_close(migrator)
+    try:
+        return owner_connect_as(scope.role, password)
+    except PostgreSQLConnectionError as error:
+        raise PostgreSQLOwnershipError(
+            "package owner LOGIN connection failed"
+        ) from error
+    finally:
+        password = ""
+
+
+def _resolve_owner_secret(
+    secrets: SecretProviders,
+    package_id: str,
+    migrator_connect: ConnectionFactory,
+    scope: PostgreSQLOwnerScope,
+) -> str:
+    reference = package_owner_secret_reference(package_id)
+    try:
+        value = _read_secret(secrets, reference)
+    except SecretNotFoundError:
+        if _role_exists(migrator_connect, scope.role):
+            raise PostgreSQLOwnershipError(
+                "package owner secret is missing for an existing LOGIN role"
+            ) from None
+        value = _generate_owner_secret(secrets, reference)
+    if PASSWORD.fullmatch(value) is None:
+        raise PostgreSQLOwnershipError(
+            "package owner secret does not meet the password contract"
+        )
+    return value
+
+
+def _generate_owner_secret(
+    secrets: SecretProviders,
+    reference: SecretReference,
+) -> str:
+    if isinstance(secrets, SecretProviderRegistry):
+        return secrets.generate_if_missing(
+            reference, entropy_bytes=32
+        ).get_secret_value()
+    if secrets.name != reference.provider:
+        raise SecretStoreError("package owner secret provider is unavailable")
+    return secrets.generate_if_missing(
+        reference.key,
+        version=reference.version,
+        entropy_bytes=32,
+    ).get_secret_value()
+
+
+def _read_secret(secrets: SecretProviders, reference: SecretReference) -> str:
+    if isinstance(secrets, SecretProviderRegistry):
+        return secrets.resolve(reference).get_secret_value()
+    if secrets.name != reference.provider:
+        raise SecretStoreError("package owner secret provider is unavailable")
+    return secrets.read(reference.key, version=reference.version).get_secret_value()
+
+
+def _role_exists(migrator_connect: ConnectionFactory, role: str) -> bool:
+    connection = migrator_connect()
+    try:
+        row = _fetchone(
+            connection,
+            "SELECT 1 FROM pg_roles WHERE rolname = %s",
+            (role,),
+        )
+        connection.rollback()
+        return row is not None
+    finally:
+        _safe_close(connection)
+
+
+def _ensure_package_owner_login(
+    connection: DatabaseConnection,
+    *,
+    scope: PostgreSQLOwnerScope,
+    database_name: str,
+    password: str,
+) -> None:
+    try:
+        _execute(
+            connection,
+            "SELECT plaik_control.ensure_package_owner_login(%s, %s, %s)",
+            (scope.role, scope.schema, password),
+        )
+        return
+    except Exception as error:
+        if _sqlstate(error) != _UNDEFINED_FUNCTION:
+            raise PostgreSQLOwnershipError(
+                "package owner LOGIN role could not be provisioned"
+            ) from None
+        _safe_rollback(connection)
+    _provision_owner_inline(
+        connection,
+        scope=scope,
+        database_name=database_name,
+        password=password,
+    )
+
+
+def _provision_owner_inline(
+    connection: DatabaseConnection,
+    *,
+    scope: PostgreSQLOwnerScope,
+    database_name: str,
+    password: str,
+) -> None:
+    if _OWNER_ROLE.fullmatch(scope.role) is None:
+        raise PostgreSQLOwnershipError("invalid package owner role")
+    if _OWNER_SCHEMA.fullmatch(scope.schema) is None:
+        raise PostgreSQLOwnershipError("invalid package schema")
+    if PASSWORD.fullmatch(password) is None:
+        raise PostgreSQLOwnershipError(
+            "package owner secret does not meet the password contract"
+        )
+
+    role_sql = _quote_identifier(scope.role)
+    schema_sql = _quote_identifier(scope.schema)
+    database_sql = _quote_identifier(database_name)
+    existing = _fetchone(
+        connection,
+        """
+        SELECT rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin,
+               rolreplication, rolbypassrls
+        FROM pg_roles WHERE rolname = %s
+        """,
+        (scope.role,),
+    )
+    if existing is None:
+        _execute(
+            connection,
+            (
+                f"CREATE ROLE {role_sql} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+                "NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 "
+                f"PASSWORD {literal(password)}"
+            ),
+        )
+    else:
+        unsafe = (*existing[:4], existing[5], existing[6])
+        if any(unsafe) or existing[4] is not True:
+            raise PostgreSQLOwnershipError(
+                "package owner role has unsafe login or privilege attributes"
+            )
+
+    namespace = _fetchone(
+        connection,
+        """
+        SELECT pg_get_userbyid(nspowner)
+        FROM pg_namespace WHERE nspname = %s
+        """,
+        (scope.schema,),
+    )
+    if namespace is None:
+        _execute(
+            connection,
+            f"CREATE SCHEMA {schema_sql} AUTHORIZATION {role_sql}",
+        )
+    elif namespace[0] != scope.role:
+        raise PostgreSQLOwnershipError(
+            "package owner schema has unexpected owner"
+        )
+    _execute(connection, f"REVOKE ALL ON SCHEMA {schema_sql} FROM PUBLIC")
+    _execute(
+        connection,
+        f"GRANT CONNECT ON DATABASE {database_sql} TO {role_sql}",
+    )
+    _execute(
+        connection,
+        f"REVOKE CREATE ON SCHEMA public FROM {role_sql}",
+    )
+
+
+def _sqlstate(error: BaseException) -> str | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        state = getattr(current, "sqlstate", None)
+        if state is None:
+            state = getattr(current, "pgcode", None)
+        if isinstance(state, str) and state:
+            return state
+        current = current.__cause__
+    return None

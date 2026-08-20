@@ -33,9 +33,6 @@ from .themes import ThemeManager, ThemeRegistry
 _PACKAGE_SQL_SQLITE_DISABLED = (
     "package SQL migrations require the PostgreSQL crash-atomic coordinator"
 )
-_PACKAGE_SQL_OWNER_REQUIRED = (
-    "package SQL migrations require an owner-authenticated PostgreSQL connection factory"
-)
 
 
 def build_package_sql_coordinator(
@@ -50,7 +47,7 @@ def build_package_sql_coordinator(
     if not isinstance(configured.database, PostgreSQLDatabase):
         return None
     if owner_connect is None:
-        raise TransactionalPackageError(_PACKAGE_SQL_OWNER_REQUIRED)
+        return None
     adapter = postgresql_adapter()
     return PackagePostgreSQLPreparedCoordinator(
         adapter.connect,
@@ -86,6 +83,36 @@ def build_package_migration_applier(
         raise TransactionalPackageError(_PACKAGE_SQL_SQLITE_DISABLED)
 
     return apply
+
+
+def compose_package_sql_bindings(
+    *,
+    configuration: Callable[[], InstallerConfiguration],
+    postgresql_adapter: Callable[[], PostgreSQLAdapter],
+    owner_connect: OwnerConnectionFactory | None,
+) -> tuple[PackageMigrationApplier | None, PackageSQLCoordinator | None]:
+    """Choose crash-atomic PostgreSQL SQL or the fail-closed compatibility stub.
+
+    PostgreSQL with an owner factory composes the 2PC coordinator and must not
+    also receive the legacy applier. SQLite and PostgreSQL without an owner
+    factory keep the stub so SQL-less packages still install.
+    """
+
+    coordinator = build_package_sql_coordinator(
+        configuration=configuration,
+        postgresql_adapter=postgresql_adapter,
+        owner_connect=owner_connect,
+    )
+    if coordinator is not None:
+        return None, coordinator
+    return (
+        build_package_migration_applier(
+            configuration=configuration,
+            postgresql_adapter=postgresql_adapter,
+            owner_connect=owner_connect,
+        ),
+        None,
+    )
 
 
 def build_package_manager(

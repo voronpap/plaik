@@ -185,7 +185,8 @@ def provision_local_postgresql(
             f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
             f"GRANT CONNECT ON DATABASE {database} TO {migrator_role}, "
             f"{runtime_role}, {checkpoint_role};\n"
-            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+            f"{package_owner_control_sql(migrator_role)}"
         )
         _psql(runner, port, database, grant_sql)
     except Exception as error:
@@ -204,6 +205,84 @@ def provision_local_postgresql(
         if isinstance(error, PostgreSQLProvisionError):
             raise
         raise PostgreSQLProvisionError("PostgreSQL provision failed") from error
+
+
+def package_owner_control_sql(migrator_role: str) -> str:
+    """Return postgres-owned SQL that lets the migrator provision LOGIN owners.
+
+    The function is SECURITY DEFINER so the migrator can stay NOCREATEROLE. It
+    only accepts canonical ``plaik_owner_*`` / ``plaik_pkg_*`` identifiers.
+    """
+
+    if IDENTIFIER.fullmatch(migrator_role) is None:
+        raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
+    return f"""
+CREATE SCHEMA IF NOT EXISTS plaik_control;
+REVOKE ALL ON SCHEMA plaik_control FROM PUBLIC;
+GRANT USAGE ON SCHEMA plaik_control TO {migrator_role};
+CREATE OR REPLACE FUNCTION plaik_control.ensure_package_owner_login(
+    p_role name,
+    p_schema name,
+    p_password text
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $plaik_ensure$
+DECLARE
+    role_name text := p_role::text;
+    schema_name text := p_schema::text;
+    database_name text := current_database();
+BEGIN
+    IF role_name !~ '^plaik_owner_[a-z0-9_]+$' OR char_length(role_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package owner role';
+    END IF;
+    IF schema_name !~ '^plaik_pkg_[a-z0-9_]+$' OR char_length(schema_name) > 63 THEN
+        RAISE EXCEPTION 'invalid package schema';
+    END IF;
+    IF p_password IS NULL OR char_length(p_password) < 43
+        OR char_length(p_password) > 256 THEN
+        RAISE EXCEPTION 'invalid package owner secret';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = role_name
+          AND (
+              rolsuper OR rolinherit OR rolcreaterole OR rolcreatedb
+              OR rolreplication OR rolbypassrls OR NOT rolcanlogin
+          )
+    ) THEN
+        RAISE EXCEPTION 'package owner role has unsafe attributes';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+        EXECUTE format(
+            'CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB '
+            'NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 '
+            'PASSWORD %L',
+            role_name,
+            p_password
+        );
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname = schema_name
+          AND pg_get_userbyid(nspowner) <> role_name
+    ) THEN
+        RAISE EXCEPTION 'package schema has unexpected owner';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = schema_name) THEN
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I', schema_name, role_name);
+    END IF;
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', schema_name);
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', database_name, role_name);
+    EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I', role_name);
+END;
+$plaik_ensure$;
+REVOKE ALL ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
+    TO {migrator_role};
+"""
 
 
 def restricted_identity_grants(

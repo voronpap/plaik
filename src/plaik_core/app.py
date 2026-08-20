@@ -662,7 +662,11 @@ def create_app(settings: CoreSettings | None = None) -> FastAPI:
         lambda: postgresql_adapter().runtime_connect(),
     )
     application.state.postgresql_adapter = postgresql_adapter
-    application.state.package_owner_connect = None
+
+    def package_owner_connect(package_id: str):
+        return postgresql_adapter().package_owner_connect(package_id)
+
+    application.state.package_owner_connect = package_owner_connect
 
     def require_installer_access(request: Request) -> None:
         client_key = installer_rate_limiter.key_for(request)
