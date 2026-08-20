@@ -211,12 +211,15 @@ def package_owner_control_sql(migrator_role: str) -> str:
     """Return postgres-owned SQL that lets the migrator provision LOGIN owners.
 
     The function is SECURITY DEFINER so the migrator can stay NOCREATEROLE. It
-    only accepts canonical ``plaik_owner_*`` / ``plaik_pkg_*`` identifiers.
+    only accepts one canonical ``plaik_owner_*`` / ``plaik_pkg_*`` pair. Create,
+    PUBLIC revoke and migrator GRANT stay in one transaction so a crash cannot
+    leave EXECUTE granted to PUBLIC.
     """
 
     if IDENTIFIER.fullmatch(migrator_role) is None:
         raise PostgreSQLProvisionError("invalid PostgreSQL identifier")
     return f"""
+BEGIN;
 CREATE SCHEMA IF NOT EXISTS plaik_control;
 REVOKE ALL ON SCHEMA plaik_control FROM PUBLIC;
 GRANT USAGE ON SCHEMA plaik_control TO {migrator_role};
@@ -233,12 +236,18 @@ DECLARE
     role_name text := p_role::text;
     schema_name text := p_schema::text;
     database_name text := current_database();
+    scope_key text;
 BEGIN
     IF role_name !~ '^plaik_owner_[a-z0-9_]+$' OR char_length(role_name) > 63 THEN
         RAISE EXCEPTION 'invalid package owner role';
     END IF;
     IF schema_name !~ '^plaik_pkg_[a-z0-9_]+$' OR char_length(schema_name) > 63 THEN
         RAISE EXCEPTION 'invalid package schema';
+    END IF;
+    scope_key := substring(role_name from '^plaik_owner_(.*)$');
+    IF scope_key IS NULL
+        OR scope_key IS DISTINCT FROM substring(schema_name from '^plaik_pkg_(.*)$') THEN
+        RAISE EXCEPTION 'package owner scope is not canonical';
     END IF;
     IF p_password IS NULL OR char_length(p_password) < 43
         OR char_length(p_password) > 256 THEN
@@ -276,12 +285,35 @@ BEGIN
     EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', schema_name);
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', database_name, role_name);
     EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I', role_name);
+    IF has_schema_privilege(role_name, 'plaik_meta', 'USAGE')
+        OR has_schema_privilege(role_name, 'plaik_core', 'USAGE')
+        OR has_schema_privilege(role_name, 'public', 'CREATE') THEN
+        RAISE EXCEPTION 'package owner can access a protected schema';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace
+        WHERE nspname LIKE 'plaik_pkg_%'
+          AND nspname <> schema_name
+          AND has_schema_privilege(role_name, nspname, 'USAGE')
+    ) THEN
+        RAISE EXCEPTION 'package owner can access another package schema';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE member_role.rolname = role_name
+    ) THEN
+        RAISE EXCEPTION 'package owner role has outbound role memberships';
+    END IF;
 END;
 $plaik_ensure$;
 REVOKE ALL ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
     FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION plaik_control.ensure_package_owner_login(name, name, text)
     TO {migrator_role};
+COMMIT;
 """
 
 

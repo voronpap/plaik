@@ -15,10 +15,13 @@ from plaik_contracts import SecretReference
 
 from .database import ConnectionFactory, DatabaseConnection
 from .postgresql import (
+    CORE_SCHEMA,
+    META_SCHEMA,
     PostgreSQLConnectionError,
     PostgreSQLOwnerScope,
     PostgreSQLOwnershipError,
     _execute,
+    _fetchall,
     _fetchone,
     _quote_identifier,
     _safe_close,
@@ -63,6 +66,7 @@ def connect_package_owner(
     """Provision the LOGIN owner if needed, then open a distinct owner session."""
 
     scope = PostgreSQLOwnerScope.for_package(package_id)
+    _require_canonical_owner_scope(scope)
     _quote_identifier(database_name)
     password = _resolve_owner_secret(secrets, package_id, migrator_connect, scope)
     migrator = migrator_connect()
@@ -87,6 +91,67 @@ def connect_package_owner(
         ) from error
     finally:
         password = ""
+
+
+def _require_canonical_owner_scope(scope: PostgreSQLOwnerScope) -> None:
+    role_key = scope.role.removeprefix("plaik_owner_")
+    schema_key = scope.schema.removeprefix("plaik_pkg_")
+    if (
+        role_key != schema_key
+        or not role_key
+        or _OWNER_ROLE.fullmatch(scope.role) is None
+        or _OWNER_SCHEMA.fullmatch(scope.schema) is None
+    ):
+        raise PostgreSQLOwnershipError("package owner scope is not canonical")
+
+
+def _reject_unsafe_owner_grants(
+    connection: DatabaseConnection,
+    scope: PostgreSQLOwnerScope,
+) -> None:
+    protected = _fetchone(
+        connection,
+        """
+        SELECT has_schema_privilege(%s, %s, 'USAGE'),
+               has_schema_privilege(%s, %s, 'USAGE'),
+               has_schema_privilege(%s, 'public', 'CREATE')
+        """,
+        (scope.role, META_SCHEMA, scope.role, CORE_SCHEMA, scope.role),
+    )
+    if protected is None or any(protected):
+        raise PostgreSQLOwnershipError(
+            "package owner session can access a protected schema"
+        )
+    foreign = _fetchall(
+        connection,
+        """
+        SELECT nspname
+        FROM pg_namespace
+        WHERE nspname LIKE 'plaik_pkg_%'
+          AND nspname <> %s
+          AND has_schema_privilege(%s, nspname, 'USAGE')
+        """,
+        (scope.schema, scope.role),
+    )
+    if foreign:
+        raise PostgreSQLOwnershipError(
+            "package owner session can access another package schema"
+        )
+    memberships = _fetchall(
+        connection,
+        """
+        SELECT granted_role.rolname
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE member_role.rolname = %s
+        """,
+        (scope.role,),
+    )
+    if memberships:
+        raise PostgreSQLOwnershipError(
+            "package owner role has outbound role memberships"
+        )
 
 
 def _resolve_owner_secret(
@@ -189,6 +254,7 @@ def _provision_owner_inline(
         raise PostgreSQLOwnershipError("invalid package owner role")
     if _OWNER_SCHEMA.fullmatch(scope.schema) is None:
         raise PostgreSQLOwnershipError("invalid package schema")
+    _require_canonical_owner_scope(scope)
     if PASSWORD.fullmatch(password) is None:
         raise PostgreSQLOwnershipError(
             "package owner secret does not meet the password contract"
@@ -248,6 +314,7 @@ def _provision_owner_inline(
         connection,
         f"REVOKE CREATE ON SCHEMA public FROM {role_sql}",
     )
+    _reject_unsafe_owner_grants(connection, scope)
 
 
 def _sqlstate(error: BaseException) -> str | None:
