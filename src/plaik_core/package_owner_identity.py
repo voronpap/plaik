@@ -95,6 +95,153 @@ def connect_package_owner(
         password = ""
 
 
+def drop_package_owner_login(
+    *,
+    migrator_connect: ConnectionFactory,
+    package_id: str,
+    secrets: SecretProviders | None = None,
+) -> None:
+    """Drop one package schema and LOGIN role. Idempotent if already absent."""
+
+    scope = PostgreSQLOwnerScope.for_package(package_id)
+    _require_canonical_owner_scope(scope)
+    migrator = migrator_connect()
+    try:
+        _drop_package_owner_login(migrator, scope=scope)
+        migrator.commit()
+    except Exception:
+        _safe_rollback(migrator)
+        raise
+    finally:
+        _safe_close(migrator)
+    if secrets is not None:
+        _delete_owner_secret(secrets, package_id)
+
+
+def drop_orphaned_package_owners(
+    *,
+    migrator_connect: ConnectionFactory,
+    installed_package_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Drop LOGIN owners whose package is no longer installed."""
+
+    keep = {
+        PostgreSQLOwnerScope.for_package(package_id).role
+        for package_id in installed_package_ids
+    }
+    migrator = migrator_connect()
+    dropped: list[str] = []
+    try:
+        rows = _fetchall(
+            migrator,
+            """
+            SELECT rolname
+            FROM pg_roles
+            WHERE rolname LIKE 'plaik_owner_%%'
+            ORDER BY 1
+            """,
+        )
+        for (role_name,) in rows:
+            if not isinstance(role_name, str) or role_name in keep:
+                continue
+            if _OWNER_ROLE.fullmatch(role_name) is None:
+                continue
+            schema_name = "plaik_pkg_" + role_name.removeprefix("plaik_owner_")
+            if _OWNER_SCHEMA.fullmatch(schema_name) is None:
+                continue
+            try:
+                _execute(
+                    migrator,
+                    "SELECT plaik_control.drop_package_owner_login(%s, %s)",
+                    (role_name, schema_name),
+                )
+            except Exception as error:
+                if _sqlstate(error) not in _CONTROL_MISSING:
+                    raise
+                _safe_rollback(migrator)
+                if not _current_user_can_create_role(migrator):
+                    raise
+                role_sql = _quote_identifier(role_name)
+                schema_sql = _quote_identifier(schema_name)
+                _execute(migrator, f"DROP SCHEMA IF EXISTS {schema_sql} CASCADE")
+                exists = _fetchone(
+                    migrator,
+                    "SELECT 1 FROM pg_roles WHERE rolname = %s",
+                    (role_name,),
+                )
+                if exists is not None:
+                    _execute(migrator, f"DROP ROLE {role_sql}")
+            dropped.append(role_name)
+        migrator.commit()
+    except Exception:
+        _safe_rollback(migrator)
+        raise PostgreSQLOwnershipError(
+            "orphaned package owner LOGIN roles could not be dropped"
+        ) from None
+    finally:
+        _safe_close(migrator)
+    return tuple(dropped)
+
+
+def _delete_owner_secret(secrets: SecretProviders, package_id: str) -> None:
+    reference = package_owner_secret_reference(package_id)
+    if isinstance(secrets, SecretProviderRegistry):
+        try:
+            secrets.delete(reference)
+        except SecretNotFoundError:
+            return
+        return
+    delete = getattr(secrets, "delete", None)
+    if delete is None:
+        return
+    try:
+        delete(reference.key, version=reference.version)
+    except SecretNotFoundError:
+        return
+
+
+def _drop_package_owner_login(
+    connection: DatabaseConnection,
+    *,
+    scope: PostgreSQLOwnerScope,
+) -> None:
+    try:
+        _execute(
+            connection,
+            "SELECT plaik_control.drop_package_owner_login(%s, %s)",
+            (scope.role, scope.schema),
+        )
+        return
+    except Exception as error:
+        if _sqlstate(error) not in _CONTROL_MISSING:
+            raise PostgreSQLOwnershipError(
+                "package owner LOGIN role could not be dropped"
+            ) from None
+        _safe_rollback(connection)
+    if not _current_user_can_create_role(connection):
+        raise PostgreSQLOwnershipError(
+            "package owner LOGIN drop control function is not installed"
+        )
+    _drop_owner_inline(connection, scope=scope)
+
+
+def _drop_owner_inline(
+    connection: DatabaseConnection,
+    *,
+    scope: PostgreSQLOwnerScope,
+) -> None:
+    role_sql = _quote_identifier(scope.role)
+    schema_sql = _quote_identifier(scope.schema)
+    _execute(connection, f"DROP SCHEMA IF EXISTS {schema_sql} CASCADE")
+    exists = _fetchone(
+        connection,
+        "SELECT 1 FROM pg_roles WHERE rolname = %s",
+        (scope.role,),
+    )
+    if exists is not None:
+        _execute(connection, f"DROP ROLE {role_sql}")
+
+
 def _require_canonical_owner_scope(scope: PostgreSQLOwnerScope) -> None:
     role_key = scope.role.removeprefix("plaik_owner_")
     schema_key = scope.schema.removeprefix("plaik_pkg_")

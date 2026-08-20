@@ -50,6 +50,10 @@ class PackageSQLCoordinator(Protocol):
 
     def verify_finished(self, record: PackageSQLParticipantRecord) -> None: ...
 
+    def drop_owner(self, package_id: str) -> None: ...
+
+    def drop_orphans(self, installed_package_ids: tuple[str, ...]) -> tuple[str, ...]: ...
+
 
 class CrashAtomicPackageManager(TransactionalPackageManager):
     """Extend the proven local lifecycle with one durable SQL 2PC participant.
@@ -65,6 +69,9 @@ class CrashAtomicPackageManager(TransactionalPackageManager):
         super().__init__(*args, **kwargs)
         self.sql_coordinator = sql_coordinator
         self.sql_intent_root = self.transaction_root / "sql-participants"
+
+    def _release_durable_ownership(self, package_id: str) -> None:
+        self.sql_coordinator.drop_owner(package_id)
 
     def _ensure_roots(self) -> None:
         super()._ensure_roots()

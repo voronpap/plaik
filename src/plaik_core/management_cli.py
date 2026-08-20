@@ -38,6 +38,14 @@ from .postgresql_provision import (
 )
 from .requirements import RequirementCheck, SystemRequirements
 from .secret_store import LocalFileSecretProvider
+from plaik_sdk import PackageDevError
+from plaik_sdk.cli import (
+    add_build_command,
+    add_inspect_command,
+    add_new_command,
+    add_test_command,
+    add_validate_command,
+)
 from .remote_control import RemoteControlStore
 from .service_control import (
     ServiceControlError,
@@ -1342,6 +1350,31 @@ def _parser() -> argparse.ArgumentParser:
         help="issue a one-time Remote Control pairing code (root only)",
     )
     pairing.set_defaults(handler=_print_remote_pairing)
+
+    dev = commands.add_parser(
+        "dev",
+        help="scaffold, validate and test packages without importing Core internals",
+    )
+    dev_commands = dev.add_subparsers(dest="dev_command", required=True)
+    add_new_command(dev_commands.add_parser("new", help="create a package directory"))
+    add_validate_command(
+        dev_commands.add_parser("validate", help="validate a package directory")
+    )
+    add_test_command(
+        dev_commands.add_parser("test", help="register the package against a fake runtime")
+    )
+
+    package = commands.add_parser(
+        "package",
+        help="build and inspect installable package artifacts",
+    )
+    package_commands = package.add_subparsers(dest="package_command", required=True)
+    add_build_command(
+        package_commands.add_parser("build", help="write an unsigned package zip")
+    )
+    add_inspect_command(
+        package_commands.add_parser("inspect", help="print package identity and contracts")
+    )
     return parser
 
 
@@ -1351,6 +1384,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.handler(args))
     except PlaikCLIError as error:
+        print(f"plaik: {error}", file=sys.stderr)
+        return 2
+    except PackageDevError as error:
         print(f"plaik: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

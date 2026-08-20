@@ -72,6 +72,22 @@ class PackagePostgreSQLPreparedCoordinator:
             advisory_lock_key=advisory_lock_key,
         )
 
+    def drop_owner(self, package_id: str) -> None:
+        from .package_owner_identity import drop_package_owner_login
+
+        drop_package_owner_login(
+            migrator_connect=self.coordinator_connect,
+            package_id=package_id,
+        )
+
+    def drop_orphans(self, installed_package_ids: tuple[str, ...]) -> tuple[str, ...]:
+        from .package_owner_identity import drop_orphaned_package_owners
+
+        return drop_orphaned_package_owners(
+            migrator_connect=self.coordinator_connect,
+            installed_package_ids=installed_package_ids,
+        )
+
     def plan(
         self,
         operation_id: str,
