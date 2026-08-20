@@ -50,6 +50,30 @@ def _require_exact_str(value: object, error: str) -> str:
     return value
 
 
+def _enable_bind_order(
+    records: Mapping[str, PackageRecord], enabled_ids: set[str]
+) -> tuple[str, ...]:
+    remaining = set(enabled_ids)
+    ordered: list[str] = []
+    while remaining:
+        ready = [
+            package_id
+            for package_id in remaining
+            if all(
+                dependency.package_id not in remaining
+                for dependency in records[package_id].manifest.dependencies
+                if not dependency.optional
+            )
+        ]
+        if not ready:
+            ready = sorted(remaining)
+        else:
+            ready.sort()
+        ordered.extend(ready)
+        remaining.difference_update(ready)
+    return tuple(ordered)
+
+
 def _optional_exact_str(value: object, error: str) -> str | None:
     if value is None:
         return None
@@ -516,7 +540,7 @@ class ExtensionHost:
         bound: list[ExtensionRuntime] = []
         with self._lock:
             enabled_ids = self._drop_unenabled_locked(records)
-            for package_id in sorted(enabled_ids):
+            for package_id in _enable_bind_order(records, enabled_ids):
                 runtime = self._runtimes.get(package_id)
                 if runtime is None:
                     try:
@@ -565,8 +589,14 @@ class ExtensionHost:
         for package_id in tuple(self._registered):
             if package_id not in records:
                 self._drop_job_handlers(package_id)
+                self._drop_owner_contracts(package_id)
                 self._registered.discard(package_id)
         return enabled_ids
+
+    def _drop_owner_contracts(self, package_id: str) -> None:
+        self._services.drop_owner(package_id)
+        self._events.drop_owner(package_id)
+        self._slots.drop_owner(package_id)
 
     def _drop_job_handlers(self, package_id: str) -> None:
         prefix = _owner_job_prefix(package_id)
@@ -631,8 +661,12 @@ class ExtensionHost:
                     contract=event.contract,
                     version=event.version,
                 )
-            except ExtensionContractError:
-                continue
+            except ExtensionContractError as error:
+                if "already declared" not in str(error):
+                    raise
+                existing = self._events.get_declaration(event.contract, event.version)
+                if existing is None or existing.owner != record.manifest.id:
+                    raise
 
     def _ensure_settings_schema(self, record: PackageRecord) -> None:
         if self._settings is None:
