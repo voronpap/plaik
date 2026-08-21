@@ -1546,6 +1546,16 @@ async function loadPackages(){
     document.getElementById("package-detail").textContent=JSON.stringify(rows.find(item=>item.id===row.dataset.id),null,2);
   }));
 }
+async function showConsole(){
+  document.getElementById("login-card").hidden=true;
+  document.getElementById("packages-card").hidden=false;
+  try{await loadPackages();}
+  catch(loadErr){document.getElementById("packages-table").textContent=String(loadErr.message||loadErr);}
+}
+async function restoreSession(){
+  const r=await fetch("/api/auth/me",{credentials:"same-origin"});
+  if(r.ok) await showConsole();
+}
 document.getElementById("login-form").addEventListener("submit",async event=>{
   event.preventDefault();
   const error=document.getElementById("login-error");
@@ -1555,14 +1565,9 @@ document.getElementById("login-form").addEventListener("submit",async event=>{
     const body=Object.fromEntries(new FormData(event.target).entries());
     const response=await fetch("/api/auth/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF-Token":token},body:JSON.stringify(body)});
     if(!response.ok) throw new Error("sign-in failed");
-    document.getElementById("login-card").hidden=true;
-    document.getElementById("packages-card").hidden=false;
-    try{
-      await loadPackages();
-    }catch(loadErr){
-      document.getElementById("packages-table").textContent=String(loadErr.message||loadErr);
-    }
+    await showConsole();
   }catch(err){error.textContent=String(err.message||err);error.hidden=false;}
 });
+restoreSession();
 </script>
 </main></body></html>"""
