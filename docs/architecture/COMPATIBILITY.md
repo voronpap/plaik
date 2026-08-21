@@ -8,7 +8,7 @@ the lower bound and exclusive on the upper bound.
 | PLAIK runtime (`plaik`) | 0.4.x | `plaik-sdk>=0.4.0,<0.5.0` |
 | PLAIK SDK (`plaik-sdk`) | 0.4.x | Python >= 3.12 |
 | Official modules `catalog`, `inventory`, `pricing`, `search`, `seo` | 1.0.x | Core `>=0.4.0,<0.5.0`; depend only on released `plaik-sdk` |
-| Pack `auto-parts-pack` | 1.0.x | those modules `>=1.0.0,<2.0.0`; Core `>=0.4.0,<0.5.0` |
+| Pack `auto-parts-pack` | 0.1.x | those modules `>=1.0.0,<2.0.0`; Core `>=0.4.0,<0.5.0` |
 
 Official packages must not import `plaik_core`. Cross-package behavior uses
 declared services, events, hooks, slots or public SDK contracts. Package SQL

@@ -19,6 +19,7 @@
 ## Before first tagged release
 
 - [ ] Complete runtime import closure and private regression migration.
-- [x] Verify clean install and upgrade through private acceptance suites.
+- [x] Verify official-module PostgreSQL install/upgrade/uninstall through private acceptance suites.
+- [ ] Verify host clean install from a published 0.4 GitHub Release (separate owner publication).
 - [ ] Add extension author documentation and a minimal public example package.
 - [ ] Define semantic versioning and deprecation policy.
