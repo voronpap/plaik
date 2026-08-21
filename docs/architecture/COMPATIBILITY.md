@@ -18,5 +18,6 @@ Cart, checkout, orders, payments, shipping and promotions are not part of 0.4.
 The bundled Default theme remains the protected fallback presentation; it is
 not a commerce storefront.
 
-A published GitHub Release is a separate operator/publication step. This matrix
-describes source and wheel compatibility, not a specific GitHub tag.
+GitHub Release `v0.4.0` is the published 0.4 runtime/SDK tag. Frozen tag
+`v0.2.2` remains published and must not be retagged. This matrix describes
+source and wheel compatibility for the 0.4.x series.

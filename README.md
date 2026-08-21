@@ -4,7 +4,7 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. Source on this branch is 0.4.x Official Modules Foundation (runtime + SDK 0.4.x, official catalog/inventory/pricing/search/seo modules in `plaik-packages`). Publishing a 0.4 GitHub Release is a separate step and does not retag `v0.2.2`. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
+> Status: 0.4.0 is the current GitHub Release (Official Modules Foundation). Frozen snapshot `v0.2.2` remains published and must not be retagged. Official catalog, inventory, pricing, search and seo modules live in `plaik-packages`. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
@@ -26,7 +26,7 @@ sudo sh install.sh
 sudo plaik setup
 ```
 
-The first command bootstraps the Linux runtime, private Python environment and systemd services. Until a 0.4 GitHub Release exists, `releases/latest` is the frozen 0.2-line snapshot; install 0.4 from matching local wheels as documented in [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md) and [`docs/installation/UPGRADE.md`](docs/installation/UPGRADE.md). Domain, database, administrator and theme configuration belongs to the local web wizard at `http://127.0.0.1:8765/` while the installer service is open. The wizard binds loopback only; from another computer use an SSH tunnel as documented in [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md). `sudo plaik setup` remains as the headless automation and recovery fallback.
+The first command bootstraps the Linux runtime, private Python environment and systemd services. `releases/latest` is GitHub Release `v0.4.0`. Frozen tag `v0.2.2` remains available and must not be retagged; pin `PLAIK_RELEASE_TAG=v0.2.2` only if you intend that snapshot. Domain, database, administrator and theme configuration belongs to the local web wizard at `http://127.0.0.1:8765/` while the installer service is open. The wizard binds loopback only; from another computer use an SSH tunnel as documented in [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md). `sudo plaik setup` remains as the headless automation and recovery fallback.
 
 Operational lifecycle commands include:
 
