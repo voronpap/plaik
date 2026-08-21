@@ -4,7 +4,7 @@
 
 The name comes from the Ukrainian Carpathian word **плаїк** — a small mountain path or trail.
 
-> Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
+> Status: 0.2.0 is the first published production runtime. Installer hardening after that review ships as 0.2.1 and does not overwrite the published v0.2.0 assets. Source on this branch is 0.4.x Official Modules Foundation (runtime + SDK 0.4.x, official catalog/inventory/pricing/search/seo modules in `plaik-packages`). Publishing a 0.4 GitHub Release is a separate step and does not retag `v0.2.2`. The public repository contains product source and public documentation only. Internal tests, agent instructions, CI gates, deployment infrastructure and operational evidence are kept in a separate private repository.
 
 ## Project layout
 
@@ -39,7 +39,7 @@ sudo plaik uninstall
 sudo plaik uninstall --purge --yes
 ```
 
-See [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md) for the installation contract, non-interactive TOML setup and reset/uninstall safety rules.
+See [`docs/installation/INSTALLATION.md`](docs/installation/INSTALLATION.md) for the installation contract, non-interactive TOML setup and reset/uninstall safety rules. Upgrading 0.3 → 0.4 is [`docs/installation/UPGRADE.md`](docs/installation/UPGRADE.md). The 0.4 compatibility matrix is [`docs/architecture/COMPATIBILITY.md`](docs/architecture/COMPATIBILITY.md).
 
 ## Core acceptance boundary
 

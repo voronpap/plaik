@@ -279,6 +279,12 @@ explicit operator action.
   systemd service, and revokes the installer token. The SSH tunnel to port
   `8765` can be closed after that confirmed handoff.
 
+## Upgrade
+
+Upgrading an existing 0.3 installation to 0.4, rollback, and official-module
+order are documented in [`UPGRADE.md`](UPGRADE.md). Compatibility ranges are
+in [`../architecture/COMPATIBILITY.md`](../architecture/COMPATIBILITY.md).
+
 ## Not part of Stage 1
 
 Reverse proxy and public TLS termination are intentionally not part of the
