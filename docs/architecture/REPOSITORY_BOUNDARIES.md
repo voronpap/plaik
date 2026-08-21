@@ -80,6 +80,11 @@ No production credential, private key or plaintext secret should be committed ev
 
 No Git submodules are used for normal product composition. Cross-repository product dependencies are released/versioned artifacts with explicit compatibility ranges.
 
+## Compatibility
+
+See [`COMPATIBILITY.md`](COMPATIBILITY.md) for the 0.4 runtime, SDK and
+official-package version ranges.
+
 ## Release consequence
 
 The platform runtime can release independently of official packages. SDK compatibility is versioned explicitly. Official packages declare the SDK/platform versions they support. Releases are validated privately before publication; the public repositories contain product source and reproducible build/use documentation rather than the internal validation implementation.

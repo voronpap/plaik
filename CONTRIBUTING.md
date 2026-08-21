@@ -24,6 +24,19 @@ Internal PLAIK test suites, agent instructions, CI/release gates and operational
 
 Never commit credentials, private keys, production `.env` files, customer data or host-specific secret material. See `SECURITY.md` for vulnerability reporting.
 
+## Build wheels
+
+From `plaik-sdk`, then from `plaik`:
+
+```bash
+python -m pip install build
+python -m build
+```
+
+A release installation expects exactly one runtime wheel, exactly one SDK
+wheel, and a matching `<wheel>.sha256` file for each. Do not publish those
+assets by retagging a frozen GitHub Release.
+
 ## Quality
 
 Public changes should include clear behavior, compatibility impact and documentation. Final release validation is performed through private internal gates before publication.
