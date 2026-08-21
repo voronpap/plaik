@@ -10,17 +10,16 @@ platform base. 0.4 runtime and SDK are versioned `0.4.x` and host official
 business modules from `plaik-packages` through released `plaik-sdk`.
 
 The published GitHub Release tag `v0.2.2` is a frozen snapshot. Do not retag
-it. Publishing a 0.4 GitHub Release is a separate owner decision; until that
-publication, install 0.4 from matching local wheels as documented in
-`INSTALLATION.md`.
+it. 0.4.0 is published as tag `v0.4.0` and is `releases/latest`. Pin
+`PLAIK_RELEASE_TAG=v0.4.0` if you must not follow `latest`.
 
 ## Clean install
 
-Follow the two-stage bootstrap in `INSTALLATION.md`. Until a 0.4 GitHub
-Release exists, supply matching local 0.4 runtime and SDK wheels with
-`--wheel` and `--sdk-wheel`. After setup is sealed, install official modules
-from `plaik-packages` — `catalog`, then `inventory` and `pricing`, then
-`search` and `seo`. The `auto-parts-pack` pack selects that compatible set.
+Follow the two-stage bootstrap in `INSTALLATION.md`. `releases/latest` installs
+0.4.0. After setup is sealed, install official modules from `plaik-packages` —
+`catalog`, then `inventory` and `pricing`, then `search` and `seo`. The
+`auto-parts-pack` pack selects that compatible set. Local `--wheel` /
+`--sdk-wheel` remains valid for controlled hosts.
 
 Package SQL migrations run through package lifecycle. Do not apply module SQL
 by hand.
