@@ -22,14 +22,25 @@ selects the 0.4 proof stack plus that commerce set. Package SQL migrations
 run through package lifecycle. Do not apply module SQL by hand. Do not retag
 `v0.2.2`. Do not unfreeze the bundled Default theme.
 
+## 0.5 to 0.6
+
+0.6 is Integrations & Data. It does **not** bump Core. Install the 0.6 official
+integrations from `plaik-packages` on frozen runtime `0.4.x`: `data-exchange`
+then `psp-outbound` (payments 1.0.x dispatch is required for recorded capture).
+`auto-parts-pack` 0.3.x selects the 0.4 proof stack, 0.5 commerce modules, and
+that integration set. Package SQL migrations run through package lifecycle.
+Do not apply integration SQL by hand. Do not retag `v0.2.2`. Do not unfreeze
+the bundled Default theme. Do not enable live production PSP charges.
+
 ## Clean install
 
 Follow the two-stage bootstrap in `INSTALLATION.md`. `releases/latest` installs
 0.4.0. After setup is sealed, install official modules from `plaik-packages` —
 `catalog`, then `inventory` and `pricing`, then `search` and `seo`. For 0.5
 commerce, also install `cart`, `orders`, `shipping`, `payments`, `promotions`,
-and `checkout`. `auto-parts-pack` 0.2.x selects the 0.4 proof stack plus that
-commerce set. Local `--wheel` /
+and `checkout`. For 0.6 integrations, also install `data-exchange` and
+`psp-outbound`. `auto-parts-pack` 0.3.x selects the 0.4 proof stack, 0.5
+commerce modules, and that integration set. Local `--wheel` /
 `--sdk-wheel` remains valid for controlled hosts.
 
 Package SQL migrations run through package lifecycle. Do not apply module SQL
