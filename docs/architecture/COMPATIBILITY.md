@@ -24,6 +24,12 @@ imports Admin JSON/CSV through `catalog.query.upsert`. PSP Outbound is recorded
 HTTP capture behind `payments.capture` 1.0.x dispatch. They do not move provider
 logic into Core and do not add Stripe/PayPal/Feed/CSV types to `plaik-sdk`.
 
+0.7 store isolation is a package SQL fact on the same frozen Core 0.4.0: official
+modules key rows by `store_id = ExtensionRuntime.store_id`. Payload `store_id`
+is ignored. A production installation still has one store. This does not add
+StoreCluster types to `plaik-sdk` and does not unfreeze the bundled Default
+theme.
+
 GitHub Release `v0.4.0` is the published 0.4 runtime/SDK tag. Frozen tag
-`v0.2.2` remains published and must not be retagged. A 0.5 GitHub Release is
-not implied by this matrix.
+`v0.2.2` remains published and must not be retagged. A 0.5/0.6/0.7 GitHub
+Release is not implied by this matrix.

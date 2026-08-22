@@ -32,6 +32,15 @@ that integration set. Package SQL migrations run through package lifecycle.
 Do not apply integration SQL by hand. Do not retag `v0.2.2`. Do not unfreeze
 the bundled Default theme. Do not enable live production PSP charges.
 
+## 0.6 to 0.7
+
+0.7 is Multi-store / Scale isolation. It does **not** bump Core. Official
+modules already key package SQL by `store_id`. Two `store_id` runtimes on the
+same database do not read each other's catalog or payments rows. Payload
+`store_id` is ignored. A production installation still has one store; this is
+not a multi-store installer. Do not retag `v0.2.2`. Do not unfreeze the bundled
+Default theme.
+
 ## Clean install
 
 Follow the two-stage bootstrap in `INSTALLATION.md`. `releases/latest` installs
