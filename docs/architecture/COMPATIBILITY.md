@@ -9,7 +9,8 @@ the lower bound and exclusive on the upper bound.
 | PLAIK SDK (`plaik-sdk`) | 0.4.x | Python >= 3.12 |
 | Official modules `catalog`, `inventory`, `pricing`, `search`, `seo` | 1.0.x | Core `>=0.4.0,<0.5.0`; depend only on released `plaik-sdk` |
 | Official modules `cart`, `orders`, `shipping`, `payments`, `promotions`, `checkout` | 1.0.x | Core `>=0.4.0,<0.5.0`; depend only on released `plaik-sdk` |
-| Pack `auto-parts-pack` | 0.2.x | 0.4 proof stack and 0.5 commerce modules `>=1.0.0,<2.0.0`; Core `>=0.4.0,<0.5.0` |
+| Official integrations `data-exchange`, `psp-outbound` | 1.0.x | Core `>=0.4.0,<0.5.0`; depend only on released `plaik-sdk` |
+| Pack `auto-parts-pack` | 0.3.x | 0.4 proof stack, 0.5 commerce modules, and 0.6 integrations `>=1.0.0,<2.0.0`; Core `>=0.4.0,<0.5.0` |
 
 Official packages must not import `plaik_core`. Cross-package behavior uses
 declared services, events, hooks, slots or public SDK contracts. Package SQL
@@ -17,6 +18,11 @@ is namespaced per package; one package must not read another package's tables.
 
 0.5 commerce modules ship as packages on frozen Core 0.4.0. They do not move
 business logic into Core and do not unfreeze the bundled Default theme.
+
+0.6 integrations ship as packages on the same frozen Core 0.4.0. Data Exchange
+imports Admin JSON/CSV through `catalog.query.upsert`. PSP Outbound is recorded
+HTTP capture behind `payments.capture` 1.0.x dispatch. They do not move provider
+logic into Core and do not add Stripe/PayPal/Feed/CSV types to `plaik-sdk`.
 
 GitHub Release `v0.4.0` is the published 0.4 runtime/SDK tag. Frozen tag
 `v0.2.2` remains published and must not be retagged. A 0.5 GitHub Release is
