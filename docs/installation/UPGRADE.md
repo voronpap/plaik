@@ -13,12 +13,23 @@ The published GitHub Release tag `v0.2.2` is a frozen snapshot. Do not retag
 it. 0.4.0 is published as tag `v0.4.0` and is `releases/latest`. Pin
 `PLAIK_RELEASE_TAG=v0.4.0` if you must not follow `latest`.
 
+## 0.4 to 0.5
+
+0.5 is Commerce Runtime. It does **not** bump Core. Install the 0.5 official
+modules from `plaik-packages` on frozen runtime `0.4.x`: `cart`, `orders`,
+`shipping`, `payments`, `promotions`, then `checkout`. `auto-parts-pack` 0.2.x
+selects the 0.4 proof stack plus that commerce set. Package SQL migrations
+run through package lifecycle. Do not apply module SQL by hand. Do not retag
+`v0.2.2`. Do not unfreeze the bundled Default theme.
+
 ## Clean install
 
 Follow the two-stage bootstrap in `INSTALLATION.md`. `releases/latest` installs
 0.4.0. After setup is sealed, install official modules from `plaik-packages` —
-`catalog`, then `inventory` and `pricing`, then `search` and `seo`. The
-`auto-parts-pack` pack selects that compatible set. Local `--wheel` /
+`catalog`, then `inventory` and `pricing`, then `search` and `seo`. For 0.5
+commerce, also install `cart`, `orders`, `shipping`, `payments`, `promotions`,
+and `checkout`. `auto-parts-pack` 0.2.x selects the 0.4 proof stack plus that
+commerce set. Local `--wheel` /
 `--sdk-wheel` remains valid for controlled hosts.
 
 Package SQL migrations run through package lifecycle. Do not apply module SQL
